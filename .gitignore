@@ -1,0 +1,19 @@
+# 忽略 AI 协作/追踪工作区与本地历史（公开发布仓库不含这些内容）
+.trellis/
+.claude/
+.cursor/
+.github/
+.history/
+.archive/
+AGENTS.md
+.gitattributes
+
+# 测试运行产物（可再生成）
+tests/e2e/__pycache__/
+tests/e2e/shots/
+__pycache__/
+*.pyc
+
+# 本地杂项
+*.log
+/tmp/

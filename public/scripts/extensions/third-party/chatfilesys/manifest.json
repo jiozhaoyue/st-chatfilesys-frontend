@@ -1,0 +1,13 @@
+{
+    "display_name": "聊天文件系统（ChatFilesys）",
+    "loading_order": 50,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "jiozhaoyue",
+    "homePage": "https://github.com/jiozhaoyue/st-chatfilesys-frontend",
+    "hooks": {
+        "activate": "init"
+    }
+}

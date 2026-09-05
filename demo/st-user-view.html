@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>演示① · ST 用户视角 — ChatBranch 分支树</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  :root {
+    --bg:#131313; --panel:#1b1b1b; --panel2:#222; --line:#333;
+    --fg:#e0e0e0; --dim:#909090; --faint:#5a5a5a;
+    --user:#f3b269; --ai:#7ad0c9; --accent:#b8433f; --blue:#58a6ff; --green:#3fb950; --yellow:#d29922;
+  }
+  body { background:var(--bg); color:var(--fg); font-family:'Noto Sans SC','Segoe UI',system-ui,sans-serif; height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+
+  /* top bar */
+  .topbar { display:flex; align-items:center; gap:12px; padding:8px 14px; background:#0d0d0d; border-bottom:1px solid var(--line); flex-shrink:0; }
+  .avatar { width:34px; height:34px; border-radius:50%; background:linear-gradient(135deg,#7ad0c9,#48978f); display:flex; align-items:center; justify-content:center; font-weight:700; color:#0d0d0d; flex-shrink:0; }
+  .tinfo { line-height:1.25; }
+  .tinfo .cname { font-size:14px; font-weight:600; }
+  .tinfo .chatname { font-size:11.5px; color:var(--dim); }
+  .tinfo .chatname b { color:var(--blue); }
+  .spacer { flex:1; }
+  .topbtn { background:var(--panel2); border:1px solid var(--line); color:var(--dim); font-size:12px; padding:5px 12px; border-radius:6px; cursor:pointer; }
+  .topbtn:hover { color:var(--fg); border-color:var(--dim); }
+  .topbtn.on { color:var(--blue); border-color:var(--blue); }
+
+  /* chat */
+  .chat-scroll { flex:1; overflow-y:auto; padding:22px 0 10px; }
+  .chat-col { max-width:760px; margin:0 auto; padding:0 20px; }
+  .msg-row { display:flex; gap:10px; margin-bottom:14px; position:relative; }
+  .msg-row.user { flex-direction:row-reverse; }
+  .m-avatar { width:30px; height:30px; border-radius:50%; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; color:#0d0d0d; margin-top:2px; }
+  .m-avatar.ai { background:linear-gradient(135deg,#7ad0c9,#48978f); }
+  .m-avatar.user { background:linear-gradient(135deg,#f3b269,#c98a4b); }
+  .bubble-wrap { max-width:78%; min-width:120px; }
+  .m-name { font-size:11.5px; color:var(--dim); margin-bottom:3px; display:flex; gap:8px; align-items:baseline; }
+  .msg-row.user .m-name { justify-content:flex-end; }
+  .m-name .fl { color:var(--faint); font-size:10px; }
+  .bubble { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:9px 13px; font-size:13.5px; line-height:1.65; }
+  .msg-row.user .bubble { border-color:#3d3529; }
+  .m-actions { position:absolute; top:-2px; display:flex; gap:2px; opacity:0; transition:opacity .15s; background:#0d0d0dee; border:1px solid var(--line); border-radius:6px; padding:2px; z-index:5; }
+  .msg-row:hover .m-actions { opacity:1; }
+  .msg-row.ai .m-actions { right:0; }
+  .msg-row.user .m-actions { left:0; }
+  .m-actions button { background:none; border:none; color:var(--dim); font-size:12.5px; padding:3px 7px; cursor:pointer; border-radius:4px; }
+  .m-actions button:hover { color:var(--fg); background:var(--panel2); }
+  .m-actions button.fork:hover { color:var(--yellow); }
+  .m-actions button.bkm:hover { color:var(--accent); }
+  .m-actions button.del:hover { color:#e05252; }
+  .swipebar { display:flex; align-items:center; justify-content:center; gap:10px; margin-top:5px; font-size:11.5px; color:var(--dim); }
+  .swipebar button { background:none; border:none; color:var(--dim); cursor:pointer; font-size:13px; padding:1px 6px; }
+  .swipebar button:hover { color:var(--blue); }
+
+  /* input */
+  .inputbar { flex-shrink:0; border-top:1px solid var(--line); background:#0d0d0d; padding:12px 0; }
+  .input-col { max-width:760px; margin:0 auto; padding:0 20px; display:flex; gap:10px; align-items:flex-end; }
+  textarea#inp { flex:1; background:var(--panel); border:1px solid var(--line); color:var(--fg); border-radius:10px; padding:10px 12px; font-size:13.5px; font-family:inherit; resize:none; height:44px; }
+  textarea#inp:focus { outline:none; border-color:var(--dim); }
+  button#send { background:var(--accent); border:none; color:#fff; border-radius:10px; padding:0 22px; height:44px; font-size:13.5px; cursor:pointer; }
+  button#send:hover { filter:brightness(1.15); }
+
+  /* extension drawer */
+  .drawer { position:fixed; top:0; right:-360px; width:340px; height:100vh; background:#101010; border-left:1px solid var(--line); transition:right .25s; z-index:40; display:flex; flex-direction:column; }
+  .drawer.open { right:0; }
+  .drawer .dh { padding:12px 16px; border-bottom:1px solid var(--line); font-size:13px; display:flex; justify-content:space-between; align-items:center; }
+  .drawer .dh .t { color:var(--fg); font-weight:600; }
+  .drawer .db { padding:14px; overflow-y:auto; flex:1; }
+  .inline-drawer { border:1px solid var(--line); border-radius:8px; margin-bottom:12px; background:var(--panel); }
+  .inline-drawer .idh { padding:9px 12px; font-size:12.5px; color:var(--fg); cursor:pointer; display:flex; justify-content:space-between; }
+  .inline-drawer .idh .arrow { color:var(--faint); }
+  .inline-drawer .idb { padding:10px 12px; border-top:1px solid var(--line); }
+  .brow { display:flex; align-items:center; gap:9px; padding:7px 9px; border:1px solid var(--line); border-radius:7px; margin-bottom:7px; cursor:pointer; background:#161616; }
+  .brow:hover { border-color:var(--dim); }
+  .brow.cur { border-color:var(--blue); background:#111a24; }
+  .bdot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+  .bname { font-size:12.5px; }
+  .bmeta { margin-left:auto; font-size:10.5px; color:var(--faint); text-align:right; }
+  .bact { display:flex; gap:2px; }
+  .bact button { background:none; border:none; color:var(--faint); cursor:pointer; font-size:11.5px; padding:2px; }
+  .bact button:hover { color:var(--blue); }
+  .bact button.del:hover { color:#e05252; }
+  .panel-btn { width:100%; background:var(--panel2); border:1px solid var(--line); color:var(--dim); font-size:12px; padding:7px; border-radius:7px; cursor:pointer; margin-bottom:7px; }
+  .panel-btn:hover { color:var(--fg); border-color:var(--dim); }
+  .panel-btn.reserved { border-style:dashed; color:var(--faint); cursor:help; }
+  .panel-btn.reserved:hover { color:var(--yellow); border-color:var(--yellow); }
+
+  /* file overlay */
+  .file-overlay { position:fixed; inset:0; background:#000a; z-index:60; display:none; align-items:center; justify-content:center; }
+  .file-overlay.open { display:flex; }
+  .file-box { width:min(860px,92vw); max-height:84vh; background:#101010; border:1px solid var(--line); border-radius:12px; display:flex; flex-direction:column; }
+  .file-box .fh { padding:10px 16px; border-bottom:1px solid var(--line); display:flex; gap:2px; align-items:center; }
+  .file-box .fh .t { font-size:12.5px; color:var(--fg); margin-right:auto; }
+  .file-box .fc { overflow:auto; padding:14px; }
+  pre.code { font-family:'Cascadia Code',Consolas,monospace; font-size:11.5px; line-height:1.7; color:#c9d1d9; white-space:pre-wrap; }
+  pre.code .ln { color:#484f58; user-select:none; margin-right:12px; }
+  pre.code .k { color:var(--blue); } pre.code .s { color:#a5d6ff; } pre.code .n { color:#f2cc60; } pre.code .c { color:#484f58; font-style:italic; }
+  .ftab { background:none; border:none; color:var(--dim); font-size:12px; padding:4px 10px; cursor:pointer; border-radius:6px 6px 0 0; }
+  .ftab.on { color:var(--blue); background:#181818; }
+  .fclose { background:none; border:none; color:var(--dim); font-size:16px; cursor:pointer; }
+  .fclose:hover { color:#fff; }
+
+  /* modal (收编弹窗) */
+  .modal { position:fixed; inset:0; background:#000b; z-index:70; display:none; align-items:center; justify-content:center; }
+  .modal.open { display:flex; }
+  .modal-box { width:min(460px,90vw); background:#161616; border:1px solid var(--line); border-radius:12px; padding:20px 22px; }
+  .modal-box h4 { font-size:14px; color:var(--fg); margin-bottom:10px; }
+  .modal-box p { font-size:12.5px; color:var(--dim); line-height:1.7; margin-bottom:16px; }
+  .modal-box .row { display:flex; gap:8px; justify-content:flex-end; }
+  .modal-box button { border-radius:7px; padding:6px 16px; font-size:12.5px; cursor:pointer; border:1px solid var(--line); background:var(--panel2); color:var(--dim); }
+  .modal-box button.ok { background:var(--accent); border-color:var(--accent); color:#fff; }
+
+  #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#1f6feb; color:#fff; font-size:12.5px; padding:8px 18px; border-radius:8px; opacity:0; transition:opacity .25s; pointer-events:none; z-index:99; max-width:80vw; }
+  #toast.show { opacity:1; }
+  .editing textarea { width:100%; background:#0d0d0d; border:1px solid var(--blue); color:var(--fg); border-radius:8px; padding:8px; font-size:13px; font-family:inherit; resize:vertical; min-height:60px; }
+  .editing .erow { display:flex; gap:6px; margin-top:6px; justify-content:flex-end; }
+  .editing .erow button { background:var(--panel2); border:1px solid var(--line); color:var(--dim); font-size:11.5px; border-radius:5px; padding:3px 10px; cursor:pointer; }
+  .editing .erow button.ok { color:var(--green); border-color:var(--green); }
+</style>
+</head>
+<body>
+
+  <div class="topbar">
+    <div class="avatar">S</div>
+    <div class="tinfo">
+      <div class="cname">Seraphina</div>
+      <div class="chatname">聊天：<b id="chatName">主分支</b> <span id="familyTag" style="color:var(--faint)">· 聊天家族「Seraphina」已被 ChatBranch 接管</span></div>
+    </div>
+    <div class="spacer"></div>
+    <button class="topbtn" id="btnFile">&lt;/&gt; 落盘视图</button>
+    <button class="topbtn" id="btnDrawer">🧩 扩展</button>
+  </div>
+
+  <div class="chat-scroll" id="chatScroll"><div class="chat-col" id="chatCol"></div></div>
+
+  <div class="inputbar">
+    <div class="input-col">
+      <textarea id="inp" placeholder="以「我」的身份发送……（发送后 Seraphina 自动回复）"></textarea>
+      <button id="send">发送</button>
+    </div>
+  </div>
+
+  <!-- 扩展抽屉（模拟 #extensions_settings） -->
+  <div class="drawer" id="drawer">
+    <div class="dh"><span class="t">🧩 扩展设置</span><button class="topbtn" id="drawerClose">关闭</button></div>
+    <div class="db">
+      <div class="inline-drawer">
+        <div class="idh" onclick="this.parentElement.querySelector('.idb').style.display = this.parentElement.querySelector('.idb').style.display==='none'?'block':'none'">
+          <span>💬 聊天分支（ChatBranch）</span><span class="arrow">▾</span>
+        </div>
+        <div class="idb">
+          <div style="font-size:11px;color:var(--faint);margin-bottom:8px">当前家族「Seraphina」· 分支系统接管中</div>
+          <div id="treePanel"></div>
+          <button class="panel-btn reserved" title="树状图功能演示预留——真实系统在此打开全局树状视图">📊 树状图视图（功能演示预留）</button>
+        </div>
+      </div>
+      <div class="inline-drawer">
+        <div class="idh" onclick="this.parentElement.querySelector('.idb').style.display = this.parentElement.querySelector('.idb').style.display==='none'?'block':'none'">
+          <span>🎛 演示动作</span><span class="arrow">▾</span>
+        </div>
+        <div class="idb">
+          <button class="panel-btn" onclick="demoForkEnd()">⎇ 在最后一层之后分叉（插件树入口）</button>
+          <div style="font-size:10.5px;color:var(--faint);line-height:1.6;margin-top:4px">
+            提示：消息悬浮工具条中 🔖 = 模拟 ST 原生书签（整文件复制→收编弹窗）；⎇ = 插件分叉（零复制）。
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 落盘视图 -->
+  <div class="file-overlay" id="fileOverlay">
+    <div class="file-box">
+      <div class="fh">
+        <span class="t">落盘视图 · data/chats/Seraphina/chat1.jsonl（真实形态）</span>
+        <button class="ftab on" id="ftMain" onclick="fTab('main')">主线性数组</button>
+        <button class="ftab" id="ftMeta" onclick="fTab('meta')">header.metadata.branches</button>
+        <button class="ftab" id="ftExport" onclick="fTab('export')">增量导出</button>
+        <button class="fclose" onclick="el('fileOverlay').classList.remove('open')">✕</button>
+      </div>
+      <div class="fc"><pre class="code" id="fileView"></pre></div>
+    </div>
+  </div>
+
+  <!-- 收编弹窗 -->
+  <div class="modal" id="adoptModal">
+    <div class="modal-box">
+      <h4>🔖 检测到原生书签分支</h4>
+      <p>ST 刚以「整文件复制」方式创建了原生分支 <b id="adoptName" style="color:var(--fg)"></b>（这正是本系统要消灭的体积膨胀行为）。<br><br>是否将它<b style="color:var(--orange)">收编</b>为楼层分支？收编 = 转为楼层引用（零复制）并删除复制文件。默认不收编，原生文件原样保留。</p>
+      <div class="row">
+        <button onclick="closeAdopt(false)">不收编</button>
+        <button class="ok" onclick="closeAdopt(true)">收编为楼层分支</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+<script src="branches-core.js"></script>
+<script>
+  const el = id => document.getElementById(id);
+  const D = window.FloorDemo;
+  let aiReplyIdx = 0;
+  let fileTabMode = 'main';
+
+  D.onToast(msg => { const t = el('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2400); });
+
+  /* ---------- 聊天区渲染（ST 视角：只显示当前分支） ---------- */
+  function render() {
+    const b = D.activeBranch();
+    el('chatName').textContent = b.name;
+    const col = el('chatCol');
+    const lines = D.activeLines();
+    const lastIdx = lines.length - 1;
+    let html = '';
+    lines.forEach((L, idx) => {
+      const g = D.group(L.gid);
+      const isUser = L.line.is_user;
+      html += `<div class="msg-row ${isUser ? 'user' : 'ai'}" data-gid="${L.gid}">
+        <div class="m-avatar ${isUser ? 'user' : 'ai'}">${isUser ? '我' : 'S'}</div>
+        <div class="bubble-wrap">
+          <div class="m-name"><span style="color:${isUser ? 'var(--user)' : 'var(--ai)'}">${L.line.name}</span><span class="fl">楼层 ${L.floor}</span></div>
+          <div class="bubble" data-bubble>${escapeHtml(L.line.mes)}</div>
+          ${(g.variants.length > 1 || idx === lastIdx) && !isUser ? `<div class="swipebar">
+              <button onclick="swipe('${L.gid}',-1)" title="上一个 swipe">◀</button>
+              <span>${g.active + 1}/${g.variants.length}</span>
+              <button onclick="swipe('${L.gid}',1)" title="下一个 swipe">▶</button>
+              <button onclick="addSwipe('${L.gid}')" title="添加 swipe 变体">＋</button>
+            </div>` : ''}
+        </div>
+        <div class="m-actions">
+          <button title="编辑" onclick="editMsg('${L.gid}',${g.active})">✎</button>
+          <button class="fork" title="在此层之后分叉（插件 · 零复制）" onclick="forkFromMsg(${L.floor})">⎇</button>
+          <button class="bkm" title="原生书签（模拟：整文件复制→收编弹窗）" onclick="nativeBookmark(${L.floor})">🔖</button>
+          <button class="del" title="删除楼层（全局）" onclick="delFloor('${L.gid}')">🗑</button>
+        </div>
+      </div>`;
+    });
+    col.innerHTML = html;
+    renderTree();
+    if (!el('fileOverlay').classList.contains('open')) renderFile();
+    else renderFile();
+  }
+
+  function renderTree() {
+    let html = '';
+    D.state.branches.forEach(b => {
+      const cur = b.id === D.state.activeBranch;
+      html += `<div class="brow ${cur ? 'cur' : ''}" onclick="D.switchTo('${b.id}');render()">
+        <span class="bdot" style="background:${b.color}"></span>
+        <span class="bname">${escapeHtml(b.name)}${b.isDefault ? ' <span style="color:var(--faint);font-size:10px">默认</span>' : ''}</span>
+        <span class="bact" onclick="event.stopPropagation()">
+          <button title="重命名" onclick="renameB('${b.id}')">✎</button>
+          ${!b.isDefault ? `<button class="del" title="删除" onclick="delB('${b.id}')">🗑</button>` : ''}
+        </span>
+        <span class="bmeta">${b.forkBase ? '⎇' + b.forkBase + '后 · ' : ''}至F${D.branchMaxFloor(b)}</span>
+      </div>`;
+    });
+    el('treePanel').innerHTML = html;
+  }
+
+  /* ---------- 操作 ---------- */
+  function send() {
+    const v = el('inp').value.trim();
+    if (!v) return;
+    el('inp').value = '';
+    D.addMessage({ who: D.ME, text: v });
+    render();
+    scrollBottom();
+    setTimeout(() => {
+      D.addMessage({ who: D.AI, text: D.AI_REPLIES[aiReplyIdx++ % D.AI_REPLIES.length] });
+      render();
+      scrollBottom();
+    }, 450);
+  }
+  function scrollBottom() { const s = el('chatScroll'); s.scrollTop = s.scrollHeight; }
+  function swipe(gid, dir) {
+    const g = D.group(gid);
+    const n = (g.active + dir + g.variants.length) % g.variants.length;
+    D.setVariant(gid, n); render();
+  }
+  function addSwipe(gid) { D.addVariant(gid); render(); }
+  function forkFromMsg(floor) {
+    const name = prompt(`在第 ${floor} 层之后分叉——新分支名称：`, `分叉·F${floor}`);
+    if (!name) return;
+    D.forkAt(floor, name.trim()); render();
+  }
+  function nativeBookmark(floor) {
+    const b = D.activeBranch();
+    el('adoptName').textContent = `${b.name} - 副本（ST 整文件复制）`;
+    el('adoptModal').classList.add('open');
+    el('adoptModal').dataset.floor = floor;
+    render();
+  }
+  function closeAdopt(adopt) {
+    const floor = +el('adoptModal').dataset.floor;
+    el('adoptModal').classList.remove('open');
+    if (adopt) { D.adoptNativeCopy(floor, `收编·F${floor}后`); }
+    else { toastLocal('未收编：原生复制文件保留（独立于家族）'); }
+    render();
+  }
+  function toastLocal(msg) { const t = el('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2400); }
+  function delFloor(gid) { if (confirm('删除该楼层？（全局生效，后续楼层重编号）')) { D.deleteGroup(gid); render(); } }
+  function renameB(id) { const b = D.branch(id); const n = prompt('重命名分支', b.name); if (n) { D.renameBranch(id, n); render(); } }
+  function delB(id) { if (confirm('删除该分支？其私有楼层将一并移除。')) { D.deleteBranch(id); render(); } }
+  function demoForkEnd() {
+    const b = D.activeBranch();
+    forkFromMsg(D.branchMaxFloor(b));
+  }
+  function editMsg(gid, vi) {
+    const g = D.group(gid);
+    const bubble = document.querySelector(`.msg-row[data-gid="${gid}"] [data-bubble]`);
+    if (!bubble) return;
+    const old = g.variants[vi].mes;
+    bubble.outerHTML = `<div class="editing" data-editing><textarea>${escapeHtml(old)}</textarea>
+      <div class="erow"><button onclick="cancelEdit(this,'${gid}',${vi})">✕</button>
+      <button class="ok" onclick="saveEdit(this,'${gid}',${vi})">✓ 保存</button></div></div>`;
+  }
+  function saveEdit(btn, gid, vi) {
+    const wrap = btn.closest('.editing');
+    const text = wrap.querySelector('textarea').value;
+    D.editVariant(gid, vi, text); render();
+  }
+  function cancelEdit(btn, gid, vi) { render(); }
+  function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+  /* ---------- 落盘视图 ---------- */
+  function fTab(t) {
+    fileTabMode = t;
+    ['main', 'meta', 'export'].forEach(x => el('ft' + x[0].toUpperCase() + x.slice(1)).classList.toggle('on', x === t));
+    renderFile();
+  }
+  function renderFile() {
+    const pre = el('fileView');
+    if (fileTabMode === 'main') {
+      let html = `<span class="ln">1</span><span class="c">// header（branches 见第二个标签）</span>\n`;
+      D.activeLines().forEach((L, i) => {
+        const o = L.line;
+        html += `<span class="ln">${i + 2}</span>{<span class="k">"name"</span>:<span class="s">"${o.name}"</span>,<span class="k">"is_user"</span>:<span class="n">${o.is_user}</span>,<span class="k">"mes"</span>:<span class="s">"${o.mes.replace(/"/g, '\\"')}"</span>` +
+          (o.swipes ? `,<span class="k">"swipes"</span>:[…],<span class="k">"swipe_id"</span>:<span class="n">${o.swipe_id}</span>` : '') + `} <span class="c">← F${L.floor}</span>\n`;
+      });
+      pre.innerHTML = html;
+    } else if (fileTabMode === 'meta') {
+      const m = D.branchesData();
+      pre.innerHTML = `<span class="ln">1</span>{ <span class="k">"chat_metadata"</span>: { …, <span class="k">"extensions"</span>: { …, <span class="k">"branches"</span>:\n` +
+        `<span style="color:#c9d1d9">${escapeHtml(JSON.stringify(m, null, 1))}</span>\n    } } }\n` +
+        `<span class="c">// 只有非活跃分支的组在这里；活跃分支的组就是主线性数组，不重复存。</span>`;
+    } else {
+      let html = `<span class="c">// 增量导出：纯标准 JSONL，无任何插件痕迹，vanilla ST 可直接使用。</span>\n`;
+      html += `<span class="ln">1</span>{<span class="k">"chat_metadata"</span>:{…}}\n`;
+      D.activeLines().forEach((L, i) => {
+        html += `<span class="ln">${i + 2}</span>{<span class="k">"name"</span>:<span class="s">"${L.line.name}"</span>,<span class="k">"mes"</span>:<span class="s">"${L.line.mes.replace(/"/g, '\\"')}"</span>,…}\n`;
+      });
+      pre.innerHTML = html;
+    }
+  }
+
+  /* ---------- 绑定 ---------- */
+  el('send').onclick = send;
+  el('inp').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+  el('btnDrawer').onclick = () => { el('drawer').classList.toggle('open'); el('btnDrawer').classList.toggle('on'); };
+  el('drawerClose').onclick = () => { el('drawer').classList.remove('open'); el('btnDrawer').classList.remove('on'); };
+  el('btnFile').onclick = () => { el('fileOverlay').classList.toggle('open'); renderFile(); };
+  D.onExplain(() => { renderFile(); });
+
+  render();
+</script>
+</body>
+</html>

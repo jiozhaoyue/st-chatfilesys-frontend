@@ -1,0 +1,6 @@
+{
+  "name": "chatfilesys-extension",
+  "private": true,
+  "type": "module",
+  "description": "ChatFilesys 前端扩展。type:module 仅供 Node 单测以 ESM 加载 core/；ST 扩展加载器只读 manifest.json，不受此文件影响。"
+}
