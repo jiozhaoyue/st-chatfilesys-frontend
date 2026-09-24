@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>ChatFilesys mock 宿主（e2e 用，file:// 可跑）</title>
+<!--
+  纯库模式 e2e 替代宿主（design.md §8.4）：
+  模拟 Luker 前端最小面——getContext()/事件/Popup 缺省降级，chat 数组渲染到 <pre>。
+  fetch 走 seam：读请求被拦截从 IndexedDB 档拼装（伪装 jsonl），
+  写请求被拦截转写库。页面用动态 import 加载扩展源码（file:// 同目录）。
+-->
+<style>
+  body { font-family: monospace; padding: 16px; background: #111; color: #eee; }
+  #log { white-space: pre-wrap; font-size: 12px; }
+  button { margin: 4px; }
+</style>
+</head>
+<body>
+<h3>ChatFilesys 纯库模式 mock 宿主</h3>
+<div>
+  <button id="btn-open">打开聊天（fetch /api/chats/get）</button>
+  <button id="btn-append">追加一条消息（fetch /api/chats/append）</button>
+  <button id="btn-status">打印状态</button>
+</div>
+<div id="chat"></div>
+<pre id="log"></pre>
+
+<script type="module">
+// —— mock 宿主最小面（缺什么降级什么，扩展靠 CAP 检测自适应）——
+const log = (msg) => { document.getElementById('log').textContent += msg + '\n'; };
+window.__mockState = { chat: [], header: null, saved: [] };
+
+// mock 官方通道后端：内存服务器（containers 按 file_name 存 chat 数组，模拟 /api/chats/*）
+const containers = new Map();
+window.__nativeFetch = async (url, init) => {
+  const body = init?.body ? JSON.parse(init.body) : {};
+  log(`[native-fetch] ${url}`);
+  if (url.includes('chats/save')) {
+    containers.set(body.file_name, body.chat);
+    return new Response(JSON.stringify({ ok: true, integrity: 'x' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }
+  if (url.includes('chats/get')) {
+    const chat = containers.get(body.file_name);
+    if (!chat) return new Response(JSON.stringify({ new_chat: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify(chat), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }
+  return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+};
+
+// 动态加载扩展 seam + 适配器（server 根=仓库根，绝对路径引用扩展源码）
+const base = '/public/scripts/extensions/third-party/chatfilesys';
+const { installSeam } = await import(`${base}/core/seam.js`).catch((e) => { log('import seam 失败: ' + e.message); return {}; });
+const { createStorageAdapter } = await import(`${base}/core/storage/adapter.js`).catch((e) => { log('import adapter 失败: ' + e.message); return {}; });
+
+// 选档（浏览器有 indexedDB → 档3；有 fetch → 档2 official——本 mock 走 official，
+// 因为 nativeFetch 存在；official 档的容器读写会走 window.__nativeFetch 被 seam 放行的部分……
+// 实际上 official 档内部用 ctx.fetch = 本页传入的 nativeFetch，绕开 seam，天然无环。）
+const { tier, adapter, dispose } = await createStorageAdapter({
+  fetch: window.__nativeFetch,
+  log: console.warn,
+});
+log(`[host] 存储档位: ${tier}`);
+
+const seam = installSeam(adapter, { log: console.warn });
+log('[host] seam 已安装');
+
+// 先手工建一个家族（模拟导入旅程产物）：直接走 adapter（不经 seam，避免环）
+const fam = {
+  familyId: 'f-mock1', chatKey: 'av-mock::mock1.jsonl', characterId: 'c-mock', name: 'mock1', integrity: 1,
+  branches: [{ id: 'b_main', name: '主分支', is_default: true, fork_floor: 0, parent_branch_id: null }],
+  branchPaths: { b_main: { 1: 'g1', 2: 'g2' } },
+  model: null,
+};
+fam.model = { active_branch: 'b_main', branches: [{ id: 'b_main', name: '主分支', is_default: true, fork_base: 0, path: { 1: 'g1', 2: 'g2' } }], groups: {} };
+// official 档需要容器存在 + knownByKey 登记——写入容器
+{
+  const header = { user_name: 'unused', chat_metadata: { extensions: { cfsys_family: fam } } };
+  const rows = [
+    { floorNo: 1, variantId: 'g1', seq: 0, content: '{"name":"我","is_user":true,"mes":"你好","send_date":1}', contentHash: null, sendDate: 1 },
+    { floorNo: 2, variantId: 'g2', seq: 0, content: '{"name":"AI","is_user":false,"mes":"晚上好","send_date":2}', contentHash: null, sendDate: 2 },
+  ];
+  await window.__nativeFetch('/api/chats/save', {
+    method: 'POST',
+    body: JSON.stringify({ avatar_url: '__cfsys__', file_name: '__cfsys__f-mock1.jsonl', chat: [header, ...rows.map(JSON.stringify)], force: true }),
+  });
+  // knownByKey 登记（official 档按 chatKey 命中需先 loadFamily 一次——直接按 familyId 建档）
+  await adapter.loadFamily({ familyId: 'f-mock1' });
+  log('[host] 家族容器已就位');
+}
+
+document.getElementById('btn-open').onclick = async () => {
+  const res = await fetch('/api/chats/get', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ avatar_url: 'av-mock', file_name: 'mock1.jsonl' }),
+  });
+  const data = await res.json();
+  window.__mockState.chat = data.slice(1);
+  window.__mockState.header = data[0];
+  document.getElementById('chat').innerHTML =
+    '<pre>' + JSON.stringify(data, null, 1).slice(0, 3000) + '</pre>';
+  log(`[host] 打开聊天：${window.__mockState.chat.length} 行，header 含模型: ${Boolean(data[0]?.chat_metadata?.extensions?.chatfilesys)}`);
+};
+
+document.getElementById('btn-append').onclick = async () => {
+  const res = await fetch('/api/chats/append', {
+    method: 'POST',
+    body: JSON.stringify({
+      avatar_url: 'av-mock', file_name: 'mock1.jsonl', integrity: window.__mockState.header?.chat_metadata?.extensions?.chatfilesys?.integrity,
+      messages: [{ name: '我', is_user: true, mes: '新消息' + Date.now() % 100, send_date: Date.now() }],
+    }),
+  });
+  const r = await res.json();
+  log(`[host] append 响应: ${JSON.stringify(r)}`);
+};
+
+document.getElementById('btn-status').onclick = async () => {
+  const f = await adapter.loadFamily({ familyId: 'f-mock1' });
+  const { floors } = await adapter.loadFloors({ familyId: 'f-mock1', from: 0, limit: 100 });
+  log(`[host] 库内家族 integrity=${f?.integrity} 楼层行=${floors.length}`);
+};
+
+window.__seam = seam;
+window.__adapter = adapter;
+window.__disposeAll = () => { seam.dispose(); dispose?.(); };
+</script>
+</body>
+</html>

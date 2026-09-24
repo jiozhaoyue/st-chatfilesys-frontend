@@ -26,6 +26,9 @@ import { Popup, callGenericPopup, POPUP_RESULT, POPUP_TYPE } from '../../../popu
 import { enableForChat, registerAppendedGroup, createBranch, renameBranch, deleteBranch, getBranch, getActive, maxFloor, adoptNativeCopy } from './core/branches.js';
 import { planSwitch, planDeleteFloor } from './core/projection.js';
 import { createChatWriter } from './core/chat-writer.js';
+import { installSeam } from './core/seam.js';
+import { createStorageAdapter } from './core/storage/adapter.js';
+import { modelFromStore } from './core/store-bridge.js';
 import { getActiveBranch, branchMaxFloor } from './ui/common.js';
 import { createPopupContent } from './ui/popup.js';
 import { injectMessageTools, injectAllMessages } from './ui/marker.js';
@@ -68,10 +71,69 @@ function loadSettings() {
     if (typeof extension_settings[MODULE_NAME].auto_export !== 'boolean') {
         extension_settings[MODULE_NAME].auto_export = false;
     }
+    // 纯库模式开关（design.md §8.3：'off'|'pure'，默认 off，安装旅程引导开启）
+    if (extension_settings[MODULE_NAME].storage_mode !== 'pure') {
+        extension_settings[MODULE_NAME].storage_mode = 'off';
+    }
 }
 
 function autoExportEnabled() {
     return Boolean(extension_settings[MODULE_NAME]?.auto_export);
+}
+
+function pureDbMode() {
+    return extension_settings[MODULE_NAME]?.storage_mode === 'pure';
+}
+
+/* ---------------- 纯库模式：存储适配器 + seam 接缝（design.md §8.3） ---------------- */
+
+let storageState = null; // { tier, adapter, dispose, seam }
+
+/**
+ * 启用纯库模式：选档 → 装 seam（拦截先于聊天 get 就绪）。
+ * 全程 try/catch 静默降级（L0-11）：失败仅 console.warn，插件其余功能照常。
+ */
+async function enablePureDb() {
+    if (storageState) return storageState;
+    try {
+        const { tier, adapter, dispose } = await createStorageAdapter({
+            fetch: (...args) => globalThis.fetch(...args),
+            log: console.warn,
+        });
+        const seam = installSeam(adapter, { log: console.warn });
+        storageState = { tier, adapter, dispose, seam };
+        console.log(`[chatfilesys] 纯库模式已启用（存储档位：${tier}）`);
+        renderStorageBadge();
+        return storageState;
+    } catch (e) {
+        console.warn('[chatfilesys] 纯库模式启用失败，保持 JSONL 增强模式:', e);
+        return null;
+    }
+}
+
+/** 关闭纯库模式：卸 seam + 释放适配器 */
+function disablePureDb() {
+    if (!storageState) return;
+    try {
+        storageState.seam?.dispose();
+        storageState.dispose?.();
+    } catch (e) {
+        console.warn('[chatfilesys] 纯库模式卸载异常:', e);
+    }
+    storageState = null;
+    renderStorageBadge();
+}
+
+/** 设置页存储档位徽章 */
+function renderStorageBadge() {
+    const el = document.querySelector('#chatfilesys-storage-badge');
+    if (!el) return;
+    if (!pureDbMode()) {
+        el.innerHTML = '<span class="chatfilesys-badge">存储：JSONL 增强模式</span>';
+        return;
+    }
+    const tierName = { authority: 'Authority SQL', official: '官方通道', idb: 'IndexedDB 缓存' }[storageState?.tier] || '未就绪';
+    el.innerHTML = `<span class="chatfilesys-badge">存储：纯库 · ${tierName}</span>`;
 }
 
 /* ---------------- 模型读写 ---------------- */
@@ -144,6 +206,7 @@ let settingsStatusEl = null;
 function renderSettingsStatus() {
     const el = settingsStatusEl?.[0] || settingsStatusEl;  // jQuery 对象或原生元素均可
     if (!el) return;
+    renderStorageBadge();
     const v = currentView();
     if (v.isGroupChat) {
         el.innerHTML = '<span class="chatfilesys-badge">群聊：分支功能不适用</span>';
@@ -632,6 +695,19 @@ function bindSettingsEvents(settingsRoot) {
         extension_settings[MODULE_NAME].auto_export = Boolean(this.checked);
         toastr.info(`保存后自动导出已${this.checked ? '开启' : '关闭'}`, '聊天文件系统');
     });
+    // 纯库模式开关（N2：安装旅程引导开启；此处为手动开关入口）
+    settingsRoot.on('change', '#chatfilesys-pure-db', async function () {
+        const on = Boolean(this.checked);
+        extension_settings[MODULE_NAME].storage_mode = on ? 'pure' : 'off';
+        if (on) {
+            await enablePureDb();
+            toastr.info('纯库模式已开启——新聊天将存入数据库；存量聊天经管理面板导入。', '聊天文件系统');
+        } else {
+            disablePureDb();
+            toastr.info('已切回 JSONL 增强模式。', '聊天文件系统');
+        }
+        renderAll();
+    });
 }
 
 /* ---------------- 全局入口（PRD 决策 #7：设置页按钮 / /cb / Alt+B） ---------------- */
@@ -665,12 +741,18 @@ export async function init() {
     loadSettings();
     detectCapabilities();
 
+    // 纯库模式：storage_mode='pure' 时先装 seam（拦截须先于任何聊天 get 就绪，design.md §8.3）
+    if (pureDbMode()) {
+        await enablePureDb();
+    }
+
     try {
         const html = await $.get(`${extensionFolderPath}/settings.html`);
         $('#extensions_settings').append(html);
         const settingsRoot = $('#chatfilesys-settings .chatfilesys-settings-content');
         settingsStatusEl = $('#chatfilesys-settings .chatfilesys-settings-status');
         $('#chatfilesys-auto-export').prop('checked', autoExportEnabled());
+        $('#chatfilesys-pure-db').prop('checked', pureDbMode());
         bindActions(settingsRoot[0]);
         bindSettingsEvents(settingsRoot);
     } catch (e) {
