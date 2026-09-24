@@ -64,12 +64,20 @@ export function installSeam(adapter, opts = {}) {
     const log = opts.log ?? console.warn;
     const originalFetch = globalThis.fetch;
 
-    /** 读路径：chats/get → 库分片读 → [header, ...rows] */
+    /** 读路径：chats/get → 库分片读 → 活跃分支投影 → [header, ...rows] */
     async function handleGet(body) {
         const chatKey = normalizeChatKey(body?.avatar_url, body?.file_name);
         const family = await adapter.loadFamily({ chatKey });
         if (!family) return null; // 未接管：透传原生路径
+        const active = family.model?.branches?.find((b) => b.id === family.model?.active_branch)
+            || family.model?.branches?.[0];
+        const activePath = active?.path || null;
         const { floors } = await adapter.loadFloors({ familyId: family.familyId, from: 0, limit: pageSize });
+        // 投影过滤：body = 活跃分支 path 引用的行（导入合并/分叉产生的非活跃变体行不进 body）
+        const rows = (activePath
+            ? floors.filter((f) => activePath[f.floorNo] === f.variantId)
+            : floors
+        ).map((f) => JSON.parse(f.content));
         const header = {
             user_name: 'unused',
             character_name: 'unused',
@@ -79,7 +87,6 @@ export function installSeam(adapter, opts = {}) {
                 },
             },
         };
-        const rows = floors.map((f) => JSON.parse(f.content));
         return jsonResponse([header, ...rows]);
     }
 
@@ -238,6 +245,10 @@ export function installSeam(adapter, opts = {}) {
     return {
         dispose() {
             if (globalThis.fetch === interceptingFetch) globalThis.fetch = originalFetch;
+        },
+        /** 原生 fetch 通道（绕开拦截）：导入旅程读源 jsonl / 删源文件必须走这里 */
+        native(input, init) {
+            return originalFetch(input, init);
         },
     };
 }

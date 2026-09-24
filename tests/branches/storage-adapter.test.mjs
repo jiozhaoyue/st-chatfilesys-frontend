@@ -150,7 +150,7 @@ test('档2：官方通道容器往返（saveFloors → loadFloors 一致）', as
         }
         return { ok: true, json: async () => ({}) };
     };
-    const adapter = createOfficialAdapter({ fetch: doFetch });
+    const adapter = await createOfficialAdapter({ fetch: doFetch });
     // 创造家族：先手动放一个容器（模拟导入旅程写入）
     const meta = {
         familyId: 'f9', chatKey: 'av1::chat9', characterId: 'c1', name: 'chat9', integrity: 1,
@@ -226,7 +226,7 @@ test('档2：saveModel 容器元数据持久化模型（meta.model 往返不丢�
         }
         return { ok: true, json: async () => ({}) };
     };
-    const adapter = createOfficialAdapter({ fetch: doFetch });
+    const adapter = await createOfficialAdapter({ fetch: doFetch });
     const meta = {
         familyId: 'f9', chatKey: 'av1::chat9', characterId: 'c1', name: 'chat9', integrity: 1,
         branches: [{ id: 'b_main', name: '主分支', is_default: true, fork_floor: 0 }],

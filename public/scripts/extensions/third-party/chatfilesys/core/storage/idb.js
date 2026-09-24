@@ -107,6 +107,32 @@ export async function createIdbAdapter(ctx = {}) {
             return assembleFamily(meta);
         },
 
+        async createFamily({ family }) {
+            const existing = await loadMeta(family.familyId);
+            if (existing) return { ok: false, reason: 'familyId-exists' };
+            if (family.chatKey != null) {
+                const all = await reqAsPromise(tx(db, 'families', 'readonly').getAll());
+                if (all.some((f) => f.chatKey === family.chatKey)) return { ok: false, reason: 'chatKey-exists' };
+            }
+            const meta = {
+                familyId: family.familyId, chatKey: family.chatKey ?? null,
+                characterId: family.characterId ?? '', name: family.name ?? '',
+                integrity: family.integrity ?? 1, updatedAt: Date.now(),
+                branches: family.branches || [], branchPaths: family.branchPaths || {},
+            };
+            await putMeta(meta);
+            return { ok: true, familyId: family.familyId, integrity: meta.integrity };
+        },
+
+        async bindChatKey({ familyId, chatKey }) {
+            const meta = await loadMeta(familyId);
+            if (!meta) return { ok: false, reason: 'family-not-found' };
+            meta.chatKey = chatKey;
+            meta.updatedAt = Date.now();
+            await putMeta(meta);
+            return { ok: true };
+        },
+
         async renameFamily({ familyId, newName }) {
             const meta = await loadMeta(familyId);
             if (!meta) return { ok: false, reason: 'family-not-found' };

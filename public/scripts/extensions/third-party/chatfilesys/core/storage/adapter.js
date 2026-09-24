@@ -8,6 +8,8 @@
  *                  branches:[{id,name,is_default,fork_floor,parent_branch_id}],
  *                  branchPaths: { branchId: { floorNo: variantId } },
  *                  model }  // model = store-bridge 桥接出的现有 chatfilesys 模型形态
+ *   createFamily({ family }) -> { ok, familyId, integrity }（导入旅程建档；familyId 冲突返回 {ok:false}）
+ *   bindChatKey({ familyId, chatKey }) -> { ok }（official 档重启后重联：chatKey→familyId 登记进容器 meta）
  *   renameFamily({ familyId, newName }) -> { ok, integrity }
  *   deleteFamily({ familyId }) -> { ok }
  *   loadFloors({ familyId, from, limit }) -> { floors:[{floorNo,variantId,seq,content,contentHash,sendDate}], hasMore }
@@ -51,7 +53,7 @@ export async function createStorageAdapter(ctx = {}) {
     // 档2：官方 /api/chats/* 通道（隐藏聊天容器）
     if (typeof ctx.fetch === 'function') {
         try {
-            const adapter = createOfficialAdapter(ctx);
+            const adapter = await createOfficialAdapter(ctx);
             return { tier: 'official', adapter, dispose: adapter.dispose };
         } catch (e) {
             log('[chatfilesys-storage] 官方通道档初始化失败，降级 IndexedDB:', e);

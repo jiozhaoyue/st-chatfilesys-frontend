@@ -171,6 +171,40 @@ CREATE TABLE IF NOT EXISTS branch_paths (
             return assembleFamily(f);
         },
 
+        async createFamily({ family }) {
+            await ensureMigrated();
+            const existing = await loadFamilyRow(family.familyId);
+            if (existing) return { ok: false, reason: 'familyId-exists' };
+            if (family.chatKey != null) {
+                const byKey = await q('SELECT id FROM families WHERE chat_key = ?', [family.chatKey]);
+                if (byKey?.length) return { ok: false, reason: 'chatKey-exists' };
+            }
+            const now = Date.now();
+            await q(
+                'INSERT INTO families (id, chat_key, character_id, name, integrity, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                [family.familyId, family.chatKey ?? '', family.characterId ?? '', family.name ?? '', 1, now, now],
+            );
+            for (const b of family.branches || []) {
+                await q(
+                    'INSERT INTO branches (family_id, branch_id, parent_branch_id, name, fork_floor, is_default) VALUES (?, ?, ?, ?, ?, ?)',
+                    [family.familyId, b.id, b.parent_branch_id ?? null, b.name ?? b.id, b.fork_floor ?? 0, b.is_default ? 1 : 0],
+                );
+                for (const [floorNo, variantId] of Object.entries(family.branchPaths?.[b.id] || {})) {
+                    await q(
+                        'INSERT INTO branch_paths (family_id, branch_id, floor_no, variant_id) VALUES (?, ?, ?, ?)',
+                        [family.familyId, b.id, Number(floorNo), variantId],
+                    );
+                }
+            }
+            return { ok: true, familyId: family.familyId, integrity: 1 };
+        },
+
+        async bindChatKey({ familyId, chatKey }) {
+            await ensureMigrated();
+            await q('UPDATE families SET chat_key = ?, updated_at = ? WHERE id = ?', [chatKey, Date.now(), familyId]);
+            return { ok: true };
+        },
+
         async renameFamily({ familyId, newName }) {
             await ensureMigrated();
             await q('UPDATE families SET name = ?, updated_at = ? WHERE id = ?', [newName, Date.now(), familyId]);

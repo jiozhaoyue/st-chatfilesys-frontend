@@ -29,6 +29,8 @@ import { createChatWriter } from './core/chat-writer.js';
 import { installSeam } from './core/seam.js';
 import { createStorageAdapter } from './core/storage/adapter.js';
 import { modelFromStore } from './core/store-bridge.js';
+import { createTrash } from './core/trash.js';
+import { runImport } from './core/importer.js';
 import { getActiveBranch, branchMaxFloor } from './ui/common.js';
 import { createPopupContent } from './ui/popup.js';
 import { injectMessageTools, injectAllMessages } from './ui/marker.js';
@@ -87,7 +89,14 @@ function pureDbMode() {
 
 /* ---------------- 纯库模式：存储适配器 + seam 接缝（design.md §8.3） ---------------- */
 
-let storageState = null; // { tier, adapter, dispose, seam }
+let storageState = null; // { tier, adapter, dispose, seam, trash }
+
+/** 回收站实例（纯库模式启用后可用；backend = adapter 本身即契约实现者） */
+function getTrash() {
+    if (!storageState) return null;
+    if (!storageState.trash) storageState.trash = createTrash({ backend: storageState.adapter });
+    return storageState.trash;
+}
 
 /**
  * 启用纯库模式：选档 → 装 seam（拦截先于聊天 get 就绪）。
@@ -656,6 +665,98 @@ function registerEventListeners() {
     eventSource.on(event_types.CHAT_BRANCH_CREATED, adoptNativeBranchFlow);
 }
 
+/* ---------------- 导入旅程（R3/AC4：存量 jsonl → 库） ---------------- */
+
+/** 官方端点封装（native fetch 直连，绕开 seam 拦截——读源/删源必须原生路径） */
+function importApi() {
+    const c = ctx();
+    const nativeFetch = (...args) => storageState?.seam?.native?.(...args) ?? globalThis.fetch(...args);
+    const headers = () => (typeof c.getRequestHeaders === 'function' ? c.getRequestHeaders() : { 'Content-Type': 'application/json' });
+    const char = c.characters?.[c.characterId] || {};
+    return {
+        /** 枚举当前角色全部聊天（displayPastChats 先例：空 query） */
+        async searchChats() {
+            const res = await nativeFetch('/api/chats/search', {
+                method: 'POST',
+                headers: headers(),
+                body: JSON.stringify({ query: '', avatar_url: char.avatar }),
+            });
+            if (!res.ok) throw new Error(`/api/chats/search HTTP ${res.status}`);
+            return res.json();
+        },
+        /** 读源 jsonl 全文（raw 供回收站快照；lines 供指纹合并） */
+        async readChatFile(fileName) {
+            const res = await nativeFetch('/api/chats/get', {
+                method: 'POST',
+                headers: headers(),
+                body: JSON.stringify({ ch_name: char.name, file_name: fileName, avatar_url: char.avatar }),
+            });
+            if (!res.ok) return null;
+            const data = await res.json();
+            if (!Array.isArray(data)) return null;
+            return { header: data[0], lines: data.slice(1), raw: data.map(JSON.stringify).join('\n') };
+        },
+        /** 删源 jsonl（PARDON：仅回收站快照成功后调用） */
+        async deleteChatFile(fileName) {
+            const res = await nativeFetch('/api/chats/delete', {
+                method: 'POST',
+                headers: headers(),
+                body: JSON.stringify({ chatfile: `${fileName}.jsonl`, avatar_url: char.avatar }),
+            });
+            return { ok: res.ok };
+        },
+        avatarUrl: char.avatar,
+        characterId: c.characterId,
+    };
+}
+
+/**
+ * 导入旅程入口（管理面板/设置页按钮触发）。
+ * 全程依赖注入；确认弹窗 = PARDON 门禁（默认勾选删除，取消保留 jsonl）。
+ */
+async function importJsonlFlow() {
+    if (!storageState) {
+        toastr.warning('请先开启纯库模式，再导入存量聊天。', '聊天文件系统');
+        return;
+    }
+    const c = ctx();
+    const api = importApi();
+    const trash = getTrash();
+    if (!trash) { toastr.error('回收站未就绪，导入中止。', '聊天文件系统'); return; }
+
+    // 删除源文件确认（N2 用户旅程：默认删 → 回收站 7 天）
+    const deleteSources = await popupConfirm(
+        `将检测本角色的存量聊天（不含当前打开的聊天与库隐容器），智能合并入库。\n\n` +
+        '完成后删除源 jsonl 文件？\n（推荐：删除——副本先进回收站保留 7 天，可随时还原）',
+    );
+
+    const result = await runImport({
+        adapter: storageState.adapter,
+        trash,
+        api,
+        confirm: async () => true, // 上面的确认已覆盖 PARDON 门禁
+        progress: (p) => {
+            if (p.phase === 'importing') toastr.info(`正在导入 ${p.index + 1}/${p.total}：${p.fileName}`, '聊天文件系统', { timeOut: 1200 });
+        },
+    }, {
+        currentFileName: String(c.chatId || ''),
+        deleteSources,
+        characterId: api.characterId,
+        avatarUrl: api.avatarUrl,
+    });
+
+    const parts = [`已合并 ${result.totalMerged} 条`];
+    if (result.families.length) parts.push(`新建家族 ${result.families.length} 个`);
+    if (result.failed.length) parts.push(`失败 ${result.failed.length} 个（${result.failed.map((x) => x.fileName).slice(0, 3).join('、')}${result.failed.length > 3 ? '…' : ''}）`);
+    if (result.totalFiles === 0) {
+        toastr.info('未检测到可导入的存量聊天。', '聊天文件系统');
+    } else {
+        toastr.success(`${parts.join('，')}。`, '聊天文件系统', { timeOut: 6000 });
+        console.log(`[${MODULE_NAME}] 导入结果:`, result);
+    }
+    renderAll();
+}
+
 /* ---------------- 交互委托（设置页 + 弹窗内容共用同一套 data-action） ---------------- */
 
 async function handleAction(action, el) {
@@ -670,6 +771,7 @@ async function handleAction(action, el) {
         case 'delete-branch': return await deleteBranchFlow(branchId);
         case 'delete-floor': return await deleteFloorFlow(floor);
         case 'export': return await exportCurrentBranch();
+        case 'run-import': return await importJsonlFlow();
         default: return undefined;
     }
 }

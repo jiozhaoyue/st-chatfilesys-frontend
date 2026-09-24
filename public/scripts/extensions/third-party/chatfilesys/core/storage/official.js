@@ -11,6 +11,7 @@
 
 const PREFIX = '__cfsys__';
 const TRASH_PREFIX = '__cfsys__trash__';
+const INDEX_NAME = '__cfsys__index.jsonl'; // 固定名索引容器：chatKey→familyId 持久登记（重启重联）
 
 /** hiddenChatName：家族的隐藏聊天文件名 */
 function hiddenName(familyId) {
@@ -24,9 +25,9 @@ function trashName(trashId) {
 
 /**
  * @param {{fetch: Function, log?: Function}} ctx
- * @returns {StorageAdapterAPI}（契约见 adapter.js JSDoc）
+ * @returns {Promise<StorageAdapterAPI>}（契约见 adapter.js JSDoc；内部先做持久索引重联）
  */
-export function createOfficialAdapter(ctx) {
+export async function createOfficialAdapter(ctx) {
     const doFetch = ctx.fetch;
     const log = ctx.log ?? console.warn;
 
@@ -46,6 +47,53 @@ export function createOfficialAdapter(ctx) {
 
     function remember(family) {
         if (family?.chatKey) knownByKey.set(family.chatKey, family);
+    }
+
+    /* ---- 持久 chatKey 索引（固定名索引容器，official 档重启重联）---- */
+
+    /** 读持久索引：{chatKey: familyId}；容器缺失/损坏 → {} */
+    async function readIndex() {
+        const c = await readContainer(INDEX_NAME).catch(() => null);
+        const rows = c?.floorRows || [];
+        const idx = {};
+        for (const r of rows) {
+            if (r?.chatKey && r?.familyId) idx[r.chatKey] = r.familyId;
+        }
+        return idx;
+    }
+
+    /** 全量重写索引容器（行 = {chatKey, familyId}） */
+    async function writeIndex(pairs) {
+        const rows = (pairs || []).map(([chatKey, familyId]) => ({
+            floorNo: 1, variantId: 'i1', seq: 0,
+            content: JSON.stringify({ chatKey, familyId }), contentHash: null, sendDate: null,
+        }));
+        await writeContainer(INDEX_NAME, { kind: 'index' }, rows);
+    }
+
+    /** merge 记忆态与持久索引并落盘（失败仅 warn 不阻断：本会话仍可用 knownByKey 工作） */
+    async function persistIndex() {
+        const pairs = [...knownByKey.entries()].map(([k, f]) => [k, f.familyId]);
+        try {
+            await writeIndex(pairs);
+        } catch (e) {
+            log('[chatfilesys-official] chatKey 索引持久化失败（不阻断）:', e);
+        }
+    }
+
+    /** 启动重联：读持久索引 → 预热 knownByKey（各家族容器存在性不在此验证） */
+    async function warmupFromIndex() {
+        try {
+            const idx = await readIndex();
+            for (const [chatKey, familyId] of Object.entries(idx)) {
+                if (!knownByKey.has(chatKey)) {
+                    // 只登记身份占位（chatKey→familyId 指针），容器内容首次使用时读
+                    knownByKey.set(chatKey, { familyId, chatKey });
+                }
+            }
+        } catch (e) {
+            log('[chatfilesys-official] 持久索引读取失败（首启正常）:', e);
+        }
     }
 
     /** 读取隐藏聊天容器 → { header, floorRows, meta } */
@@ -140,6 +188,8 @@ export function createOfficialAdapter(ctx) {
         return arr.map((r, i) => ({ ...r, floorNo: i + 1 })); // 行序即楼层号，重排后统一重编号
     }
 
+    await warmupFromIndex();
+
     return {
         async listFamilies() {
             // 档2 无列表端点：返回会话已知家族（导入旅程显式登记过的）
@@ -151,6 +201,30 @@ export function createOfficialAdapter(ctx) {
         async loadFamily(args) {
             const raw = await loadFamilyRaw(args);
             return raw?.family || null;
+        },
+
+        async createFamily({ family }) {
+            // 已存在同 familyId 容器 → 拒绝（导入旅程防重复建档）
+            const c = await readContainer(hiddenName(family.familyId)).catch(() => null);
+            if (c?.meta) return { ok: false, reason: 'familyId-exists' };
+            const meta = { ...family, integrity: family.integrity ?? 1 };
+            delete meta.model; // 建档时无模型本体，读路径派生
+            await writeContainer(hiddenName(family.familyId), meta, []);
+            remember(assembleFamily(meta, []));
+            await persistIndex();
+            return { ok: true, familyId: family.familyId, integrity: meta.integrity };
+        },
+
+        async bindChatKey({ familyId, chatKey }) {
+            const raw = await loadFamilyRaw({ familyId });
+            if (!raw) return { ok: false, reason: 'family-not-found' };
+            if (knownByKey.get(raw.family.chatKey)?.familyId === familyId) knownByKey.delete(raw.family.chatKey);
+            const meta = { ...raw.family, chatKey };
+            meta.branches = raw.family.branches; meta.branchPaths = raw.family.branchPaths;
+            await writeContainer(hiddenName(familyId), meta, raw.floorRows);
+            remember(assembleFamily(meta, raw.floorRows));
+            await persistIndex();
+            return { ok: true };
         },
 
         async renameFamily({ familyId, newName }) {
@@ -169,6 +243,7 @@ export function createOfficialAdapter(ctx) {
                 await api('chats/delete', { avatar_url: PREFIX, chatfile: hiddenName(familyId) });
             } catch (e) { log('[chatfilesys-official] 删除容器失败（可已不存在）:', e); }
             for (const [k, f] of knownByKey) if (f.familyId === familyId) knownByKey.delete(k);
+            await persistIndex();
             return { ok: true };
         },
 
