@@ -1,96 +1,93 @@
-# 后端插件规格说明书（独立仓库种子文档）
+# Authority 后端接入指导（ChatFilesys 纯数据库模式）
 
-> **本文档是另立后端插件仓库的种子规格**，由前端仓库（改名后 `st-chatfilesys-frontend`）在 2026-09-05 brainstorm 中产出。
-> **最高原则（用户裁定 R28）：只会是后端仓库追前端仓库进度，绝不反过来，一切以前端为先。** 前端仓库的 prd/design/implement 是需求权威；本文档描述后端如何服务前端，前端不迁就后端。
+> 本文档是 ChatFilesys 接入 [ST-Delegation-of-authority](https://github.com/Youzini-afk/ST-Delegation-of-authority)（下称 Authority）作为纯库模式第一档存储后端的指导书。
+> 定位依据：任务 09-24-realign-pure-db 裁定 N3/N9/N11——Authority 为三档适配器的档1（性能最佳、真分片库），**不绑定**（实测瓶颈则弃用，降级档2/档3 照常工作）。
+> 写作时间：2026-09-24。API 事实以 Authority 仓 README 与官方文档为准，接入时若与本文件冲突，以官方为准并回改本文件。
 
-## 一、术语表（用户裁定 R24，术语不得混用）
+## 一、Authority 是什么（对本插件的意义）
 
-| 术语 | 定义 | 层 |
-|------|------|-----|
-| **后端插件（Server Plugin）** | Luker 服务器插件：跑在 Luker Node 进程里的 JS 代码（即本仓库），暴露 HTTP API、执行服务端文件操作、托管数据库引擎 | 代码层 |
-| **数据库引擎（DB Engine）** | SQLite / PostgreSQL 等存储软件。本身不是插件，只能被后端插件进程访问（前端浏览器无法直连任何数据库） | 存储层 |
-| **数据库模式（DB Mode）** | 功能模式名：前端 + 后端插件 + 数据库引擎整体协同的聊天存储模式 | 功能 |
-| **JSONL 增强模式** | 不装后端插件、纯前端可用的模式；事实源 = 后端聊天 JSONL 文件（本插件的核心数据本来就住后端文件，浏览器存储从来不是事实源） | 功能 |
+Authority 是 ST 服务端插件，给第三方扩展提供统一后端能力 + 权限治理。对本插件关键的能力面：
 
-## 二、系统上下文
+| 能力 | SDK 入口 | 对纯库模式的价值 |
+|------|---------|----------------|
+| SQL 数据库 | `client.sql.*` | **档1 核心**：按用户×按扩展隔离的 SQLite，支持 migration/transaction/分页查询 |
+| 私有文件 | `client.fs.*` | **回收站（N15）落点**：按用户×扩展隔离的文件目录，jsonl 删除前移入、一键还原 |
+| 后台任务 | `client.jobs.*` | 导入旅程（大文件智能合并）、回收站过期清理的异步执行器 |
+| 事件流 | `client.events.subscribe()` | 多并发/多页签同步信号（SSE 推送） |
+| Trivium 图库 | `client.trivium.*` | 远期图结构（愿景低优先级）候选，MVP 不用 |
+| KV/Blob/HTTP | 其余 | 本插件 MVP 不使用 |
 
+## 二、接入姿态（权限与初始化）
+
+```js
+// 插件启动时初始化（可移植子集，禁用 Host Bridge —— AGENTS.md L0-12）
+const client = await window.STAuthority.AuthoritySDK.init({
+  extensionId: 'third-party/chatfilesys',
+  displayName: 'ChatFilesys',
+  version: '<插件版本>',
+  installType: 'local',
+  declaredPermissions: {
+    sql: { private: true },
+    fs: { private: true },   // 回收站目录
+    jobs: {}                  // 导入/清理后台任务
+  }
+});
 ```
-┌─ 浏览器 ─────────────────────┐   ┌─ 服务器（Luker Node 进程）─────────────┐
-│ 前端插件（st-chatfilesys-frontend）│   │ Luker 核心（零核心修改，只读其官方扩展机制）│
-│  ├ 分支树/投影/写路径（已有，复用）  │   │ 聊天文件 {chat}.jsonl（JSONL 增强模式事实源）│
-│  ├ 管理弹窗 UI / 消息旁轻量注入     │◄──┤ 后端插件（本仓库）                     │
-│  └ 浏览器 IndexedDB = 只读缓存增强  │API│  ├ 数据库引擎托管（抽象层：SQLite/PostgreSQL）│
-└──────────────────────────────┘   │  ├ 全局扫描/搜索服务（关系图/跨聊天搜索/发现）│
-                                   │  └ 跨文件结构操作（迁移/收编/归档/快照）      │
-                                   └────────────────────────────────────────┘
-```
 
-- **数据绝对存后端**（用户裁定 R13）：两种模式的事实源都在服务器（JSONL 文件或数据库）；浏览器存储只做缓存，可随时丢弃重建。
-- **没有后端插件时前端完整可用**（JSONL 增强模式）；装上后端插件 = 解锁数据库模式 + 服务端加速能力。后端是增强，不是依赖。
+- **特性检测顺序（N11 降级链）**：启动时依次探测 Authority SDK 存在 → init 成功 → `sql` 权限获批；任一失败 → 降级档2（官方通道分片）→ 档3（IndexedDB 缓存）。降级仅 `console.warn`，不阻断插件加载（L0-11/L0-12）。
+- **跨宿主纪律**：只用 Authority 可移植子集（SQL/fs/jobs/events 公开 API），禁用 Host Bridge（逐宿主打补丁机制，Luker 实测被版本门禁拒绝）。显式标注所用能力的宿主可用性。
+- **权限弹窗**：用户首次使用纯库模式时，Authority Security Center 弹权限请求；拒绝则走档2，UI 提示「数据库模式降级为官方通道」。
 
-## 三、功能范围（用户裁定 R25/R26）
+## 三、档1 SQL 适配器设计要点
 
-### 1. 数据库引擎托管
+### 3.1 库与迁移
+- 每用户一个 `chatfilesys` 库（Authority 按用户×扩展隔离）。
+- 建表走 `client.sql.migrate`，schema 以本任务 [design.md](.trellis/tasks/09-24-realign-pure-db/design.md) §2 为准（families / floors / branches / branch_paths 四表 + content_hash 索引）。
+- 迁移按无包袱铁律：版本升级时 schema 可破坏性变更 + `sql.backup` job 先行备份，不做旧格式兼容层。
 
-- **引擎抽象层双引擎**：默认 **SQLite**（嵌入式单文件、零部署、备份=拷文件），可选 **PostgreSQL**（独立服务器，多实例/大数据量场景）。抽象层接口一套，引擎适配器各一套
-- 库内容：聊天楼层（从 JSONL 导入）、分支树（branches 元数据镜像）、楼层组（swipe 组）——schema 必须**可无损导出标准 JSONL**（见约束）
-- **双写同步策略（用户裁定 R22，全部做成设置项）**：
-  - 默认：**写入时同步双写**（数据库 + 该家族的标准 JSONL 同步落盘）→ 库损坏时 JSONL 永远是完整副本
-  - 可选：只写数据库 + 手动导出 / 定时导出
-  - 库可随时从 JSONL 全量重建（JSONL 是兜底事实源）
-- 前端经后端插件 API 直读直写（大聊天性能收益的来源）
+### 3.2 查询纪律（并发与性能红线）
+- **禁止逐楼层查询**：加载一律按 floor_no 区间分页（`loadFloors(familyId, {from, limit})`），一次往返取一页。
+- **批量写分块提交**：导入/合并/重建类批量写按几百行一事务分块，禁止单事务长持写锁，防交互写被顶到 busy_timeout。
+- **长查询进 jobs**：全局扫描/搜索类查询走 `client.jobs` 或分页，不得阻塞交互路径。
+- **写队列串行化**：适配器内单写队列，交互写优先插队（多并发原则 N18）。
 
-### 2. 全局扫描/搜索服务端化
+### 3.3 事务与一致性
+- 结构操作（分叉/切换/删层）= 单事务内「投影 diff → 库写 → integrity 自增」原子完成。
+- integrity 乐观锁沿用宿主语义：冲突返回 409 → 前端重拉重放（design.md §3.4）。
 
-- 后端直接扫磁盘聊天文件/查库：**全局关系图**（所有家族 header 的 branches 元数据）、**跨聊天搜索**、**聊天发现**（按内容/角色/时间找聊天）
-- 前端逐文件拉取的降级路径保留（无后端插件时功能可用但慢）
+## 四、回收站（N15）落 Authority fs
 
-### 3. 跨文件结构操作服务端化
+- 位置：Authority 扩展私有目录 `trash/<character>/<原文件名>`（按用户×扩展隔离，天然满足「插件管理的服务端回收站」）。
+- 生命周期：导入完成后移入 → 保留 N 天（默认 7，设置项）→ 过期自动清理（jobs 定时扫描）→ 期间管理界面一键还原。
+- 还原 = 从 fs 复制回宿主聊天目录对应的聊天（经官方通道或引导用户手动放回）。还原后该聊天脱离纯库接管，回到原生形态。
+- 注意：Authority fs 是扩展私有沙箱，**不能**直接写宿主 `data/chats/` 目录；「还原到宿主目录」需经下载/导出动作或宿主端点，接入时实测确认路径。
 
-- **分支跨文件迁移**（分支连后代移到另一文件/家族）、**批量收编/迁移**（原生聊天批量转接管家族）、**家族整包导出/导入**（归档包：分支元数据+全楼层）、**聊天快照备份**（服务端快照目录，可回滚）
-- 服务端文件操作替代前端多次 patch（快且稳，天然原子）
+## 五、导入旅程（N2+N10+N15）中的 Authority 角色
 
-## 四、API 契约草案（前端期望的后端插件 API，命名可议）
+1. 检测存量：前端枚举宿主聊天列表（官方端点）+ 读各 jsonl（官方 `/api/chats/get`）。
+2. 智能合并：指纹对齐（content_hash + LCP，design.md §5）→ 库写入（§3.2 纪律）。
+3. jsonl 处置：移入 Authority fs 回收站（N15）；用户在旅程中可改「不删/双写」。
+4. 全程异步可取消，进度条 + 完成后「已合并 N 条，跨 M 个聊天」结果弹窗。
 
-> 以下为前端仓库 brainstorm 产出的**期望契约**，最终以两仓库协商为准；前端会写适配层，允许后端实现演进。
+## 六、性能基准（M3 校验点，N3 弃用判据）
 
-| 端点（草案） | 方法 | 用途 |
-|--------------|------|------|
-| `/api/chatfilesys/status` | GET | 能力探测：后端插件版本、引擎类型（sqlite/postgres）、库健康度 |
-| `/api/chatfilesys/db/query` | POST | 数据库模式直读（楼层/分支树/组，按家族/分支/楼层范围） |
-| `/api/chatfilesys/db/write` | POST | 直写（双写策略按设置执行） |
-| `/api/chatfilesys/db/rebuild` | POST | 从 JSONL 全量重建库 |
-| `/api/chatfilesys/scan/graph` | GET | 全局关系图（所有文件的 header branches 扫描） |
-| `/api/chatfilesys/scan/search` | POST | 跨聊天搜索（内容/角色/时间过滤） |
-| `/api/chatfilesys/ops/migrate-branch` | POST | 分支跨文件迁移 |
-| `/api/chatfilesys/ops/adopt-batch` | POST | 批量收编/迁移 |
-| `/api/chatfilesys/ops/family-export` | POST | 家族整包导出（归档包） |
-| `/api/chatfilesys/ops/family-import` | POST | 家族整包导入 |
-| `/api/chatfilesys/ops/snapshot` | POST/GET | 聊天快照备份/列出/回滚 |
+接入后必须实测并留档（M3 任务）：
+- 分片读 vs jsonl 整读（不同楼层量级：100/1k/10k 层）
+- fetch 往返粒度：单页 200 层加载延迟
+- 批量写吞吐（导入万层聊天）
+- 判据：Authority SQL 档若在这些基准上劣于档2（官方通道分片），按 N3 弃用或降优先档序。
 
-鉴权沿用 Luker 请求头机制（前端 `getContext().getRequestHeaders()`，含 CSRF）。
+## 七、数据主权与卸载（Open-14 未决项提示）
 
-## 五、硬约束（继承自前端 PRD，不可妥协）
+- 库与回收站都是 Authority 扩展私有资产。卸载 Authority 或本插件后，聊天数据仍在 Authority 数据目录，需经「导出 jsonl/zip」归还。
+- 接入时需在管理界面提供「全量导出/脱离 Authority」入口（M2 导出功能的延伸）。
+- 本节为设计约束提醒，最终交互形态待 M2 实施时与用户对齐。
 
-1. **零核心修改**：不改 Luker 源码、不覆盖核心路由，只用官方 server-plugin 机制（文档：https://luker.cups.moe/zh-CN/development/server-plugin.html ，立项时先抓取研读）
-2. **标准格式唯一权威**：数据库内 schema 与标准 JSONL 之间必须**双向无损**——任何时刻从库导出的 JSONL 能被 vanilla ST/Luker 原生打开；禁止发明第二种聊天格式
-3. **integrity 乐观锁语义沿用**：并发写冲突返回 409，客户端重拉重放（与核心行为一致）
-4. **增量优先**：服务端写操作尽量增量落盘（对齐 Luker 后端实时存储的既定方向），避免整文件重写
-5. **后端不发明需求**：后端仓库一切功能以本规格 + 前端仓库 implement.md 为准；前端没要的，不做
+## 八、接入步骤清单（M1-b 任务用）
 
-## 六、里程碑（跟随前端，R28）
-
-| 里程碑 | 触发条件 | 内容 |
-|--------|----------|------|
-| BP-0 立项 | 前端二期（UI 重构+树状图）完成 | 抓取官方 server-plugin 文档、仓库搭建、技术选型确认（better-sqlite3 vs 其他驱动、PG 驱动）、status 探测端点 |
-| BP-1 数据库模式 | BP-0 验收 | 引擎抽象层 + SQLite 适配器、库 schema、双写策略、query/write/rebuild API |
-| BP-2 扫描搜索 | BP-1 验收 | graph/search/discover API |
-| BP-3 结构操作+归档 | BP-2 验收 | 迁移/收编/整包导入导出/快照 |
-| BP-4 PostgreSQL | BP-3 验收（可选） | PG 适配器 |
-
-## 七、遗留调研项（后端仓库立项时处理）
-
-- [ ] Luker server-plugin 官方文档全量研读（加载机制、路由注册、npm 依赖、生命周期）
-- [ ] SQLite 驱动选型（better-sqlite3 同步 vs node:sqlite 内置 vs 其他）与 Luker 进程兼容性
-- [ ] 大库并发读写策略（WAL 模式等）
-- [ ] 前端 IndexedDB 缓存层与后端库的一致性协议（缓存失效/重建信号）
+- [ ] 读 Authority 仓 README + `third-party/st-authority-sdk` 文档，核对 SQL/fs/jobs API 签名（本文档 §1/§2 的 API 事实复核）
+- [ ] SQL 适配器实现（design.md §2 schema + §3 纪律）
+- [ ] fs 回收站模块（N15）
+- [ ] 特性检测 + 降级链（§2）
+- [ ] e2e：权限弹窗→授权→入库→聊天→还原 全旅程（对 Dev 实例）
+- [ ] 权限被拒 / Authority 未装 / SDK 版本不匹配 三条降级路径实测

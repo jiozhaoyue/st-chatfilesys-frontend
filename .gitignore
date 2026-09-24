@@ -5,6 +5,8 @@
 .github/
 .history/
 .archive/
+.agents/
+.codex/
 AGENTS.md
 .gitattributes
 

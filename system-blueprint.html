@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>系统蓝图 · 聊天文件分支系统（活文档）</title>
+<title>系统蓝图 · ChatFilesys 纯数据库模式（活文档）</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   :root {
@@ -16,21 +16,17 @@
   code, pre { font-family:'Cascadia Code','Consolas',monospace; }
 
   .wrap { max-width:1280px; margin:0 auto; padding:32px 28px 80px; }
-
-  /* ===== header ===== */
   .hero { border:1px solid var(--line); border-radius:12px; padding:28px 32px; background:linear-gradient(180deg,#11161d,#0d1117); margin-bottom:28px; }
   .hero .kicker { color:var(--dim); font-size:12px; letter-spacing:.12em; text-transform:uppercase; margin-bottom:6px; }
   .hero h1 { font-size:30px; color:#e6edf3; display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
   .hero h1 .sys { color:var(--blue); }
-  .hero .rename-hint { font-size:12px; color:var(--faint); font-weight:400; }
-  .hero p.lead { margin-top:10px; color:var(--dim); max-width:880px; }
+  .hero p.lead { margin-top:10px; color:var(--dim); max-width:900px; }
   .badges { display:flex; gap:8px; flex-wrap:wrap; margin-top:16px; }
   .badge { font-size:12px; padding:3px 10px; border-radius:999px; border:1px solid var(--line); color:var(--fg); background:var(--bg2); }
   .badge.ok { border-color:rgba(63,185,80,.4); color:var(--green); }
   .badge.warn { border-color:rgba(210,153,34,.4); color:var(--yellow); }
   .badge.info { border-color:rgba(88,166,255,.4); color:var(--blue); }
 
-  /* ===== sections ===== */
   nav.toc { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:26px; position:sticky; top:0; background:rgba(13,17,23,.92); backdrop-filter:blur(6px); padding:10px 0; z-index:50; border-bottom:1px solid var(--line); }
   nav.toc a { font-size:13px; padding:4px 12px; border-radius:6px; color:var(--dim); border:1px solid transparent; }
   nav.toc a:hover { color:var(--fg); background:var(--bg2); }
@@ -44,74 +40,11 @@
   .card h4 { font-size:13.5px; color:#e6edf3; margin-bottom:6px; }
   .card p, .card li { font-size:13px; color:var(--dim); }
   .card ul { padding-left:18px; }
-  .card .tag { font-size:11px; color:var(--faint); }
 
-  /* ===== architecture ===== */
   .arch { background:var(--bg2); border:1px solid var(--line); border-radius:10px; padding:22px; overflow-x:auto; }
   .arch pre { font-size:12.5px; line-height:1.75; color:var(--fg); }
   .arch .c { color:var(--green); } .arch .k { color:var(--blue); } .arch .d { color:var(--dim); }
 
-  /* ===== demo layout ===== */
-  .demo { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(0,1fr); gap:16px; align-items:start; }
-  @media (max-width:1100px){ .demo { grid-template-columns:1fr; } }
-  .panel { background:var(--bg2); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
-  .panel > .ph { padding:10px 16px; border-bottom:1px solid var(--line); font-size:13px; color:#e6edf3; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; background:var(--bg3); }
-  .panel > .ph .sub { color:var(--faint); font-size:11.5px; font-weight:400; }
-  .panel .pb { padding:16px; }
-
-  /* building */
-  .bld-toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
-  button.btn { background:var(--bg3); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:5px 12px; font-size:12.5px; cursor:pointer; }
-  button.btn:hover { border-color:var(--blue); color:var(--blue); }
-  button.btn.primary { border-color:rgba(88,166,255,.5); color:var(--blue); }
-  button.btn.danger:hover { border-color:var(--red); color:var(--red); }
-  .floorrow { display:flex; gap:0; align-items:stretch; margin-bottom:6px; position:relative; }
-  .fno { width:46px; flex-shrink:0; display:flex; flex-direction:column; align-items:center; justify-content:center; color:var(--faint); font-size:11px; border-right:1px solid #21262d; padding:4px 0; }
-  .fno .forkmark { color:var(--yellow); font-size:13px; }
-  .groups { display:flex; gap:10px; padding:6px 10px; flex:1; flex-wrap:wrap; }
-  .sg { background:var(--bg3); border:1px solid var(--line); border-left:3px solid var(--green); border-radius:8px; padding:8px 10px; min-width:150px; flex:1; max-width:280px; }
-  .sg.owned { border-left-color:var(--blue); }
-  .sg.idle { opacity:.45; }
-  .sg .sgh { display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:6px; }
-  .sg .sgh .gname { font-size:11px; font-weight:600; color:var(--dim); }
-  .sg .sgh .own { font-size:10px; padding:1px 6px; border-radius:99px; border:1px solid var(--line); color:var(--faint); }
-  .sg .sgh .own.shared { color:var(--green); border-color:rgba(63,185,80,.4); }
-  .msg { background:var(--bg); border:1px solid #21262d; border-radius:6px; padding:5px 8px; font-size:12px; margin-bottom:4px; cursor:pointer; display:flex; gap:8px; align-items:baseline; }
-  .msg:hover { border-color:var(--blue); }
-  .msg.active-v { border-color:rgba(88,166,255,.55); background:#111a24; }
-  .msg .who { font-weight:600; flex-shrink:0; font-size:11px; }
-  .msg .who.user { color:var(--orange); } .msg .who.ai { color:var(--purple); }
-  .msg .tx { color:var(--fg); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .msg .vtag { margin-left:auto; font-size:10px; color:var(--faint); flex-shrink:0; }
-  .forkbtn { margin-top:4px; width:100%; text-align:center; font-size:10.5px; color:var(--faint); background:none; border:1px dashed #21262d; border-radius:6px; padding:2px 0; cursor:pointer; }
-  .forkbtn:hover { color:var(--yellow); border-color:var(--yellow); }
-
-  /* branch tree */
-  .brow { display:flex; align-items:center; gap:10px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; margin-bottom:8px; cursor:pointer; background:var(--bg3); }
-  .brow:hover { border-color:var(--dim); }
-  .brow.cur { border-color:var(--blue); background:#111a24; }
-  .bdot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
-  .bname { font-size:13px; color:#e6edf3; }
-  .bmeta { margin-left:auto; font-size:11px; color:var(--faint); text-align:right; }
-  .bact { display:flex; gap:4px; }
-  .bact button { background:none; border:none; color:var(--faint); cursor:pointer; font-size:12px; padding:2px; }
-  .bact button:hover { color:var(--blue); }
-  .bact button.del:hover { color:var(--red); }
-  .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:11.5px; color:var(--dim); margin-top:10px; }
-  .legend i { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; }
-
-  /* file view */
-  .filetabs { display:flex; gap:2px; }
-  .filetabs button { background:none; border:none; color:var(--dim); font-size:12px; padding:4px 10px; cursor:pointer; border-radius:6px 6px 0 0; }
-  .filetabs button.on { color:var(--blue); background:var(--bg); }
-  pre.code { background:var(--bg); border-radius:8px; padding:14px; font-size:11.5px; line-height:1.7; overflow:auto; max-height:560px; color:var(--fg); }
-  pre.code .ln { color:var(--faint); user-select:none; margin-right:12px; }
-  pre.code .k { color:var(--blue); } pre.code .s { color:#a5d6ff; } pre.code .n { color:#f2cc60; } pre.code .c { color:var(--faint); font-style:italic; }
-  pre.code .meta-hl { outline:1px dashed rgba(210,153,34,.5); outline-offset:2px; background:rgba(210,153,34,.06); }
-  .toast { position:fixed; bottom:22px; left:50%; transform:translateX(-50%); background:#1f6feb; color:#fff; font-size:13px; padding:8px 18px; border-radius:8px; opacity:0; transition:opacity .25s; pointer-events:none; z-index:99; max-width:80vw; }
-  .toast.show { opacity:1; }
-
-  /* decisions */
   table.dec { width:100%; border-collapse:collapse; font-size:13px; }
   table.dec th, table.dec td { border:1px solid var(--line); padding:9px 12px; text-align:left; vertical-align:top; }
   table.dec th { background:var(--bg3); color:#e6edf3; font-size:12.5px; }
@@ -120,7 +53,7 @@
   .verdict { font-size:11px; padding:1px 8px; border-radius:99px; margin-left:6px; }
   .verdict.y { background:rgba(63,185,80,.15); color:var(--green); }
   .verdict.n { background:rgba(248,81,73,.15); color:var(--red); }
-  .verdict.w { background:rgba(210,153,34,.15); color:var(--yellow); }
+
   .pending { border:1px dashed rgba(210,153,34,.5); border-radius:10px; padding:14px 18px; background:rgba(210,153,34,.05); }
   .pending h4 { color:var(--yellow); font-size:13.5px; margin-bottom:8px; }
   .pending li { font-size:13px; color:var(--dim); margin-left:18px; }
@@ -131,37 +64,35 @@
 
   <!-- ============ HERO ============ -->
   <div class="hero">
-    <div class="kicker">Living Blueprint · 2026-08-29 对齐版 · 持续迭代</div>
+    <div class="kicker">Living Blueprint · 2026-09-24 纯库模式重评对齐版 · 持续迭代</div>
     <h1>
-      <span class="sys" id="sysName">ChatBranch</span>
-      <span style="font-size:16px;color:var(--dim);font-weight:400;">聊天文件分支系统</span>
-      <span class="rename-hint">（命名提案，可随时改：备选「千层楼 QianCeng」「FloorFS」）</span>
+      <span class="sys">ChatFilesys</span>
+      <span style="font-size:16px;color:var(--dim);font-weight:400;">聊天文件系统 · 纯数据库模式</span>
     </h1>
     <p class="lead">
-      一套跑在<b style="color:#e6edf3">标准 ST 聊天文件</b>之上的分支系统：以「楼层 / Swipe 组 / 分支 / 聊天家族」重新组织聊天数据，
-      分支只存增量、永不整文件复制；前端扩展<b style="color:#e6edf3">独立可用</b>（可视化 + 增量分支 + 零网络秒切分支），
-      后端插件为<b style="color:#e6edf3">可选增强</b>（全局关系扫描 / 增量导出 / 注入迁移，全部用户可配）。
-      文件格式 100% ST 标准，vanilla 环境优雅降级。零核心修改，不拦截 fetch。
+      接管酒馆聊天文件系统：<b style="color:#e6edf3">单个数据结构内的楼层级分支</b>（分支只存增量、永不复制文件）+
+      <b style="color:#e6edf3">纯数据库存储</b>（楼层分片入库，jsonl 仅导出时存在）+
+      <b style="color:#e6edf3">生态无感</b>（fetch 拦截伪装成 jsonl，渲染与其他插件全部照常）。
+      安装后提示「录入数据库并智能合并 → 删 jsonl（默认删）」，之后大聊天按楼层分片毫秒级加载。
     </p>
     <div class="badges">
-      <span class="badge ok">✓ 前端扩展：必需、独立可用</span>
-      <span class="badge ok">✓ 后端插件：可选增强</span>
-      <span class="badge ok">✓ 标准 JSONL 兼容</span>
-      <span class="badge ok">✓ 零核心修改</span>
-      <span class="badge ok">✓ 不拦截 fetch</span>
-      <span class="badge warn">第一期不解决：ST 全量加载瓶颈</span>
-      <span class="badge info">接管聊天文件系统 = 数据组织层，非新格式</span>
+      <span class="badge ok">✓ 纯库默认（N2）</span>
+      <span class="badge ok">✓ fetch 拦截接缝（N6）</span>
+      <span class="badge ok">✓ 三档存储适配器（N11）</span>
+      <span class="badge ok">✓ 渲染管线不变</span>
+      <span class="badge ok">✓ 其他插件无感</span>
+      <span class="badge warn">多并发：只定原则（N1/N18）</span>
     </div>
   </div>
 
   <nav class="toc">
     <a href="#s1">① 一句话本质</a>
-    <a href="#s2">② 总体架构</a>
-    <a href="#s3">③ 分支树 · 交互演示</a>
-    <a href="#s4">④ 存储设计 · 文件解剖</a>
-    <a href="#s5">⑤ 决策日志</a>
-    <a href="#s6">⑥ 边界与已知代价</a>
-    <a href="#s7">⑦ 待确认清单</a>
+    <a href="#s2">② 五层架构</a>
+    <a href="#s3">③ 数据模型与存储</a>
+    <a href="#s4">④ 导入与智能合并</a>
+    <a href="#s5">⑤ 决策日志 N1–N18</a>
+    <a href="#s6">⑥ 里程碑</a>
+    <a href="#s7">⑦ 未决与后置</a>
   </nav>
 
   <!-- ============ 1 ============ -->
@@ -169,450 +100,156 @@
     <h2 class="sec"><span class="no">①</span>一句话本质</h2>
     <div class="cards">
       <div class="card"><h4>它是什么</h4>
-        <p>聊天数据的<b style="color:var(--fg)">组织层</b>：楼层数据本身就是标准 ST 聊天文件的一部分（metadata 开放字典 + 消息行），不发明第二种格式，不需要独立数据库。</p></div>
+        <p>聊天文件系统的<b style="color:var(--fg)">重组织</b>：真分支住进单个数据结构（楼层/Swipe组/分支路径），消息住进数据库分片。不再是「一堆互相复制的 jsonl 文件」。</p></div>
       <div class="card"><h4>它解决什么</h4>
-        <ul><li>原生分支 = 整文件复制 → 改为<b style="color:var(--fg)">增量引用</b>（共享前缀只存一份）</li>
-        <li>st-timelines 全量加载看关系 → 后端只扫<b style="color:var(--fg)">每个文件第一行 header</b> 建全局关系图</li>
-        <li>切换分支 = 换文件 → 改为<b style="color:var(--fg)">前端内存折叠/展开，零网络请求</b></li>
-        <li>无可视化 → 分支树 + 分支视图 + 分叉点标记</li></ul></div>
-      <div class="card"><h4>为什么能保证标准</h4>
-        <p>ST 的 <code style="color:var(--blue)">chat_metadata</code> 与消息 <code style="color:var(--blue)">extra</code> 是开放字典，未知 key 全程原样读写（ST 自家扩展即此机制）。分支树全部数据住在 <code style="color:var(--blue)">chat_metadata.extensions.branches</code>，主线性数组永远是合法消息行——vanilla ST 打开看到默认分支，其余数据原封不动。</p></div>
-      <div class="card"><h4>前端 only 为什么够</h4>
-        <p>分支切换、分叉、swipe、编辑全部是<b style="color:var(--fg)">同一份内存数据的重排</b>；保存走 ST 原生路径（FS/SQLite/MySQL/PG 四种模式自动兼容）。后端插件只做跨文件的事：扫描、导出、注入、迁移。</p></div>
+        <ul>
+          <li>原生分支=整文件复制 → <b style="color:var(--fg)">增量路径引用</b>（共享前缀只存一份）</li>
+          <li>超大 jsonl 打开慢 → <b style="color:var(--fg)">楼层分片按需读</b>（不再整文件 JSON.parse）</li>
+          <li>文件间重复历史 → <b style="color:var(--fg)">指纹合并去重</b>（完全相同去重、LCP 对齐分叉）</li>
+          <li>切换分支=换文件 → <b style="color:var(--fg)">内存重投影 + 整枝联动</b>（零网络切换）</li>
+        </ul></div>
+      <div class="card"><h4>swipe 与 branch 正交（N8）</h4>
+        <p>swipe 组可有数量上限（按性能定）的变体；<b style="color:var(--fg)">swipe 不影响剧情叙事，只有 branch 是真分支</b>。外部插件改了 swipe → 按内容候选吸收，不产生分支。</p></div>
+      <div class="card"><h4>生态为什么无感</h4>
+        <p>宿主与其他插件都经 <code style="color:var(--blue)">fetch → /api/chats/*</code> 读写聊天。接缝层拦截这些请求：读=从库分片拼装合规响应，写=解包转写库。<b style="color:var(--fg)">渲染管线零变化</b>。</p></div>
     </div>
   </section>
 
   <!-- ============ 2 ============ -->
   <section id="s2">
-    <h2 class="sec"><span class="no">②</span>总体架构</h2>
+    <h2 class="sec"><span class="no">②</span>五层架构</h2>
     <div class="arch">
 <pre>
-<span class="k">┌─ 前端扩展（必需 · third-party/）────────────────────────────┐</span>
-│  分支树 UI · 分支视图 · 分叉/切换/重命名/删除                      │
-│  操作对象 = ST 内存中的 <span class="c">chat 数组 + chat_metadata</span>（不拦截 fetch）│
-│  写路径（全部核心已有端点，零修改）：                              │
-│    继续聊天 → <span class="c">/api/chats/append</span>（双去重）                  │
-│    结构操作 → <span class="c">/api/chats/patch</span>（RFC6902 ops + chat_metadata   │
-│              携带 branches + integrity 乐观锁，409 重拉重放）   │
-│    大改回退 → <span class="c">/api/chats/save</span>                               │
-└──────────────────────┬───────────────────────────────┘
-                       │ 读写的就是 ST 自己的聊天文档
-<span class="k">┌──────────────────────▼───────────────────────────────┐</span>
-│  <span class="c">标准 ST 聊天文件（唯一事实源）</span>                          │
-│  FS: .jsonl │ SQLite/MySQL/PG: doc 文档 —— 格式等价      │
-│  ├─ 第 1 行 header.chat_metadata.extensions.branches │
-│  │    · branches（分支→楼层路径引用）                    │
-│  │    · 非活跃分支的增量消息组                           │
-│  └─ 第 2 行起 = 活跃分支的楼层线性序列（合法消息行）        │
-└──────────────────────┬───────────────────────────────┘
-                       │ 只读 header / 导出 / 注入（用户可配：手动/自动）
-<span class="k">┌──────────────────────▼───────────────────────────────┐</span>
-│  <span class="c">后端插件（可选增强 · plugins/）</span>                        │
-│  · 全局关系扫描：只读每个聊天文件第一行 → 家族/分支关系图    │
-│  · 增量导出：编译为无 branches 的纯标准 JSONL          │
-│  · 注入/导入：原生 JSONL → 建家族 → 写回（可配自动/手动）   │
-└──────────────────────────────────────────────────────┘</pre>
+<span class="k">┌─ 宿主 UI 层（不变）─────────────────────────────────────────┐</span>
+│  原生按钮（被接管）· 消息旁 ⎇ · 分支徽章 · /cb · 树状图        │
+│  （默认向下+可切右；自动序号；AI 总结手动触发 —— N13）          │
+├─ 接缝层（N6 fetch 拦截）─────────────────────────────────────┤
+│  patch globalThis.fetch → 拦 /api/chats/*：                  │
+│  读→库分片读+伪造合规响应；写→解包→投影diff→库分片写；         │
+│  非聊天请求原样透传；ws-delivery 先例（包装链+disposer）       │
+├─ 核心层（沿用改造，N4/N12）──────────────────────────────────┤
+│  分支树模型（楼层/Swipe组/分支路径）· 投影 diff · 整枝联动      │
+├─ 存储适配器层（N11 三档，特性检测自动选档）────────────────────┤
+│  <span class="c">档1 Authority SQL → 档2 官方通道分片 → 档3 IndexedDB 缓存</span> │
+└──────────────────────────────────────────────────────────────┘
+   <span class="d">事实源=库；渲染管线不变；核心层不感知后端（依赖注入接缝）</span>
+</pre>
     </div>
-    <h3>核心概念（分支系统）</h3>
+    <h3>关键事实（仓库证据）</h3>
     <div class="cards">
-      <div class="card"><h4>楼层 Floor</h4><p>一条消息位，家族内全局编号。主线性数组的一行 ↔ 活跃分支的一个楼层。</p></div>
-      <div class="card"><h4>Swipe 组</h4><p>一个楼层的一组消息变体。多变体时映射为该行的 ST 原生 <code>swipes[]</code>。</p></div>
-      <div class="card"><h4>分叉点 Fork</h4><p>同楼层存在 &gt;1 个 Swipe 组的楼层。树/分支视图中标记 ⎇。</p></div>
-      <div class="card"><h4>分支 Branch</h4><p>从分叉点之后的一条 Swipe 组<b style="color:var(--fg)">路径引用</b>（非复制）。分叉楼层本身共享，分叉后的新楼层归属新分支。</p></div>
-      <div class="card"><h4>聊天家族</h4><p>互为分支的聊天集合 = 一个文件。新建聊天自动建家族，可编辑名称。</p></div>
-      <div class="card"><h4>编辑共享楼层</h4><p>第一期：全局可见（同一行，改了都看到）。Merge 第一期不做。</p></div>
+      <div class="card"><h4>Luker 已有 ChatRepo 四引擎</h4><p>服务端 FS/SQLite/MySQL/PG 抽象已存在，但插件零核心修改下无法注入新引擎——接缝只能做在前端 fetch 层。</p></div>
+      <div class="card"><h4>原生 DB 引擎≠性能收益</h4><p>Luker 原生 SQLite 引擎按<b>整文档</b>存（chats.doc 单列 blob），不解决「超大聊天加载慢」——分片 schema 必须由本插件自建（design.md §2）。</p></div>
+      <div class="card"><h4>fetch 拦截有宿主先例</h4><p>Luker 自身 <code>ws-delivery.js installFetchProxy</code>（含 disposer）、<code>frontend-log-manager.js</code> 就在 patch 全局 fetch——技术路线宿主自己背书。</p></div>
+      <div class="card"><h4>纯前端不绑 Authority</h4><p>聊天数据本可经官方 <code>/api/chats/*</code> 读写；Authority SQL 只是档1 候选（N3/N9：实测瓶颈则弃用）。</p></div>
     </div>
   </section>
 
   <!-- ============ 3 ============ -->
   <section id="s3">
-    <h2 class="sec"><span class="no">③</span>分支树 · 交互演示
-      <span style="font-size:12px;font-weight:400;margin-left:auto;display:flex;gap:8px">
-        <a href="demo/st-user-view.html" style="border:1px solid var(--line);border-radius:6px;padding:3px 10px">演示① ST 用户视角 →</a>
-        <a href="demo/branch-global-view.html" style="border:1px solid var(--line);border-radius:6px;padding:3px 10px">演示② 总体分支视角 →</a>
-      </span>
-    </h2>
-    <p class="note" style="margin-bottom:14px">
-      本节下方是<b style="color:#e6edf3">纯机制演示</b>（抽象按钮）；推荐打开两个<b style="color:#e6edf3">真实视角演示页</b>：
-      <a href="demo/st-user-view.html">演示①</a>模拟 ST 内用户看到的聊天界面（输入框发送 / swipe 箭头 / 消息悬浮操作 / 原生书签收编弹窗 / 扩展面板树状图入口预留）；
-      <a href="demo/branch-global-view.html">演示②</a>是总体分支全局图（操作与 ST 一致：消息上直接编辑/删除/swipe，底部输入框继续聊天）。两页共用同一套分支树状态机，右侧文件视图实时反映落盘形态。
-    </p>
-    <div class="demo">
-      <div class="panel">
-        <div class="ph">分支视图（模拟聊天）<span class="sub" id="demoSub"></span></div>
-        <div class="pb">
-          <div class="bld-toolbar">
-            <button class="btn primary" onclick="demoAddMessage()">✉ 继续聊天</button>
-            <button class="btn" onclick="demoAddVariant()">⇄ 给最后一层加 swipe 变体</button>
-            <span style="flex:1"></span>
-            <button class="btn" onclick="demoExport()">⬍ 生成「纯标准 JSONL」导出预览</button>
-          </div>
-          <div id="building"></div>
-          <div class="legend">
-            <span><i style="background:var(--green)"></i>共享楼层（所有分支引用同一组）</span>
-            <span><i style="background:var(--blue)"></i>当前分支私有</span>
-            <span><i style="background:var(--faint)"></i>其他分支私有（已折叠进 metadata）</span>
-            <span style="color:var(--yellow)">⎇ 分叉点（同层 &gt;1 组）</span>
-          </div>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ph">
-          文件视图（真实落盘形态）
-          <span class="sub">fold = 已折叠进 metadata 的非活跃数据</span>
-        </div>
-        <div class="pb" style="padding-top:10px">
-          <div class="filetabs">
-            <button id="tabMain" class="on" onclick="switchFileTab('main')">chat.jsonl（主线性数组）</button>
-            <button id="tabMeta" onclick="switchFileTab('meta')">header.metadata.branches</button>
-            <button id="tabExport" onclick="switchFileTab('export')">增量导出</button>
-          </div>
-          <pre class="code" id="fileView"></pre>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ph">分支树 <span class="sub">点击切换 · ⎇ 后数字 = 分叉基点楼层</span></div>
-        <div class="pb" id="branchTree"></div>
-      </div>
-      <div class="panel">
-        <div class="ph">本次操作对文件的影响</div>
-        <div class="pb"><div id="explain" style="font-size:12.5px;color:var(--dim)">初始化：6 层主聊 + 分支 B（第 4 层后分叉，5/6 层私有）+ 分支 C（第 2 层后分叉，尚未续聊）。</div></div>
-      </div>
+    <h2 class="sec"><span class="no">③</span>数据模型与存储</h2>
+    <div class="arch">
+<pre>
+<span class="d">// 概念（N4 同构认定：愿景「分支分组+绑定」≡ 此模型）</span>
+家族 Family    = 互为分支的聊天集合（取代「聊天文件」；zip 只是导出容器）
+楼层 Floor     = 一条消息位，家族内全局编号
+Swipe 组 Group = 楼层内变体集合（变体数上限按性能定，N8）
+分支 Branch    = 从分叉点起的组路径引用（唯一真分支语义）
+
+<span class="d">// Authority SQL 档表设计（design.md §2）</span>
+families(id, character_id, name, ...)          <span class="c">← 解绑/重绑=改一列（N16）</span>
+floors(family_id, floor_no, variant_id, content, <span class="k">content_hash</span>, ...)
+branches(family_id, branch_id, parent_branch_id, name, fork_floor, ...)
+branch_paths(family_id, branch_id, floor_no, variant_id)
+<span class="c">↑ 楼层分片=按需读的直接来源；content_hash=智能合并物理基础；</span>
+<span class="c">  parent_branch_id 允 NULL=图结构预留（远期 merge/DAG 不锁死）</span>
+</pre>
+    </div>
+    <h3>导出（N2：jsonl 仅导出时存在）</h3>
+    <div class="cards">
+      <div class="card"><h4>branch 导出</h4><p>按 branch_paths 取楼层行 → 拼标准 jsonl（单文件，vanilla ST 可直接打开）。</p></div>
+      <div class="card"><h4>家族导出</h4><p>遍历 branches → 每 branch 一份 jsonl → 打成 zip 包。<b style="color:var(--fg)">家族是数据概念，zip 只是导出容器</b>，二者不得混写。</p></div>
+      <div class="card"><h4>jsonl 映射模式（功能1）</h4><p>可选的双写绑定形态：开启后库↔jsonl 同步（用即生成、原样保存），供网盘同步/直读磁盘的场景。</p></div>
     </div>
   </section>
 
   <!-- ============ 4 ============ -->
   <section id="s4">
-    <h2 class="sec"><span class="no">④</span>存储设计 · 文件解剖</h2>
-    <div class="arch">
-<pre>
-<span class="d">// chat1.jsonl —— 100% 标准 ST JSONL，每行含义：</span>
-{"user_name":"unused","character_name":"unused",
- "chat_metadata":{ ..., <span class="k">"extensions":{ "branches": {...} }</span> }}   <span class="d">← 第 1 行：分支树住这里（开放字典）</span>
-{"name":"我","is_user":true,"mes":"...","send_date":1771009329448,...}          <span class="d">← 活跃分支 楼层1</span>
-{"name":"Seraphina","is_user":false,"mes":"...","swipes":["...","..."],"swipe_id":1,...} <span class="d">← 楼层2（多变体=ST 原生 swipe）</span>
-...                                                                    <span class="d">← 活跃分支的楼层线性序列</span>
-
-<span class="d">// branches 内部（示意）：</span>
-{ "version": 1,
-  "active_branch": "main",
-  "branches": [
-    { "id":"main",  "name":"主分支", "is_default":true },
-    { "id":"b2",    "name":"支线",  "fork_base": 4,  <span class="c">// 第4层后分叉 → 楼层1-4共享，第5层起私有</span>
-      "path": {"5":"g-b2-5", "6":"g-b2-6"} }  <span class="c">// 分支路径 = 楼层→Swipe组 的引用</span>
-  ],
-  "groups": { "g-b2-5": {"floor":5, "variants":[{"name":"Seraphina","mes":"..."}], "active":0} }
-              <span class="c">// ↑ 非活跃分支的增量消息住这里；活跃分支的组就在主线性数组里，不重复存</span>
-}</pre>
-    </div>
-    <h3>格式契约（以原生格式为唯一权威）</h3>
+    <h2 class="sec"><span class="no">④</span>导入与智能合并</h2>
     <div class="cards">
-      <div class="card"><h4>权威依据</h4><p><code>research/01-jsonl-format-and-serialization.md</code>：header 元数据嵌套在 <code>chat_metadata</code>；消息正文字段是 <code>mes</code>；<code>send_date</code> 毫秒；integrity 乐观锁基于整文档。</p></div>
-      <div class="card"><h4>验收标准</h4><p>Round-trip：原生 JSONL → 插件操作 → 落盘 → vanilla ST 可读、默认分支无损；增量导出文件与手工整理的标准文件 diff 无异常。</p></div>
-      <div class="card"><h4>已废止的自创格式</h4><p>此前实现的 <code>content/role</code> 字段、秒级时间戳、平铺 header、独立 SQLite 事实源 —— 全部废止（见决策日志）。</p></div>
+      <div class="card"><h4>安装旅程（N2）</h4>
+        <ul>
+          <li>安装 → 检测存量 jsonl（原生聊天 + chatfilesys 存量）</li>
+          <li>提示「录入数据库并智能合并」</li>
+          <li>提示「是否删除 jsonl」——<b style="color:var(--fg)">默认删</b>（回收站 N15）</li>
+          <li>「保持 jsonl 双写绑定」——<b style="color:var(--fg)">默认否</b></li>
+        </ul></div>
+      <div class="card"><h4>智能合并（N10）</h4>
+        <ul>
+          <li>完全相同楼层（content_hash 相同）→ 幂等去重</li>
+          <li>前缀相同 → 最长公共前缀（LCP）对齐为分叉点，剩余各挂子分支</li>
+          <li>hash 冲突时 send_date+发送者第二重校验</li>
+          <li>AI 语义合并（LLM 判同剧情点）<b style="color:var(--fg)">不进 MVP</b></li>
+        </ul></div>
+      <div class="card"><h4>回收站（N15）</h4>
+        <ul>
+          <li>jsonl 移入插件管理的服务端回收站目录（Authority fs）</li>
+          <li>保留 N 天（默认 7）后自动清理，期间可一键还原</li>
+          <li>删除动作本身仍需确认弹窗（用户数据属 PARDON 范围）</li>
+        </ul></div>
+      <div class="card"><h4>跨聊天同层合并（N16/功能3）</h4>
+        <p>同角色卡不同 jsonl → 同一套指纹对齐算法 → 合并为同层多分支。文件间重复历史由此消灭。</p></div>
     </div>
   </section>
 
   <!-- ============ 5 ============ -->
   <section id="s5">
-    <h2 class="sec"><span class="no">⑤</span>决策日志 <span class="verdict y">2026-08-29 grill 对齐</span></h2>
+    <h2 class="sec"><span class="no">⑤</span>决策日志（2026-09-24 重评，N1–N18）<span class="verdict y">已对齐</span></h2>
     <table class="dec">
       <tr><th>决策点</th><th>结论</th></tr>
-      <tr><td>系统根本定位</td><td>接管聊天文件系统：分支成为聊天数据的组织方式<span class="verdict y">已定</span></td></tr>
-      <tr><td>交付形态</td><td>前端扩展（必需、独立可用）+ 后端插件（可选增强）。<b style="color:var(--red)">零核心修改是硬约束</b>——调研报告「改 chat-repo.js」路线废弃<span class="verdict y">已定</span></td></tr>
-      <tr><td>事实源</td><td>标准 ST 聊天文件本身；分支数据装进文件第 1 行 <code>chat_metadata.extensions.branches</code>（单文件自包含：拷走/分享/迁移分支自动跟走，vanilla ST 可开，四种存储模式兼容）<span class="verdict y">已定</span></td></tr>
-      <tr><td>fetch 拦截</td><td>不做。本架构在 ST 原生数据流内工作，无需改道（04 调研文档「事件同步」建议正是上一版跑偏的根源，废止）<span class="verdict y">已定</span></td></tr>
-      <tr><td>接管范围</td><td>按聊天家族 opt-in：未接管聊天 100% 原生；新聊天/导入自动进家族。关插件 = 完全原生，无残留<span class="verdict y">已定</span></td></tr>
-      <tr><td>保险丝（镜像写回）</td><td>由「增量导出」承担：手动/自动导出、注入均用户可配。默认形态与写回策略在待确认清单<span class="verdict w">细化中</span></td></tr>
-      <tr><td>格式契约</td><td>以原生格式为唯一权威（mes / chat_metadata 嵌套 / 毫秒 / integrity）+ round-trip 验收<span class="verdict y">已定</span></td></tr>
-      <tr><td>分支语义</td><td>分叉楼层本身共享，分叉后新楼层归属新分支；建分支<b style="color:var(--red)">禁止复制消息</b>（旧实现废止）<span class="verdict y">已定</span></td></tr>
-      <tr><td>编辑共享楼层</td><td>第一期全局可见；Merge 不做；单人聊天<span class="verdict y">沿用 PRD</span></td></tr>
-      <tr><td>原生书签/检查点</td><td>收编式：不阻断原生流程，监听 CHAT_BRANCH_CREATED，检测到接管家族上产生整文件复制时弹窗询问「收编为楼层分支？」（收编=转引用+删复制文件，默认不收编）<span class="verdict y">已定</span></td></tr>
-      <tr><td>旧代码处置</td><td>后端路由骨架可改造为「可选增强」（扫描/导出/注入）；独立 SQLite 事实源与自创格式部分重写；前端树 UI 思路保留、数据源重写<span class="verdict w">待执行</span></td></tr>
-      <tr><td>第一期验收线（v1）</td><td>单文件全旅程（纯前端）：ST 正常聊天 → 任意层分叉 → 双分支各自续聊 → 零网络切换 → 关插件 vanilla ST 验证默认分支无损 → 增量导出可导入原生。后端插件 v1 不参与<span class="verdict y">已定</span></td></tr>
-      <tr><td>增量导出</td><td>可配置：关 / 仅手动 / 每次保存后自动，默认「仅手动」（面板按钮始终可用）。导出物 = 无 branches 的纯标准 JSONL<span class="verdict y">已定</span></td></tr>
-      <tr><td>写入路径（吃 Luker 的 patch）</td><td>继续聊天 → 原生 <code>append</code>（沿用双去重）；结构操作（分叉/折叠/展开/分支增删改名/编辑折叠消息）→ <code>/api/chats/patch</code>：operations 打在 body、<code>chat_metadata</code> 字段携带新 branches、integrity 乐观锁 + 409 冲突重拉重放；大改回退 <code>save</code>。全程核心已有端点，零修改<span class="verdict y">已定</span></td></tr>
-      <tr><td>教训存档</td><td>① 约束冲突（改核心 vs 插件）未裁决 → 集成被无限后推 ② 存储方案四换未清理残留约束 ③ 先做好做的 UI、地基后置 ④ 格式正向发明而非逆向映射。完整审计见 <code>research/10-design-drift-audit.md</code><span class="verdict n">勿重蹈</span></td></tr>
+      <tr><td>存储形态</td><td>纯数据库默认：安装→入库+智能合并→删 jsonl（默认删）→jsonl 仅导出时存在（branch=单 jsonl；家族=jsonl 集合的 zip）<span class="verdict y">N2</span></td></tr>
+      <tr><td>加载/保存接缝</td><td>fetch/API 拦截：patch 全局 fetch 拦 /api/chats/*，读=库分片+伪造响应，写=解包转写库。<b style="color:var(--red)">推翻 2026-08-29 蓝图「不拦截 fetch」</b>（前提已变）；零核心修改不变<span class="verdict y">N6</span></td></tr>
+      <tr><td>存储后端</td><td>三档适配器：Authority SQL → 官方通道分片 → IndexedDB 缓存；特性检测自动选档；Authority 不绑定，实测瓶颈则弃用<span class="verdict y">N3/N9/N11</span></td></tr>
+      <tr><td>数据模型</td><td>同构认定：愿景「分支分组+相邻绑定」≡ 现有「楼层/Swipe组/分支路径」；存储层重写、模型沿用改造<span class="verdict y">N4/N12</span></td></tr>
+      <tr><td>swipe vs branch</td><td>swipe=楼层内容候选（数量上限按性能定），不影响剧情叙事；只有 branch 是真分支。外部 swipe 变更按内容候选吸收<span class="verdict y">N8</span></td></tr>
+      <tr><td>切换联动</td><td>整枝联动：分叉点选另一变体 → 该层以下全部后代自动重投影到含该变体的路径<span class="verdict y">N7</span></td></tr>
+      <tr><td>智能合并</td><td>内容指纹对齐（hash 去重 + LCP 分叉）；AI 语义合并不进 MVP<span class="verdict y">N10</span></td></tr>
+      <tr><td>删除安全</td><td>回收站+期限（默认 7 天，可还原）；删除仍需确认弹窗<span class="verdict y">N15</span></td></tr>
+      <tr><td>MVP 范围</td><td>进：jsonl 映射模式、指纹合并、跨聊天同层合并、重命名索引、树状图、解绑重绑；不进：记忆/剧情联动（后置 M4）<span class="verdict y">N16</span></td></tr>
+      <tr><td>树状图</td><td>默认向下+可切右；节点标签默认自动序号；AI 总结手动触发<span class="verdict y">N13</span></td></tr>
+      <tr><td>首里程碑</td><td>接缝+导入先行（拦截层+三档适配器+导入旅程+树状图读库），最大风险（伪装无感）最早暴露<span class="verdict y">N17</span></td></tr>
+      <tr><td>多并发</td><td>只定原则（不交叉污染、读写互不干扰），不耦合多聊天 PR 形式；验收场景实施阶段定<span class="verdict y">N1/N18</span></td></tr>
+      <tr><td>重写姿态</td><td>接口/格式无包袱：存储层可破坏性变更，不留旧格式兼容层；core 沿用改造。配套「无包袱铁律」入 AGENTS.md PO-1<span class="verdict y">N12</span></td></tr>
+      <tr><td>旧后端规格书</td><td>backend-plugin-spec.md 全量重写为「Authority 后端接入指导」，不留历史遗迹<span class="verdict y">N14</span></td></tr>
     </table>
   </section>
 
   <!-- ============ 6 ============ -->
   <section id="s6">
-    <h2 class="sec"><span class="no">⑥</span>边界与已知代价</h2>
-    <div class="cards">
-      <div class="card"><h4>明确不做（第一期）</h4><ul><li>不修改 Luker 核心、不拦截 fetch</li><li>不做 merge、不做群聊</li><li>不解决 ST「整文档加载」的全量读取瓶颈（真分页需改 repo 层，已排除；未来如解禁可叠加）</li></ul></div>
-      <div class="card"><h4>接受的代价</h4><ul><li>大聊天打开速度 = ST 原生水平（瓶颈不变）</li><li>分支极多时 header 增大（总量仍严格优于原生整文件复制）</li><li>vanilla ST 下只能看到默认分支（数据不丢，功能降级）</li></ul></div>
-      <div class="card"><h4>原生书签/检查点</h4><p>已定「收编式」：不阻断原生流程；检测到接管家族上产生整文件复制时弹窗询问是否收编为楼层分支（默认不收编）。见演示①的 🔖 按钮。</p></div>
-      <div class="card"><h4>并发与一致性</h4><p>分支树随整文档走 ST 原生 integrity 乐观锁；前端扩展内的折叠/展开在保存前完成，保持「文档自洽」。</p></div>
-    </div>
+    <h2 class="sec"><span class="no">⑥</span>里程碑</h2>
+    <table class="dec">
+      <tr><th>里程碑</th><th>内容</th><th>验收</th></tr>
+      <tr><td>M1 接缝+导入先行</td><td>fetch 拦截层 + 三档适配器 + 导入旅程（智能合并）+ 树状图读库渲染</td><td>纯库下打开聊天、聊天/分叉/切换正常；其他插件按钮正常（伪装无感）</td></tr>
+      <tr><td>M2 导出与家族管理</td><td>branch/家族导出（jsonl/zip）+ 重命名自动索引 + 解绑重绑</td><td>导出物 vanilla ST 可开；改名/换绑后库内引用一致</td></tr>
+      <tr><td>M3 优化与巩固</td><td>性能基准（分片读 vs jsonl 整读）+ WAL/checkpoint 策略 + 多并发原则性验证 + jsonl 映射模式</td><td>基准数据留档（Authority 弃用判据 N3）；双写可开关</td></tr>
+      <tr><td>M4（后置）</td><td>记忆插件/剧情规划联动</td><td>—</td></tr>
+    </table>
   </section>
 
   <!-- ============ 7 ============ -->
   <section id="s7">
-    <h2 class="sec"><span class="no">⑦</span>待确认清单</h2>
+    <h2 class="sec"><span class="no">⑦</span>未决与后置</h2>
     <div class="pending">
-      <h4>继续 grill 的下一个分支</h4>
+      <h4>留给实施阶段的事项</h4>
       <ul>
-        <li><b>增量导出默认形态</b>：手动按钮 / 自动每次保存后导出 / 可配置（默认值定哪个）</li>
-        <li><b>家族与聊天的映射</b>：一个家族 = 一个聊天文件（当前假设），家族成员 = 分支树；确认是否需要多文件家族</li>
+        <li><b>Open-14 数据主权/卸载</b>：库是 Authority 扩展私有资产，卸载路径与「脱离 Authority」全量导出交互待 M2 对齐</li>
+        <li><b>多并发验收场景</b>：配合多聊天 PR 实际形态在实施阶段定（N18）</li>
+        <li><b>档2 官方通道分片形态</b>：隐藏聊天 vs 状态侧车容器，实施时验证侧车体积上限</li>
+        <li><b>图结构（低优先级）</b>：schema 已预留（parent_branch_id 允 NULL、branch_paths 不锁死单父），merge/DAG UI 不做</li>
+        <li><b>存储接缝建议书</b>：多聊天 PR 的存储抽象建议（独立文档，插件不背，N1）</li>
       </ul>
     </div>
   </section>
 
 </div>
-<div class="toast" id="toast"></div>
-
-<script>
-/* ================================================================
-   交互演示：分支树状态机
-   楼层 floor = { number, gids:[] }   >1 组 = 分叉点
-   组 group  = { id, floor, owner(null=共享), variants:[{name,mes,isUser}], active }
-   分支 branch = { id, name, color, isDefault, forkBase, path:{floorNum:gid} }
-   ================================================================ */
-let GID = 0, BID = 0;
-const BR_COLORS = ['#58a6ff', '#f0883e', '#a371f7', '#db61a2', '#d29922', '#39c5cf'];
-const state = { branches: [], floors: [], groups: {}, activeBranch: null };
-
-const el = id => document.getElementById(id);
-const me = { name: '我', isUser: true }, ai = { name: 'Seraphina', isUser: false };
-
-function newGroup(floor, owner, variants) {
-  const id = 'g' + (++GID);
-  state.groups[id] = { id, floor, owner, variants, active: 0 };
-  return id;
-}
-function ensureFloor(n) {
-  let f = state.floors.find(f => f.number === n);
-  if (!f) { f = { number: n, gids: [] }; state.floors.push(f); state.floors.sort((a, b) => a.number - b.number); }
-  return f;
-}
-function newBranch(name, forkBase, copyFrom) {
-  const b = { id: 'b' + (++BID), name, color: BR_COLORS[(BID - 1) % BR_COLORS.length], isDefault: false, forkBase, path: {} };
-  if (copyFrom) for (const [f, g] of Object.entries(copyFrom.path)) if (+f <= forkBase) b.path[f] = g;
-  state.branches.push(b);
-  return b;
-}
-function branchMaxFloor(b) { return Math.max(0, ...Object.keys(b.path).map(Number)); }
-function branchMsgCount(b) { return Object.values(b.path).reduce((s, g) => s + state.groups[g].variants.length, 0); }
-
-/* ---------- 初始化演示数据 ---------- */
-(function seed() {
-  const main = newBranch('主分支', 0, null); main.isDefault = true; main.color = '#58a6ff';
-  state.activeBranch = main.id;
-  const script = [
-    [me, '我们出发吧，森林的北边有个废弃的哨塔。'],
-    [ai, '夜色像湿苔一样贴上来。你确定要今晚走？'],
-    [me, '火把给我，你在前面探路。'],
-    [ai, '『哨塔的石门虚掩着，门缝里渗出淡蓝色的光。』'],
-    [ai, '『塔顶传来风铃般的声响——那里有东西在等我们。』'],
-  ];
-  script.forEach(([who, text], i) => {
-    const gid = newGroup(i + 1, null, [{ ...who, mes: text }]);
-    ensureFloor(i + 1).gids.push(gid);
-    main.path[i + 1] = gid;
-  });
-  // 楼层2 加一个原生 swipe 变体演示
-  state.groups[main.path[2]].variants.push({ ...ai, mes: '『你握紧剑柄，摇了摇头：白天更安全。』' });
-  state.groups[main.path[2]].active = 0;
-
-  const b2 = newBranch('支线·塔顶', 4, main);           // 第4层后分叉
-  const g5 = newGroup(5, b2.id, [{ ...ai, mes: '『你们攀上旋梯。塔顶的风铃是一个古老的警报器——它醒了。』' }]);
-  ensureFloor(5).gids.push(g5); b2.path[5] = g5;
-  const g6 = newGroup(6, b2.id, [{ ...me, mes: '拔剑。先下手为强。' }]);
-  ensureFloor(6).gids.push(g6); b2.path[6] = g6;
-
-  newBranch('好奇线', 2, main);                          // 第2层后分叉，尚未续聊
-})();
-
-/* ---------- 演示动作 ---------- */
-function explain(html) { el('explain').innerHTML = html; }
-function toast(msg) { const t = el('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2600); }
-
-function demoAddMessage() {
-  const b = state.branches.find(x => x.id === state.activeBranch);
-  const n = branchMaxFloor(b) + 1;
-  const last = b.path[branchMaxFloor(b)];
-  const lastWho = last ? state.groups[last].variants[0] : ai;
-  const who = lastWho.isUser ? ai : me;
-  const gid = newGroup(n, b.isDefault ? null : b.id, [{ ...who, mes: `『${who.isUser ? '……' : '……'}（新消息 #${n} 层）』` }]);
-  ensureFloor(n).gids.push(gid);
-  b.path[n] = gid;
-  explain(`<b style="color:var(--blue)">继续聊天</b>：楼层 ${n} 新建 Swipe 组，归属分支「${b.name}」。若该层已有其他分支的组 → 它成为<b style="color:var(--yellow)">分叉点</b>。文件上=主线性数组追加一行（当前分支活跃时）。`);
-  render();
-}
-function demoAddVariant() {
-  const b = state.branches.find(x => x.id === state.activeBranch);
-  const top = b.path[branchMaxFloor(b)];
-  if (!top) return;
-  const g = state.groups[top];
-  const base = g.variants[0];
-  g.variants.push({ ...base, mes: base.mes.replace('』', '』（另一版本）') || base.mes });
-  g.active = g.variants.length - 1;
-  explain(`<b style="color:var(--blue)">加 swipe</b>：楼层 ${g.floor} 的组新增变体。落盘时映射为该行的 ST 原生 <code>swipes[]</code> + <code>swipe_id</code>——不发明新机制。`);
-  render();
-}
-function demoFork(floorNum) {
-  const from = state.branches.find(x => x.id === state.activeBranch);
-  const b = newBranch(`${from.name}·分叉${floorNum}`, floorNum, from);
-  state.activeBranch = b.id;
-  explain(`<b style="color:var(--yellow)">分叉</b>：新分支「${b.name}」引用楼层 ≤${floorNum} 的<b style="color:var(--green)">同一批组</b>（零复制），分叉后的新楼层才归属新分支。注意：分叉这一刻<b>文件一个字节都没变大</b>。`);
-  toast(`已分叉「${b.name}」：共享 ≤${floorNum} 层，现在可以继续聊天了`);
-  render();
-}
-function demoSwitch(id) {
-  const to = state.branches.find(x => x.id === id);
-  const from = state.branches.find(x => x.id === state.activeBranch);
-  if (id === state.activeBranch) return;
-  state.activeBranch = id;
-  explain(`<b style="color:var(--blue)">切换分支</b>：「${from.name}」→「${to.name}」。原分支私有的组<b style="color:var(--yellow)">折叠</b>进 metadata.branches；目标分支的组<b style="color:var(--green)">展开</b>为主线性数组。纯内存重排 + 一次 ST 原生保存，零网络请求。`);
-  toast(`已切换到「${to.name}」（折叠/展开完成，走 ST 原生保存）`);
-  render();
-}
-function demoToggleVariant(gid, vi) {
-  const g = state.groups[gid];
-  const b = state.branches.find(x => x.id === state.activeBranch);
-  if (!Object.values(b.path).includes(gid)) { toast('该组属于其他分支（已折叠），切到对应分支后操作'); return; }
-  g.active = vi;
-  explain(`swipe 选择变更：楼层 ${g.floor} 的 <code>swipe_id</code> → ${vi}（ST 原生字段）。`);
-  render();
-}
-function demoRename(id) {
-  const b = state.branches.find(x => x.id === id);
-  const input = prompt('新名称', b.name); // 演示页可用原生弹窗
-  if (input && input.trim()) { b.name = input.trim(); explain(`分支重命名 → metadata 内字段更新。`); render(); }
-}
-function demoDelete(id) {
-  const b = state.branches.find(x => x.id === id);
-  if (b.isDefault) { toast('默认分支不可删除'); return; }
-  if (!confirm(`删除分支「${b.name}」？其私有组将一并移除。`)) return;
-  const owned = Object.values(b.path).filter(g => state.groups[g].owner === b.id);
-  owned.forEach(g => delete state.groups[g]);
-  state.floors.forEach(f => { f.gids = f.gids.filter(g => state.groups[g]); });
-  state.branches = state.branches.filter(x => x.id !== id);
-  if (state.activeBranch === id) state.activeBranch = state.branches[0].id;
-  explain(`删除分支：只移除其<b>私有</b>组与分支引用；共享组因被其他分支引用而保留（引用计数语义）。`);
-  render();
-}
-function demoExport() { switchFileTab('export'); }
-
-/* ---------- 渲染 ---------- */
-function render() { renderBuilding(); renderTree(); renderFile(); el('demoSub').textContent = `当前分支：${state.branches.find(x => x.id === state.activeBranch).name}`; }
-
-function renderBuilding() {
-  const cur = state.branches.find(x => x.id === state.activeBranch);
-  let html = '';
-  for (const f of state.floors) {
-    const isFork = f.gids.length > 1;
-    html += `<div class="floorrow"><div class="fno"><span class="forkmark">${isFork ? '⎇' : ''}</span>F${f.number}</div><div class="groups">`;
-    for (const gid of f.gids) {
-      const g = state.groups[gid];
-      const onActive = Object.values(cur.path).includes(gid);
-      const shared = g.owner === null;
-      const cls = `sg ${onActive ? (shared ? '' : 'owned') : 'idle'}`;
-      const ownTag = shared ? '<span class="own shared">共享</span>' : `<span class="own">${state.branches.find(x => x.id === g.owner)?.name || '私有'}</span>`;
-      html += `<div class="${cls}"><div class="sgh"><span class="gname">${gid}${g.variants.length > 1 ? ` · ${g.variants.length} 变体` : ''}</span>${ownTag}</div>`;
-      g.variants.forEach((v, vi) => {
-        const act = onActive && g.active === vi;
-        html += `<div class="msg ${act ? 'active-v' : ''}" onclick="demoToggleVariant('${gid}',${vi})" title="${onActive ? '点击切换 swipe 变体' : '该组属于其他分支（已折叠进 metadata）'}">
-          <span class="who ${v.isUser ? 'user' : 'ai'}">${v.name}</span><span class="tx">${v.mes}</span>${g.variants.length > 1 ? `<span class="vtag">v${vi + 1}</span>` : ''}</div>`;
-      });
-      html += `<button class="forkbtn" onclick="demoFork(${f.number})">⎇ 在第 ${f.number} 层之后分叉</button></div>`;
-    }
-    html += `</div></div>`;
-  }
-  el('building').innerHTML = html;
-}
-
-function renderTree() {
-  let html = '';
-  for (const b of state.branches) {
-    const cur = b.id === state.activeBranch;
-    html += `<div class="brow ${cur ? 'cur' : ''}" onclick="demoSwitch('${b.id}')">
-      <span class="bdot" style="background:${b.color}"></span>
-      <span class="bname">${b.name}${b.isDefault ? ' <span style="color:var(--faint);font-size:10px">默认</span>' : ''}</span>
-      <span class="bact" onclick="event.stopPropagation()">
-        <button title="重命名" onclick="demoRename('${b.id}')">✎</button>
-        ${!b.isDefault ? `<button class="del" title="删除" onclick="demoDelete('${b.id}')">🗑</button>` : ''}
-      </span>
-      <span class="bmeta">${b.forkBase ? `⎇ 第${b.forkBase}层后 · ` : ''}${branchMsgCount(b)} 变体引用 · 至 F${branchMaxFloor(b)}</span>
-    </div>`;
-  }
-  el('branchTree').innerHTML = html;
-}
-
-/* ---------- 文件视图 ---------- */
-let fileTab = 'main';
-function switchFileTab(t) {
-  fileTab = t;
-  ['main', 'meta', 'export'].forEach(x => el('tab' + x[0].toUpperCase() + x.slice(1))?.classList.toggle('on', x === t));
-  renderFile();
-}
-function activeLineMsg(g, v) {
-  const o = { name: v.name, is_user: v.isUser, mes: v.mes, send_date: 1771009329448 + g.floor * 1000 };
-  if (g.variants.length > 1) { o.swipes = g.variants.map(x => x.mes); o.swipe_id = g.active; }
-  return o;
-}
-function branchesData() {
-  const cur = state.branches.find(x => x.id === state.activeBranch);
-  const activeGids = new Set(Object.values(cur.path));
-  const groups = {};
-  for (const g of Object.values(state.groups)) {
-    if (!activeGids.has(g.id)) {
-      groups[g.id] = { floor: g.floor, owner: g.owner, active: g.active, variants: g.variants.map(v => ({ name: v.name, is_user: v.isUser, mes: v.mes })) };
-    }
-  }
-  return {
-    version: 1,
-    active_branch: cur.id,
-    branches: state.branches.map(b => ({ id: b.id, name: b.name, is_default: b.isDefault, fork_base: b.forkBase || undefined, path: Object.keys(b.path).length ? Object.fromEntries(Object.entries(b.path)) : undefined })),
-    groups,
-  };
-}
-function renderFile() {
-  const cur = state.branches.find(x => x.id === state.activeBranch);
-  const pre = el('fileView');
-  if (fileTab === 'main') {
-    let html = `<span class="ln">1</span><span class="c">// header：标准 ST header，branches 住 chat_metadata.extensions（见第二个标签页）</span>\n`;
-    let i = 2;
-    for (const f of state.floors) {
-      const gid = cur.path[f.number];
-      if (!gid) { html += `<span class="ln">${i}</span><span class="c">· 楼层${f.number}不属于当前分支（数据在 metadata 里，不占主行）</span>\n`; i++; continue; }
-      const g = state.groups[gid];
-      const v = g.variants[g.active];
-      const o = activeLineMsg(g, v);
-      html += `<span class="ln">${i}</span>{<span class="k">"name"</span>:<span class="s">"${v.name}"</span>,<span class="k">"is_user"</span>:<span class="n">${v.isUser}</span>,<span class="k">"mes"</span>:<span class="s">"${v.mes.replace(/"/g, '\\"')}"</span>` +
-        (o.swipes ? `,<span class="k">"swipes"</span>:[${o.swipes.map(s => `<span class="s">"…"</span>`).join(',')}],<span class="k">"swipe_id"</span>:<span class="n">${o.swipe_id}</span>` : '') +
-        `,<span class="k">"send_date"</span>:<span class="n">${o.send_date}</span>}<span class="c"> ← 楼层${f.number}</span>\n`;
-      i++;
-    }
-    pre.innerHTML = html;
-  } else if (fileTab === 'meta') {
-    const m = branchesData();
-    let html = `<span class="ln">1</span>{ <span class="k">"user_name"</span>:<span class="s">"unused"</span>, <span class="k">"character_name"</span>:<span class="s">"unused"</span>,\n`;
-    html += `    <span class="k">"chat_metadata"</span>: { …, <span class="k">"extensions"</span>: { …, <span class="meta-hl"><span class="k">"branches"</span>: </span>\n`;
-    const json = JSON.stringify(m, null, 1).split('\n');
-    html += `<span class="meta-hl">` + json.map((l, idx) => `<span style="display:inline-block;padding-left:${0}">${escapeHtml(l)}</span>`).join('\n') + `</span>\n`;
-    html += `    } }\n`;
-    html += `<span class="c">// 黄框内 = 分支树全部数据。非活跃分支的增量组只在这里；活跃分支的组就是主线性数组，不重复存。</span>\n`;
-    pre.innerHTML = html;
-  } else {
-    let html = `<span class="c">// 「增量导出」：纯标准 JSONL —— 无 branches、无任何插件痕迹。</span>\n`;
-    html += `<span class="c">// 只含当前分支（${cur.name}）的楼层线性序列。可用于：备份 / 交给 vanilla ST / 分享。</span>\n\n`;
-    let i = 1;
-    html += `<span class="ln">${i++}</span>{<span class="k">"user_name"</span>:<span class="s">"unused"</span>,<span class="k">"character_name"</span>:<span class="s">"unused"</span>,<span class="k">"chat_metadata"</span>:{…}}\n`;
-    for (const f of state.floors) {
-      const gid = cur.path[f.number];
-      if (!gid) continue;
-      const g = state.groups[gid], v = g.variants[g.active];
-      html += `<span class="ln">${i++}</span>{<span class="k">"name"</span>:<span class="s">"${v.name}"</span>,<span class="k">"is_user"</span>:<span class="n">${v.isUser}</span>,<span class="k">"mes"</span>:<span class="s">"${v.mes.replace(/"/g, '\\"')}"</span>,…}\n`;
-    }
-    html += `\n<span class="c">// 注入（导入）：选一个原生 JSONL → 后端/前端建家族 → 分支启用。手动/自动均可配置。</span>`;
-    pre.innerHTML = html;
-  }
-}
-function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-
-render();
-</script>
 </body>
 </html>

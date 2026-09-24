@@ -1,14 +1,14 @@
 # ChatFilesys — 聊天文件系统（SillyTavern / Luker 前端扩展）
 
-> 接管酒馆的聊天文件系统：真正的楼层分支、SVG 分支树、零复制切换、纯标准 JSONL 导出——全部作为**一个前端扩展**实现，零核心修改。
+> 接管酒馆的聊天文件系统：真正的楼层分支、纯数据库存储（jsonl 仅导出时存在）、fetch 拦截伪装无感、智能合并去重——全部作为**一个前端扩展**实现，零核心修改。
 
-ChatFilesys 是一个 [SillyTavern](https://github.com/SillyTavern/SillyTavern)（及 Luker 分支）的第三方前端扩展，把「分支」从整文件复制变成聊天文件内的结构化数据组织方式：
+ChatFilesys 是一个 [SillyTavern](https://github.com/SillyTavern/SillyTavern)（及 Luker 分支）的第三方前端扩展，把「分支」从整文件复制变成聊天数据内的结构化组织，把「超大 jsonl 会话文件」变成数据库分片存储：
 
-- **零复制分叉**：分支只存增量（Swipe 组路径），共享前缀永远只有一份——百层聊天分叉不翻倍体积
-- **零网络切换**：切换分支 = 前端内存折叠/展开，一个聊天文件内完成，不切文件、不刷新页面
-- **可视化**：管理弹窗内 SVG 图形化分支树（缩放/拖拽/点击切换）+ 消息流内分叉点 ⎇ 标记 + 输入框上方分支徽章
-- **原生兼容**：元数据惰性存于 `chat_metadata.extensions.chatfilesys`，vanilla SillyTavern 完全不解析、不破坏；任何时刻可导出剥离分支元数据的纯标准 JSONL
-- **收编原生书签**：原生「检查点/书签」创建的复制文件可一键收编为楼层分支（零复制）并清理死引用
+- **真分支零复制**：分支只存增量（Swipe 组路径），共享前缀永远只有一份——百层聊天分叉不翻倍体积
+- **纯数据库模式（重写方向）**：安装后提示「录入数据库并智能合并 → 删除 jsonl（默认删）」；此后 jsonl 只在导出时出现（branch=单 jsonl；家族=zip 包）。三档存储适配器：Authority SQL → 官方通道分片 → IndexedDB 缓存
+- **生态无感**：fetch 拦截层把 `/api/chats/*` 读写转接数据库并伪造合规响应；渲染管线、原生按钮接管、其他插件操作全部照常
+- **智能合并**：content_hash 指纹对齐——完全相同楼层幂等去重、最长公共前缀对齐为分叉点；跨聊天同层合并消灭文件间重复历史
+- **可视化**：SVG 分支树（默认向下、可切右、可缩放拖拽）+ 消息旁 ⎇ 分叉 + 输入框上方分支徽章
 
 ## 安装
 
@@ -17,7 +17,7 @@ ChatFilesys 是一个 [SillyTavern](https://github.com/SillyTavern/SillyTavern)�
 - 全局入口：扩展设置页「打开管理面板」按钮 / 斜杠命令 `/cb` / 快捷键 **Alt+B**
 - 消息旁：每条消息旁的 ⎇ 按钮一键直分叉（自动创建、自动切换、自动命名「分支N」）
 
-## 工作原理
+## 工作原理（现交付形态：JSONL 增强模式；纯库模式见路线图）
 
 ```
 聊天文件（.jsonl）
@@ -26,11 +26,11 @@ ChatFilesys 是一个 [SillyTavern](https://github.com/SillyTavern/SillyTavern)�
 └── 第 2 行起 = 活跃分支的楼层线性序列（body 投影）
 ```
 
-- **楼层（Floor）**：一条消息一层，全局编号；**Swipe 组（Group）**：楼层内变体集合；**分支**：从分叉点起的组路径
+- **楼层（Floor）**：一条消息一层，全局编号；**Swipe 组（Group）**：楼层内变体集合；**分支**：从分叉点起的组路径。swipe 是楼层内容候选（不影响剧情叙事），只有 branch 是真分支
 - 分支切换/删层由投影层（`core/projection.js`）diff 出 RFC6902 操作，经写路径适配层（`core/chat-writer.js`）映射为**官方消息 API**（`deleteMessages`/`addMessages`/`updateMessages`）批量执行；元数据随官方持久化自动同车落盘
-- 事实源永远在服务器聊天文件；浏览器不做任何持久化副本
+- 事实源在服务器聊天文件；浏览器不做任何持久化副本
 
-更完整的设计文档见 [`system-blueprint.html`](system-blueprint.html)（决策蓝图）与 [`backend-plugin-spec.md`](backend-plugin-spec.md)（三期后端插件种子规格，另立仓库）。
+设计文档：[`system-blueprint.html`](system-blueprint.html)（纯库模式蓝图，2026-09-24 重评对齐版）· [`.trellis/tasks/09-24-realign-pure-db/prd.md`](.trellis/tasks/09-24-realign-pure-db/prd.md)（N1–N18 裁定）· [`backend-plugin-spec.md`](backend-plugin-spec.md)（Authority 后端接入指导）· [`docs/multi-chat-pr-storage-seam-proposal.md`](docs/multi-chat-pr-storage-seam-proposal.md)（多聊天 PR 存储接缝建议书，独立于插件）。
 
 ## 开发与测试
 
@@ -56,8 +56,8 @@ e2e 依赖本地 Luker 实例（默认 `https://127.0.0.1:8003`，可在 `tests/
 
 - ✅ 一期：分支数据层 + 写路径 + 原生书签收编 + 增量导出
 - ✅ 二期：UI 重构（管理弹窗 + 消息旁轻量注入）+ SVG 分支树 + 写路径迁移官方消息 API
-- ⬜ 三期：数据库模式（后端插件另立仓库，见 `backend-plugin-spec.md`）
-- ⬜ 四期：增强 JSONL 操作 + 跨聊天家族 + 归档迁移
+- ⬜ 三期：**纯数据库模式重写**（2026-09-24 重评定向，N1–N18）：fetch 拦截接缝 + 三档存储适配器（Authority SQL / 官方通道 / IndexedDB）+ 导入旅程（智能合并 + 回收站）+ 树状图读库
+- ⬜ 四期：导出与家族管理（branch/家族导出、重命名索引、解绑重绑）→ 性能基准与多并发验证 → 记忆/剧情联动（后置）
 
 ## License
 
