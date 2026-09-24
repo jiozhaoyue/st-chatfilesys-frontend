@@ -32,6 +32,31 @@ export function normalizeChatKey(avatarUrl, fileName) {
     return `${norm(avatarUrl)}::${norm(fileName)}`;
 }
 
+/**
+ * integrity 形态桥接：库内数字计数器 ⇄ 宿主字符串 slug。
+ * 真机事实（2026-09-24 Dev Luker script.js）：宿主 chat_metadata.integrity 是字符串
+ * （无则自造 uuid 且 applyIntegrityFromWritePayload 只认非空字符串——数字被静默丢弃，
+ * 宿主锁值永不前进）；get 响应 header 不带 integrity 时宿主 saveChatInternal 以
+ * 「chat not fully loaded」拒绝保存。边界统一转 slug，库内保持数字。
+ */
+function toHostIntegrity(n) {
+    return `cfsys:${n}`;
+}
+
+/**
+ * 宿主发来的 integrity（slug / 纯数字 / 宿主自造 uuid / 空）→ 库乐观锁值。
+ * 非 cfsys 形态的 uuid 说明宿主未从库拿到过 slug（混合状态）→ null 放行不锁。
+ * @returns {number|null}
+ */
+function parseHostIntegrity(v) {
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v !== 'string' || !v.trim()) return null;
+    const m = /^cfsys:(\d+)$/.exec(v.trim());
+    if (m) return Number(m[1]);
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+}
+
 /** 解析 Request 的 URL 路径（支持字符串与 Request 对象；无 location 环境（node:test）用占位基准） */
 function urlOf(input) {
     const base = typeof location !== 'undefined' && location?.href ? location.href : 'http://local.invalid/';
@@ -85,6 +110,7 @@ export function installSeam(adapter, opts = {}) {
             user_name: 'unused',
             character_name: 'unused',
             chat_metadata: {
+                integrity: toHostIntegrity(family.integrity), // 宿主无 integrity 会自造 uuid → 后续写必 409；且 saveChatInternal 拒存
                 extensions: {
                     chatfilesys: family.model, // 现有 UI 直接消费的分支树模型（store-bridge 桥接形态）
                 },
@@ -98,7 +124,18 @@ export function installSeam(adapter, opts = {}) {
         const chatKey = normalizeChatKey(body?.avatar_url, body?.file_name);
         const family = await adapter.loadFamily({ chatKey });
         if (!family) return null;
-        const rows = Array.isArray(body?.chat) ? body.chat : [];
+        // 宿主 save 请求体 chat = [header, ...messages]（script.js saveChatInternal 真机事实）：
+        // 首行是 {user_name, character_name, chat_metadata} 无 mes——剥掉，防 header 污染楼层
+        const allRows = Array.isArray(body?.chat) ? body.chat : [];
+        const isHeaderRow = (r) => r && typeof r === 'object' && !('mes' in r) && ('chat_metadata' in r || 'user_name' in r);
+        const hasHeader = allRows.length > 0 && isHeaderRow(allRows[0]);
+        const rows = hasHeader ? allRows.slice(1) : allRows;
+        // save 随行携带的模型（chat_metadata.extensions.chatfilesys）同步持久化（若与库不同）
+        const incomingModel = hasHeader ? allRows[0]?.chat_metadata?.extensions?.chatfilesys ?? null : null;
+        if (incomingModel && JSON.stringify(incomingModel) !== JSON.stringify(family.model)) {
+            await adapter.saveModel({ familyId: family.familyId, model: incomingModel, expectedIntegrity: null });
+            family.model = incomingModel;
+        }
         // 全量保存 = body 数组逐行 upsert（floorNo = 行序 +1；family.model 内含活跃分支路径）
         const floors = rows.map((row, i) => ({
             floorNo: i + 1,
@@ -108,9 +145,9 @@ export function installSeam(adapter, opts = {}) {
             contentHash: null, // save 路径不做合并判定，hash 留空由适配器按需补
             sendDate: row?.send_date ?? null,
         }));
-        const r = await adapter.saveFloors({ familyId: family.familyId, floors, expectedIntegrity: body?.integrity });
+        const r = await adapter.saveFloors({ familyId: family.familyId, floors, expectedIntegrity: parseHostIntegrity(body?.integrity) });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
-        return jsonResponse({ ok: true, integrity: r.integrity });
+        return jsonResponse({ ok: true, integrity: toHostIntegrity(r.integrity) });
     }
 
     /** 写路径：chats/append → 新楼层追加入库 */
@@ -129,9 +166,9 @@ export function installSeam(adapter, opts = {}) {
             contentHash: null,
             sendDate: row?.send_date ?? null,
         }));
-        const r = await adapter.saveFloors({ familyId: family.familyId, floors, expectedIntegrity: body?.integrity });
+        const r = await adapter.saveFloors({ familyId: family.familyId, floors, expectedIntegrity: parseHostIntegrity(body?.integrity) });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
-        return jsonResponse({ ok: true, appended: messages.length, created: false, integrity: r.integrity });
+        return jsonResponse({ ok: true, appended: messages.length, created: false, integrity: toHostIntegrity(r.integrity) });
     }
 
     /** 写路径：chats/patch → RFC6902 ops 库内执行 */
@@ -142,10 +179,10 @@ export function installSeam(adapter, opts = {}) {
         const r = await adapter.applyOps({
             familyId: family.familyId,
             ops: body?.operations || [],
-            expectedIntegrity: body?.integrity,
+            expectedIntegrity: parseHostIntegrity(body?.integrity),
         });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
-        return jsonResponse({ ok: true, applied: (body?.operations || []).length, integrity: r.integrity });
+        return jsonResponse({ ok: true, applied: (body?.operations || []).length, integrity: toHostIntegrity(r.integrity) });
     }
 
     /** 写路径：chats/rename → 家族重命名（隐藏容器模式下等价改名） */
@@ -174,9 +211,9 @@ export function installSeam(adapter, opts = {}) {
         if (!family) return null;
         // 现有模型住在 chat_metadata.extensions.chatfilesys → 直接更新库内 family 的模型
         const model = body?.chat_metadata?.extensions?.chatfilesys ?? null;
-        const r = await adapter.saveModel({ familyId: family.familyId, model, expectedIntegrity: body?.integrity });
+        const r = await adapter.saveModel({ familyId: family.familyId, model, expectedIntegrity: parseHostIntegrity(body?.integrity) });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
-        return jsonResponse({ ok: true, updated: true, total_messages: 0, created: false, integrity: r.integrity });
+        return jsonResponse({ ok: true, updated: true, total_messages: 0, created: false, integrity: toHostIntegrity(r.integrity) });
     }
 
     /** 写路径：chats/meta/patch → 模型 RFC6902 增量（本插件不用，拦截防漏写透传到 jsonl） */
@@ -185,9 +222,9 @@ export function installSeam(adapter, opts = {}) {
         const family = await adapter.loadFamily({ chatKey });
         if (!family) return null;
         // M1 简化：meta patch 场景极少（本插件全量 saveModel），按 keepCurrent 保留现模型仅 bump integrity
-        const r = await adapter.saveModel({ familyId: family.familyId, model: null, expectedIntegrity: body?.integrity, keepCurrent: true });
+        const r = await adapter.saveModel({ familyId: family.familyId, model: null, expectedIntegrity: parseHostIntegrity(body?.integrity), keepCurrent: true });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
-        return jsonResponse({ ok: true, applied: (body?.operations || []).length, integrity: r.integrity });
+        return jsonResponse({ ok: true, applied: (body?.operations || []).length, integrity: toHostIntegrity(r.integrity) });
     }
 
     /** 读路径：chats/get-delta → 库分片读的区间响应（原生分页读兼容） */

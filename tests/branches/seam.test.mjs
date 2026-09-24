@@ -86,14 +86,75 @@ test('seam：save → applyOps 调用且响应 ok', async () => {
         const res = await globalThis.fetch('/api/chats/save', {
             method: 'POST',
             body: JSON.stringify({
-                avatar_url: 'av1', file_name: 'chat1', integrity: 5,
+                avatar_url: 'av1', file_name: 'chat1', integrity: 'cfsys:5',
                 chat: [{ name: '我', is_user: true, mes: 'a' }, { name: 'AI', is_user: false, mes: 'b' }],
             }),
         });
         const body = await res.json();
         assert.equal(body.ok, true);
-        assert.equal(body.integrity, 6);
+        assert.equal(body.integrity, 'cfsys:6'); // 宿主字符串 slug 形态（applyIntegrityFromWritePayload 只认字符串）
         assert.equal(adapter.calls.saveFloors, 1);
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：save 请求体带 header 行 → 剥掉不污染楼层（真机形态 chat=[header,...msgs]）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    let captured = null;
+    adapter.saveFloors = async (args) => { captured = args; return { ok: true, integrity: 6 }; };
+    const seam = installSeam(adapter);
+    try {
+        const res = await globalThis.fetch('/api/chats/save', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1',
+                chat: [
+                    { user_name: 'unused', character_name: 'unused', chat_metadata: { integrity: 'cfsys:5' } },
+                    { name: '我', is_user: true, mes: 'a' },
+                ],
+            }),
+        });
+        const body = await res.json();
+        assert.equal(body.ok, true);
+        assert.equal(captured.floors.length, 1); // header 行被剥，只写 1 楼层
+        assert.equal(JSON.parse(captured.floors[0].content).mes, 'a');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：get 响应 header 带 integrity slug（宿主 saveChatInternal 无 integrity 拒存）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    const seam = installSeam(adapter);
+    try {
+        const res = await globalThis.fetch('/api/chats/get', {
+            method: 'POST', body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1' }),
+        });
+        const body = await res.json();
+        assert.equal(body[0].chat_metadata.integrity, 'cfsys:5');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：integrity 桥接——宿主 uuid（非 cfsys 形态）→ null 放行不锁', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    let captured = null;
+    adapter.applyOps = async (args) => { captured = args; return { ok: true, integrity: 6 }; };
+    const seam = installSeam(adapter);
+    try {
+        await globalThis.fetch('/api/chats/patch', {
+            method: 'POST',
+            body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1', integrity: '3f2b8c11-xxxx-uuid', operations: [] }),
+        });
+        assert.equal(captured.expectedIntegrity, null); // uuid 不是库锁值 → 放行
     } finally {
         seam.dispose();
         globalThis.fetch = original;
@@ -200,19 +261,19 @@ test('seam：meta → saveModel 持久化模型且响应合规', async () => {
         const res = await globalThis.fetch('/api/chats/meta', {
             method: 'POST',
             body: JSON.stringify({
-                avatar_url: 'av1', file_name: 'chat1', integrity: 5,
+                avatar_url: 'av1', file_name: 'chat1', integrity: 'cfsys:5',
                 chat_metadata: { extensions: { chatfilesys: { active_branch: 'b_x', branches: [], groups: { g1: [1] } } } },
             }),
         });
         assert.equal(res.status, 200);
         const body = await res.json();
         assert.equal(body.ok, true);
-        assert.equal(body.integrity, 6);
+        assert.equal(body.integrity, 'cfsys:6');
         assert.equal(adapter.calls.saveModel, 1);
         assert.equal(adapter.lastSaveModelArgs.familyId, 'f1');
         assert.equal(adapter.lastSaveModelArgs.model.active_branch, 'b_x');
         assert.deepEqual(adapter.lastSaveModelArgs.model.groups, { g1: [1] });
-        assert.equal(adapter.lastSaveModelArgs.expectedIntegrity, 5);
+        assert.equal(adapter.lastSaveModelArgs.expectedIntegrity, 5); // slug 剥壳回数字
     } finally {
         seam.dispose();
         globalThis.fetch = original;
