@@ -28,7 +28,7 @@ import { planSwitch, planDeleteFloor } from './core/projection.js';
 import { createChatWriter } from './core/chat-writer.js';
 import { installSeam } from './core/seam.js';
 import { createStorageAdapter } from './core/storage/adapter.js';
-import { modelFromStore } from './core/store-bridge.js';
+import { modelFromStore, storeFromModel } from './core/store-bridge.js';
 import { createTrash } from './core/trash.js';
 import { runImport } from './core/importer.js';
 import { getActiveBranch, branchMaxFloor } from './ui/common.js';
@@ -605,6 +605,7 @@ async function exportCurrentBranch(quiet = false) {
 let autoExportTimer = null;
 
 function maybeAutoExport() {
+    if (pureDbMode()) return; // §8.3.5：纯库模式下 jsonl 只经显式导出产生，自动导出走文件下载语义不适用
     if (!autoExportEnabled()) return;
     clearTimeout(autoExportTimer);
     autoExportTimer = setTimeout(() => { exportCurrentBranch(true); }, 1500);
@@ -638,14 +639,45 @@ function onChatChanged() {
 }
 
 /** 新聊天自动建家族（PRD 决策 #6）；已有聊天保持原生，启用由用户显式触发 */
-function onChatCreated() {
+async function onChatCreated() {
     const c = ctx();
     if (c.groupId) { renderAll(); return; }
     if (!getModel()) {
-        setModel(enableForChat(c.chat || []));
-        c.saveMetadataDebounced();
+        // 纯库模式（§8.3.6）：新聊天直接库内建档（首条消息随 seam 拦截的 save/append 入库）
+        if (storageState) {
+            try {
+                const chatKey = normalizeChatKeyOf(c);
+                const family = storeFromModel(
+                    enableForChat(c.chat || []),
+                    { familyId: `f_${newId36()}`, chatKey, characterId: String(c.characterId ?? ''), name: familyName() },
+                );
+                const r = await storageState.adapter.createFamily({ family });
+                if (r?.ok) {
+                    console.log(`[chatfilesys] 新聊天已库内建档 ${family.familyId}`);
+                } else {
+                    console.warn('[chatfilesys] 新聊天建档失败（聊天仍走原生路径）:', r?.reason);
+                }
+            } catch (e) {
+                console.warn('[chatfilesys] 新聊天库内建档异常（不阻断）:', e);
+            }
+        } else {
+            setModel(enableForChat(c.chat || []));
+            c.saveMetadataDebounced();
+        }
     }
     renderAll();
+}
+
+/** 当前聊天的库 chatKey（seam.normalizeChatKey 同规则） */
+function normalizeChatKeyOf(c) {
+    const char = c.characters?.[c.characterId] || {};
+    const fileName = String(c.chatId || '').replace(/\.jsonl$/i, '');
+    return `${String(char.avatar || '').trim().toLowerCase()}::${String(fileName).trim().toLowerCase()}`;
+}
+
+/** 短随机 id（36 进制时间戳+序） */
+function newId36() {
+    return `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
 }
 
 function onMessageChanged() {
