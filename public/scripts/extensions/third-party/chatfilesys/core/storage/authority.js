@@ -76,6 +76,13 @@ CREATE TABLE IF NOT EXISTS branch_paths (
     PRIMARY KEY (family_id, branch_id, floor_no)
 );` }],
         });
+        // 002：模型本体列（saveModel 持久化 active_branch/groups；重复迁移报列已存在 → 容错视为成功）
+        try {
+            await client.sql.migrate({
+                database: DB,
+                migrations: [{ id: '002_model', statement: 'ALTER TABLE families ADD COLUMN model TEXT;' }],
+            });
+        } catch { /* 列已存在 */ }
         migrated = true;
     }
 
@@ -122,17 +129,21 @@ CREATE TABLE IF NOT EXISTS branch_paths (
                 branchPaths[b.id][p.floor_no] = p.variant_id;
             }
         }
-        // store-bridge 模型形态（现有 UI 直接消费；groups 由波次2 桥接模块填充）
-        const active = branches.find((b) => b.is_default) || branches[0];
-        const model = {
-            active_branch: active?.id ?? null,
-            branches: branches.map((b) => ({
-                id: b.id, name: b.name, is_default: b.is_default,
-                fork_base: b.fork_floor ?? 0,
-                path: branchPaths[b.id] || {},
-            })),
-            groups: {},
-        };
+        // 模型优先用存储本体（saveModel 持久化的 active_branch/groups 不丢）；无则派生（导入旅程初始建档）
+        let model = null;
+        try { model = f.model ? JSON.parse(f.model) : null; } catch { model = null; }
+        if (!model) {
+            const active = branches.find((b) => b.is_default) || branches[0];
+            model = {
+                active_branch: active?.id ?? null,
+                branches: branches.map((b) => ({
+                    id: b.id, name: b.name, is_default: b.is_default,
+                    fork_base: b.fork_floor ?? 0,
+                    path: branchPaths[b.id] || {},
+                })),
+                groups: {},
+            };
+        }
         return {
             familyId: f.id, chatKey: f.chat_key, characterId: f.character_id,
             name: f.name, integrity: f.integrity,
@@ -244,6 +255,40 @@ CREATE TABLE IF NOT EXISTS branch_paths (
                     );
                 }
                 // 其他 op 形态（test 等）：忽略（消息 API 不产生）
+            }
+            const integrity = await bumpIntegrity(familyId);
+            return { ok: true, integrity };
+        },
+
+        async saveModel({ familyId, model, expectedIntegrity, keepCurrent }) {
+            await ensureMigrated();
+            const conflict = await checkIntegrity(familyId, expectedIntegrity);
+            if (conflict) return { ok: false, conflict: true };
+            const f = await loadFamilyRow(familyId);
+            if (!f) return { ok: false, reason: 'family-not-found' };
+            let stored = null;
+            try { stored = f.model ? JSON.parse(f.model) : null; } catch { stored = null; }
+            const nextModel = keepCurrent ? stored : model;
+            if (!keepCurrent && nextModel) {
+                // 模型本体持久化（active_branch/groups 往返不丢）
+                await q('UPDATE families SET model = ?, updated_at = ? WHERE id = ?', [JSON.stringify(nextModel), Date.now(), familyId]);
+                // 同步重建结构表（parent_branch_id 尽量保留现值）
+                const existing = await q('SELECT branch_id, parent_branch_id FROM branches WHERE family_id = ?', [familyId]);
+                const parentOf = new Map(existing.map((b) => [b.branch_id, b.parent_branch_id ?? null]));
+                await q('DELETE FROM branches WHERE family_id = ?', [familyId]);
+                await q('DELETE FROM branch_paths WHERE family_id = ?', [familyId]);
+                for (const b of nextModel.branches || []) {
+                    await q(
+                        'INSERT INTO branches (family_id, branch_id, parent_branch_id, name, fork_floor, is_default) VALUES (?, ?, ?, ?, ?, ?)',
+                        [familyId, b.id, parentOf.has(b.id) ? parentOf.get(b.id) : null, b.name ?? b.id, b.fork_base ?? 0, b.is_default ? 1 : 0],
+                    );
+                    for (const [floorNo, variantId] of Object.entries(b.path || {})) {
+                        await q(
+                            'INSERT INTO branch_paths (family_id, branch_id, floor_no, variant_id) VALUES (?, ?, ?, ?)',
+                            [familyId, b.id, Number(floorNo), variantId],
+                        );
+                    }
+                }
             }
             const integrity = await bumpIntegrity(familyId);
             return { ok: true, integrity };

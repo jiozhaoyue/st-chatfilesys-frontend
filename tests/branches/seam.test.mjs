@@ -8,7 +8,7 @@ import { installSeam, normalizeChatKey } from '../../public/scripts/extensions/t
 
 /** mock adapter：内存实现 + 调用记录 */
 function mockAdapter() {
-    const calls = { loadFamily: 0, saveFloors: 0, applyOps: 0 };
+    const calls = { loadFamily: 0, saveFloors: 0, applyOps: 0, saveModel: 0 };
     const family = {
         familyId: 'f1', chatKey: 'av1::chat1', characterId: 'c1', name: 'chat1', integrity: 5,
         branches: [{ id: 'b_main', name: '主分支', is_default: true, fork_floor: 0, parent_branch_id: null }],
@@ -30,6 +30,7 @@ function mockAdapter() {
         async loadFloors() { return { floors, hasMore: false }; },
         async saveFloors() { this.calls.saveFloors++; return this.conflictNext ? { ok: false, conflict: true } : { ok: true, integrity: 6 }; },
         async applyOps() { this.calls.applyOps++; return this.conflictNext ? { ok: false, conflict: true } : { ok: true, integrity: 6 }; },
+        async saveModel(args) { this.calls.saveModel++; this.lastSaveModelArgs = args; return this.conflictNext ? { ok: false, conflict: true } : { ok: true, integrity: 6 }; },
         async renameFamily() { return { ok: true, integrity: 6 }; },
         async deleteFamily() { return { ok: true }; },
     };
@@ -184,6 +185,98 @@ test('seam：adapter 抛错 → 透传且不 reject', async () => {
             method: 'POST', body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1' }),
         });
         assert.equal(await res.text(), 'fallback');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：meta → saveModel 持久化模型且响应合规', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    const seam = installSeam(adapter);
+    try {
+        const res = await globalThis.fetch('/api/chats/meta', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1', integrity: 5,
+                chat_metadata: { extensions: { chatfilesys: { active_branch: 'b_x', branches: [], groups: { g1: [1] } } } },
+            }),
+        });
+        assert.equal(res.status, 200);
+        const body = await res.json();
+        assert.equal(body.ok, true);
+        assert.equal(body.integrity, 6);
+        assert.equal(adapter.calls.saveModel, 1);
+        assert.equal(adapter.lastSaveModelArgs.familyId, 'f1');
+        assert.equal(adapter.lastSaveModelArgs.model.active_branch, 'b_x');
+        assert.deepEqual(adapter.lastSaveModelArgs.model.groups, { g1: [1] });
+        assert.equal(adapter.lastSaveModelArgs.expectedIntegrity, 5);
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：meta/patch → saveModel keepCurrent 防漏写', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    const seam = installSeam(adapter);
+    try {
+        const res = await globalThis.fetch('/api/chats/meta/patch', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1', integrity: 5,
+                operations: [{ op: 'replace', path: '/active_branch', value: 'b_y' }],
+            }),
+        });
+        assert.equal(res.status, 200);
+        const body = await res.json();
+        assert.equal(body.ok, true);
+        assert.equal(adapter.lastSaveModelArgs.keepCurrent, true);
+        assert.equal(adapter.lastSaveModelArgs.model, null);
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：meta 冲突 → 409', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    adapter.conflictNext = true;
+    const seam = installSeam(adapter);
+    try {
+        const res = await globalThis.fetch('/api/chats/meta', {
+            method: 'POST',
+            body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1', integrity: 4, chat_metadata: {} }),
+        });
+        assert.equal(res.status, 409);
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：get-delta → 分片区间响应形态', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    let captured = null;
+    adapter.loadFloors = async (args) => { captured = args; return { floors: adapter.floors.slice(0, 1), hasMore: true }; };
+    const seam = installSeam(adapter);
+    try {
+        const res = await globalThis.fetch('/api/chats/get-delta', {
+            method: 'POST',
+            body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1', from_index: 0, limit: 1 }),
+        });
+        assert.equal(res.status, 200);
+        const body = await res.json();
+        assert.equal(captured.from, 0);
+        assert.equal(captured.limit, 1);
+        assert.equal(body.chat.length, 1);
+        assert.equal(body.next_index, 1);
+        assert.equal(body.has_more, true);
+        assert.equal(body.chat_metadata.extensions.chatfilesys.branches[0].id, 'b_main');
     } finally {
         seam.dispose();
         globalThis.fetch = original;

@@ -13,6 +13,10 @@
  *   loadFloors({ familyId, from, limit }) -> { floors:[{floorNo,variantId,seq,content,contentHash,sendDate}], hasMore }
  *   saveFloors({ familyId, floors, expectedIntegrity }) -> { ok, integrity } | { ok:false, conflict:true }
  *   applyOps({ familyId, ops, expectedIntegrity })   -> { ok, integrity } | { ok:false, conflict:true }
+ *   saveModel({ familyId, model, expectedIntegrity, keepCurrent }) -> { ok, integrity } | { ok:false, conflict:true }
+ *       model = store-bridge 模型形态（{active_branch, branches:[{...,path}], groups}）；
+ *       持久化模型本体（active_branch/groups 不丢失）+ 同步重建 branches/branchPaths 结构表；
+ *       keepCurrent=true 时忽略 model、保留现模型仅 bump integrity（chats/meta/patch 防漏写用）。
  *   moveToTrash({ source, content }) -> { ok, trashId }
  *   listTrash() -> [{ trashId, source, movedAt }]
  *   restoreFromTrash({ trashId, restoreTarget }) -> { ok }

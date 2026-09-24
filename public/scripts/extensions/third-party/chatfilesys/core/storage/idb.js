@@ -38,22 +38,24 @@ function reqAsPromise(request) {
     });
 }
 
-/** 组装 family（含现有 UI 模型形态；groups 由波次2 桥接填充） */
+/** 组装 family（含现有 UI 模型形态；模型本体优先取 meta.model） */
 function assembleFamily(meta) {
     const branches = (meta.branches || []).map((b) => ({
         id: b.id, name: b.name, is_default: Boolean(b.is_default),
         fork_floor: b.fork_floor ?? b.fork_base ?? 0, parent_branch_id: b.parent_branch_id ?? null,
     }));
     const branchPaths = meta.branchPaths || {};
-    const active = branches.find((b) => b.is_default) || branches[0];
-    const model = {
-        active_branch: active?.id ?? null,
-        branches: branches.map((b) => ({
-            id: b.id, name: b.name, is_default: b.is_default,
-            fork_base: b.fork_floor ?? b.fork_base ?? 0, path: branchPaths[b.id] || {},
-        })),
-        groups: {},
-    };
+    const model = meta.model || (() => {
+        const active = branches.find((b) => b.is_default) || branches[0];
+        return {
+            active_branch: active?.id ?? null,
+            branches: branches.map((b) => ({
+                id: b.id, name: b.name, is_default: b.is_default,
+                fork_base: b.fork_floor ?? b.fork_base ?? 0, path: branchPaths[b.id] || {},
+            })),
+            groups: {},
+        };
+    })();
     return {
         familyId: meta.familyId, chatKey: meta.chatKey, characterId: meta.characterId,
         name: meta.name, integrity: meta.integrity ?? 1,
@@ -176,6 +178,28 @@ export async function createIdbAdapter(ctx = {}) {
             const store = tx(db, 'floors', 'readwrite');
             for (const old of rows) {
                 if (!keep.has(`${old.floorNo}#${old.variantId}`)) store.delete([old.familyId, old.floorNo, old.variantId]);
+            }
+            meta.integrity = (meta.integrity ?? 1) + 1;
+            meta.updatedAt = Date.now();
+            await putMeta(meta);
+            return { ok: true, integrity: meta.integrity };
+        },
+
+        async saveModel({ familyId, model, expectedIntegrity, keepCurrent }) {
+            const meta = await loadMeta(familyId);
+            if (!meta) return { ok: false, reason: 'family-not-found' };
+            if (expectedIntegrity != null && expectedIntegrity !== (meta.integrity ?? 1)) {
+                return { ok: false, conflict: true };
+            }
+            if (!keepCurrent && model) {
+                meta.model = model;
+                meta.branches = (model.branches || []).map((b) => ({
+                    id: b.id, name: b.name, is_default: Boolean(b.is_default),
+                    fork_floor: b.fork_base ?? 0, parent_branch_id: null,
+                }));
+                const branchPaths = {};
+                for (const b of model.branches || []) branchPaths[b.id] = b.path || {};
+                meta.branchPaths = branchPaths;
             }
             meta.integrity = (meta.integrity ?? 1) + 1;
             meta.updatedAt = Date.now();

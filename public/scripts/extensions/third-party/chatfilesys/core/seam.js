@@ -13,8 +13,11 @@
  * 适配器契约 = design.md §2 StorageAdapterAPI（duck-typed 参数注入，本模块不感知具体后端）。
  */
 
-/** 拦截的路由（URL 路径尾部匹配） */
-const ROUTES = ['chats/get', 'chats/save', 'chats/append', 'chats/patch', 'chats/rename', 'chats/delete'];
+/** 拦截的路由（URL 路径尾部匹配；meta 系 = 分支模型保存通道，get-delta = 原生分页读） */
+const ROUTES = [
+    'chats/get', 'chats/save', 'chats/append', 'chats/patch', 'chats/rename', 'chats/delete',
+    'chats/meta', 'chats/meta/patch', 'chats/get-delta',
+];
 
 /**
  * 归一化宿主聊天键：avatar 与文件名小写、去首尾空白后拼接。
@@ -154,8 +157,52 @@ export function installSeam(adapter, opts = {}) {
         return jsonResponse({ ok: true });
     }
 
-    const handlers = { 'chats/get': handleGet, 'chats/save': handleSave, 'chats/append': handleAppend,
-        'chats/patch': handlePatch, 'chats/rename': handleRename, 'chats/delete': handleDelete };
+    /** 写路径：chats/meta → 家族模型更新（现有 UI setModel→saveMetadata 的落点） */
+    async function handleMeta(body) {
+        const chatKey = normalizeChatKey(body?.avatar_url, body?.file_name);
+        const family = await adapter.loadFamily({ chatKey });
+        if (!family) return null;
+        // 现有模型住在 chat_metadata.extensions.chatfilesys → 直接更新库内 family 的模型
+        const model = body?.chat_metadata?.extensions?.chatfilesys ?? null;
+        const r = await adapter.saveModel({ familyId: family.familyId, model, expectedIntegrity: body?.integrity });
+        if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
+        return jsonResponse({ ok: true, updated: true, total_messages: 0, created: false, integrity: r.integrity });
+    }
+
+    /** 写路径：chats/meta/patch → 模型 RFC6902 增量（本插件不用，拦截防漏写透传到 jsonl） */
+    async function handleMetaPatch(body) {
+        const chatKey = normalizeChatKey(body?.avatar_url, body?.file_name);
+        const family = await adapter.loadFamily({ chatKey });
+        if (!family) return null;
+        // M1 简化：meta patch 场景极少（本插件全量 saveModel），按 keepCurrent 保留现模型仅 bump integrity
+        const r = await adapter.saveModel({ familyId: family.familyId, model: null, expectedIntegrity: body?.integrity, keepCurrent: true });
+        if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
+        return jsonResponse({ ok: true, applied: (body?.operations || []).length, integrity: r.integrity });
+    }
+
+    /** 读路径：chats/get-delta → 库分片读的区间响应（原生分页读兼容） */
+    async function handleGetDelta(body) {
+        const chatKey = normalizeChatKey(body?.avatar_url, body?.file_name);
+        const family = await adapter.loadFamily({ chatKey });
+        if (!family) return null;
+        const from = Number(body?.from_index ?? 0);
+        const limit = Number(body?.limit ?? 100);
+        const { floors, hasMore } = await adapter.loadFloors({ familyId: family.familyId, from, limit });
+        return jsonResponse({
+            chat: floors.map((f) => JSON.parse(f.content)),
+            chat_metadata: { extensions: { chatfilesys: family.model } },
+            from_index: from,
+            next_index: from + floors.length,
+            total_messages: Object.keys(family.branchPaths?.[Object.keys(family.branchPaths)[0]] || {}).length,
+            has_more: Boolean(hasMore),
+        });
+    }
+
+    const handlers = {
+        'chats/get': handleGet, 'chats/save': handleSave, 'chats/append': handleAppend,
+        'chats/patch': handlePatch, 'chats/rename': handleRename, 'chats/delete': handleDelete,
+        'chats/meta': handleMeta, 'chats/meta/patch': handleMetaPatch, 'chats/get-delta': handleGetDelta,
+    };
 
     async function interceptingFetch(input, init) {
         let route = null;

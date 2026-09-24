@@ -71,22 +71,25 @@ export function createOfficialAdapter(ctx) {
         await api('chats/save', { avatar_url: PREFIX, file_name: name, chat, force: true });
     }
 
-    /** 从 meta+floorRows 装配 family（含现有 UI 模型形态） */
+    /** 从 meta+floorRows 装配 family（含现有 UI 模型形态；模型本体优先取 meta.model） */
     function assembleFamily(meta, floorRows) {
         const branches = (meta.branches || []).map((b) => ({
             id: b.id, name: b.name, is_default: Boolean(b.is_default),
             fork_floor: b.fork_floor ?? b.fork_base ?? 0, parent_branch_id: b.parent_branch_id ?? null,
         }));
         const branchPaths = meta.branchPaths || {};
-        const active = branches.find((b) => b.is_default) || branches[0];
-        const model = {
-            active_branch: active?.id ?? null,
-            branches: branches.map((b) => ({
-                id: b.id, name: b.name, is_default: b.is_default,
-                fork_base: b.fork_floor ?? b.fork_base ?? 0, path: branchPaths[b.id] || {},
-            })),
-            groups: {},
-        };
+        // 模型本体优先（saveModel 持久化后 active_branch/groups 往返不丢）；无则派生
+        const model = meta.model || (() => {
+            const active = branches.find((b) => b.is_default) || branches[0];
+            return {
+                active_branch: active?.id ?? null,
+                branches: branches.map((b) => ({
+                    id: b.id, name: b.name, is_default: b.is_default,
+                    fork_base: b.fork_floor ?? b.fork_base ?? 0, path: branchPaths[b.id] || {},
+                })),
+                groups: {},
+            };
+        })();
         return {
             familyId: meta.familyId, chatKey: meta.chatKey, characterId: meta.characterId,
             name: meta.name, integrity: meta.integrity,
@@ -210,6 +213,29 @@ export function createOfficialAdapter(ctx) {
             meta.branches = raw.family.branches; meta.branchPaths = raw.family.branchPaths;
             await writeContainer(hiddenName(familyId), meta, rows);
             remember(assembleFamily(meta, rows));
+            return { ok: true, integrity: meta.integrity };
+        },
+
+        async saveModel({ familyId, model, expectedIntegrity, keepCurrent }) {
+            const raw = await loadFamilyRaw({ familyId });
+            if (!raw) return { ok: false, reason: 'family-not-found' };
+            if (expectedIntegrity != null && expectedIntegrity !== raw.family.integrity) {
+                return { ok: false, conflict: true };
+            }
+            const meta = { ...raw.family, integrity: raw.family.integrity + 1 };
+            if (!keepCurrent && model) {
+                // 模型本体持久化 + 结构视图同步（branches/branchPaths 由模型派生，保持读路径一致）
+                meta.model = model;
+                meta.branches = (model.branches || []).map((b) => ({
+                    id: b.id, name: b.name, is_default: Boolean(b.is_default),
+                    fork_floor: b.fork_base ?? 0, parent_branch_id: null,
+                }));
+                const branchPaths = {};
+                for (const b of model.branches || []) branchPaths[b.id] = b.path || {};
+                meta.branchPaths = branchPaths;
+            }
+            await writeContainer(hiddenName(familyId), meta, raw.floorRows);
+            remember(assembleFamily(meta, raw.floorRows));
             return { ok: true, integrity: meta.integrity };
         },
 
