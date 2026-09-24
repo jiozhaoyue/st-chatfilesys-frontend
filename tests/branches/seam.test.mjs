@@ -36,8 +36,9 @@ function mockAdapter() {
     };
 }
 
-test('normalizeChatKey：小写+去空白', () => {
-    assert.equal(normalizeChatKey(' AV1 ', 'Chat1.JSONL'), 'av1::chat1.jsonl');
+test('normalizeChatKey：小写+去空白+剥 .jsonl 后缀（真机两侧键收敛）', () => {
+    assert.equal(normalizeChatKey(' AV1 ', 'Chat1.JSONL'), 'av1::chat1');
+    assert.equal(normalizeChatKey('av1.png', 'chat1'), normalizeChatKey('av1.png', 'chat1.jsonl'));
 });
 
 test('seam：get 已接管 → 拼装 [header,...rows] 响应', async () => {

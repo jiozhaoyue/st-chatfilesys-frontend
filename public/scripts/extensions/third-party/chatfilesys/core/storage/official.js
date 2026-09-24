@@ -30,12 +30,14 @@ function trashName(trashId) {
 export async function createOfficialAdapter(ctx) {
     const doFetch = ctx.fetch;
     const log = ctx.log ?? console.warn;
+    // 宿主鉴权头（CSRF token）：官方端点必需；index.js 注入 getRequestHeaders()
+    const authHeaders = ctx.headers ? () => (typeof ctx.headers === 'function' ? ctx.headers() : ctx.headers) : () => ({});
 
     /** 官方端点调用封装（POST JSON） */
     async function api(path, body) {
         const res = await doFetch(`/api/${path}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
             body: JSON.stringify(body ?? {}),
         });
         if (!res.ok) throw new Error(`/api/${path} HTTP ${res.status}`);

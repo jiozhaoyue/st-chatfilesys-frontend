@@ -20,13 +20,16 @@ const ROUTES = [
 ];
 
 /**
- * 归一化宿主聊天键：avatar 与文件名小写、去首尾空白后拼接。
+ * 归一化宿主聊天键：avatar 与文件名小写、去首尾空白、剥 .jsonl 后缀。
+ * 真机事实（2026-09-24 Dev 实例捕获）：宿主 get 请求 file_name 不带 .jsonl、
+ * avatar_url 带 .png；导入侧建档带 .jsonl——两侧统一剥后缀保证键一致。
  * @param {string} avatarUrl
  * @param {string} fileName
  * @returns {string} chatKey
  */
 export function normalizeChatKey(avatarUrl, fileName) {
-    return `${String(avatarUrl || '').trim().toLowerCase()}::${String(fileName || '').trim().toLowerCase()}`;
+    const norm = (s) => String(s || '').trim().toLowerCase().replace(/\.jsonl$/i, '');
+    return `${norm(avatarUrl)}::${norm(fileName)}`;
 }
 
 /** 解析 Request 的 URL 路径（支持字符串与 Request 对象；无 location 环境（node:test）用占位基准） */

@@ -107,6 +107,7 @@ async function enablePureDb() {
     try {
         const { tier, adapter, dispose } = await createStorageAdapter({
             fetch: (...args) => globalThis.fetch(...args),
+            headers: () => (typeof ctx().getRequestHeaders === 'function' ? ctx().getRequestHeaders() : {}),
             log: console.warn,
         });
         const seam = installSeam(adapter, { log: console.warn });
