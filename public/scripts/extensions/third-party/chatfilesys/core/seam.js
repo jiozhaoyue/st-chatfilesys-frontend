@@ -13,6 +13,8 @@
  * 适配器契约 = design.md §2 StorageAdapterAPI（duck-typed 参数注入，本模块不感知具体后端）。
  */
 
+import { applyOpsToObject } from './ops-apply.js';
+
 /** 拦截的路由（URL 路径尾部匹配；meta 系 = 分支模型保存通道，get-delta = 原生分页读） */
 const ROUTES = [
     'chats/get', 'chats/save', 'chats/append', 'chats/patch', 'chats/rename', 'chats/delete',
@@ -81,6 +83,87 @@ function jsonResponse(body, status = 200) {
     return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
+/** 本插件在聊天头里自管的两个位置：extensions.chatfilesys（走法模型）与 integrity（版本号） */
+const OWN_EXTENSION_KEY = 'chatfilesys';
+
+/**
+ * 合成完整 chat_metadata（读响应用，T0/R0：聊天记录零丢失）。
+ * 宿主与其他插件写进聊天头的内容**整份回显**；本插件两项覆盖在各自位置。
+ * `extensions` 是**合并**而不是覆盖——其他插件也把命名空间挂在 extensions 下。
+ * @param {{hostMetadata?: object, model?: object, integrity?: any}} family
+ */
+function composeChatMetadata(family) {
+    const host = family?.hostMetadata && typeof family.hostMetadata === 'object' ? family.hostMetadata : {};
+    const extensions = { ...(host.extensions || {}), [OWN_EXTENSION_KEY]: family?.model ?? null };
+    return { ...host, integrity: toHostIntegrity(family?.integrity), extensions };
+}
+
+/**
+ * 从完整 chat_metadata 拆出库内三份中的两份：`{ hostMetadata, model }`。
+ * hostMetadata = 去掉本插件两项之后的**其余全部内容**（其他插件命名空间、main_chat、变量……）。
+ * @param {object} meta
+ */
+function splitChatMetadata(meta) {
+    const m = meta && typeof meta === 'object' ? meta : {};
+    const extensions = { ...(m.extensions || {}) };
+    const model = extensions[OWN_EXTENSION_KEY] ?? null;
+    delete extensions[OWN_EXTENSION_KEY];
+    const host = { ...m };
+    delete host.integrity;
+    if (Object.keys(extensions).length) host.extensions = extensions;
+    else delete host.extensions;
+    return { hostMetadata: host, model };
+}
+
+/**
+ * 合并宿主元数据（T0/R0 关键：**不能浅合并掉别人的命名空间**）。
+ *
+ * 顶层浅合并 + `extensions` **按命名空间逐项合并**：其他插件的数据都挂在
+ * `extensions.<插件名>` 下，若整体替换 `extensions`，宿主一次自带 `extensions` 的保存
+ * 就会把所有插件的命名空间一起抹掉（真机实测：时有时无的丢命名空间）。
+ * 每个命名空间内部按「该插件发来的整份即其最新值」替换，不做深合并。
+ * 删除命名空间的唯一路径是 `chats/meta/patch` 的 remove op（那条路径不经本函数）。
+ *
+ * @param {object} prev 库内已有
+ * @param {object} incoming 本次入向
+ */
+function mergeHostMetadata(prev, incoming) {
+    const a = prev && typeof prev === 'object' ? prev : {};
+    const b = incoming && typeof incoming === 'object' ? incoming : {};
+    const merged = { ...a, ...b };
+    if (a.extensions || b.extensions) {
+        merged.extensions = { ...(a.extensions || {}), ...(b.extensions || {}) };
+    }
+    return merged;
+}
+
+/**
+ * 把新写入的楼层并入**当前走法的 path**（T0 实测暴露的必要条件）。
+ *
+ * 读路径按「活跃分支 path 引用的行」做投影过滤——若写入时只落行、不落 path，
+ * 这些行就会被当成「其他分支的折叠行」而**读不回来**（消息写进库却像丢了）。
+ * 因此任何追加/全量写都要同步扩展 path。
+ *
+ * @param {import('./storage/adapter.js').StorageAdapterAPI} adapter
+ * @param {{model?: {active_branch?: string, branches?: Array<{id: string, path: object}>}}} family
+ * @param {Array<{floorNo: number, variantId: string}>} floors
+ * @param {Function} log
+ */
+async function ensurePathCovers(adapter, family, floors, log) {
+    const active = family?.model?.branches?.find((b) => b.id === family.model.active_branch);
+    if (!active) return;
+    let changed = false;
+    for (const f of floors) {
+        if (active.path[f.floorNo] !== f.variantId) {
+            active.path[f.floorNo] = f.variantId;
+            changed = true;
+        }
+    }
+    if (!changed) return;
+    const r = await adapter.saveModel({ familyId: family.familyId, model: family.model, expectedIntegrity: null, keepCurrent: false });
+    if (r && r.ok === false) log('[chatfilesys-seam] 走法路径扩展落库失败（读回可能缺行）:', r.reason);
+}
+
 /**
  * 安装 fetch 拦截接缝。
  * @param {import('./storage/adapter.js').StorageAdapterAPI} adapter 三档存储适配器（duck-typed）
@@ -109,12 +192,9 @@ export function installSeam(adapter, opts = {}) {
         const header = {
             user_name: 'unused',
             character_name: 'unused',
-            chat_metadata: {
-                integrity: toHostIntegrity(family.integrity), // 宿主无 integrity 会自造 uuid → 后续写必 409；且 saveChatInternal 拒存
-                extensions: {
-                    chatfilesys: family.model, // 现有 UI 直接消费的分支树模型（store-bridge 桥接形态）
-                },
-            },
+            // 聊天头**整份回显**（T0/R0）：宿主与其他插件写进去的内容一律不得丢失；
+            // 本插件两项（integrity 与 extensions.chatfilesys）覆盖在各自位置。
+            chat_metadata: composeChatMetadata(family),
         };
         return jsonResponse([header, ...rows]);
     }
@@ -130,11 +210,24 @@ export function installSeam(adapter, opts = {}) {
         const isHeaderRow = (r) => r && typeof r === 'object' && !('mes' in r) && ('chat_metadata' in r || 'user_name' in r);
         const hasHeader = allRows.length > 0 && isHeaderRow(allRows[0]);
         const rows = hasHeader ? allRows.slice(1) : allRows;
-        // save 随行携带的模型（chat_metadata.extensions.chatfilesys）同步持久化（若与库不同）
-        const incomingModel = hasHeader ? allRows[0]?.chat_metadata?.extensions?.chatfilesys ?? null : null;
-        if (incomingModel && JSON.stringify(incomingModel) !== JSON.stringify(family.model)) {
-            await adapter.saveModel({ familyId: family.familyId, model: incomingModel, expectedIntegrity: null });
-            family.model = incomingModel;
+        // 聊天头整份并入（T0/R0）：宿主与其他插件写进去的命名空间、main_chat、变量……一律落库，
+        // 只有本插件两项例外——extensions.chatfilesys 走模型通道，integrity 由库自管。
+        const incomingMeta = hasHeader ? allRows[0]?.chat_metadata ?? null : null;
+        const { hostMetadata: incomingHost, model: incomingModel } = splitChatMetadata(incomingMeta);
+        const mergedHost = mergeHostMetadata(family.hostMetadata, incomingHost);
+        const hostChanged = JSON.stringify(mergedHost) !== JSON.stringify(family.hostMetadata || {});
+        const modelChanged = Boolean(incomingModel) && JSON.stringify(incomingModel) !== JSON.stringify(family.model);
+        if (hostChanged || modelChanged) {
+            const rMeta = await adapter.saveModel({
+                familyId: family.familyId,
+                model: modelChanged ? incomingModel : family.model,
+                hostMetadata: hostChanged ? mergedHost : undefined,
+                expectedIntegrity: null,
+                keepCurrent: !modelChanged, // 模型没变则不重建结构表，只写聊天头
+            });
+            if (rMeta && rMeta.ok === false) log('[chatfilesys-seam] 聊天头落库失败:', rMeta.reason);
+            if (modelChanged) family.model = incomingModel;
+            if (hostChanged) family.hostMetadata = mergedHost;
         }
         // 全量保存 = body 数组逐行 upsert（floorNo = 行序 +1；family.model 内含活跃分支路径）
         const floors = rows.map((row, i) => ({
@@ -145,13 +238,13 @@ export function installSeam(adapter, opts = {}) {
             contentHash: null, // save 路径不做合并判定，hash 留空由适配器按需补
             sendDate: row?.send_date ?? null,
         }));
+        await ensurePathCovers(adapter, family, floors, log); // 新楼层必须进 path，否则读回被投影过滤丢掉
         const r = await adapter.saveFloors({ familyId: family.familyId, floors, expectedIntegrity: parseHostIntegrity(body?.integrity) });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
         return jsonResponse({ ok: true, integrity: toHostIntegrity(r.integrity) });
     }
 
-    /** 写路径：chats/append → 新楼层追加入库 */
-    async function handleAppend(body) {
+    /** 写路径：chats/append → 新楼层追加入库 */    async function handleAppend(body) {
         const chatKey = normalizeChatKey(body?.avatar_url, body?.file_name);
         const family = await adapter.loadFamily({ chatKey });
         if (!family) return null;
@@ -166,6 +259,7 @@ export function installSeam(adapter, opts = {}) {
             contentHash: null,
             sendDate: row?.send_date ?? null,
         }));
+        await ensurePathCovers(adapter, family, floors, log); // 新楼层必须进 path，否则读回被投影过滤丢掉
         const r = await adapter.saveFloors({ familyId: family.familyId, floors, expectedIntegrity: parseHostIntegrity(body?.integrity) });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
         return jsonResponse({ ok: true, appended: messages.length, created: false, integrity: toHostIntegrity(r.integrity) });
@@ -204,27 +298,54 @@ export function installSeam(adapter, opts = {}) {
         return jsonResponse({ ok: true });
     }
 
-    /** 写路径：chats/meta → 家族模型更新（现有 UI setModel→saveMetadata 的落点） */
+    /** 写路径：chats/meta → 家族模型 + 聊天头整份更新（现有 UI setModel→saveMetadata 的落点） */
     async function handleMeta(body) {
         const chatKey = normalizeChatKey(body?.avatar_url, body?.file_name);
         const family = await adapter.loadFamily({ chatKey });
         if (!family) return null;
-        // 现有模型住在 chat_metadata.extensions.chatfilesys → 直接更新库内 family 的模型
-        const model = body?.chat_metadata?.extensions?.chatfilesys ?? null;
-        const r = await adapter.saveModel({ familyId: family.familyId, model, expectedIntegrity: parseHostIntegrity(body?.integrity) });
+        // T0/R0：消息头整份并入（其他插件命名空间、main_chat、变量……），本插件两项走各自通道
+        const { hostMetadata: incomingHost, model } = splitChatMetadata(body?.chat_metadata);
+        const mergedHost = mergeHostMetadata(family.hostMetadata, incomingHost);
+        const r = await adapter.saveModel({
+            familyId: family.familyId,
+            model,
+            hostMetadata: mergedHost,
+            expectedIntegrity: parseHostIntegrity(body?.integrity),
+        });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
+        family.hostMetadata = mergedHost;
         return jsonResponse({ ok: true, updated: true, total_messages: 0, created: false, integrity: toHostIntegrity(r.integrity) });
     }
 
-    /** 写路径：chats/meta/patch → 模型 RFC6902 增量（本插件不用，拦截防漏写透传到 jsonl） */
+    /**
+     * 写路径：chats/meta/patch → RFC6902 增量**真正应用**。
+     * T0/R0：M1 时期这里整包丢弃（只递增版本号），导致其他插件写入的元数据不生效——本函数是修复点。
+     * 应用对象 = 整份 chat_metadata（合成 → 应用 → 拆回三份），故指向本插件模型或任一插件命名空间的 op 都能生效。
+     */
     async function handleMetaPatch(body) {
         const chatKey = normalizeChatKey(body?.avatar_url, body?.file_name);
         const family = await adapter.loadFamily({ chatKey });
         if (!family) return null;
-        // M1 简化：meta patch 场景极少（本插件全量 saveModel），按 keepCurrent 保留现模型仅 bump integrity
-        const r = await adapter.saveModel({ familyId: family.familyId, model: null, expectedIntegrity: parseHostIntegrity(body?.integrity), keepCurrent: true });
+        const ops = Array.isArray(body?.operations) ? body.operations : [];
+        let next;
+        try {
+            // 深拷贝后应用：composeChatMetadata 是浅拷贝，嵌套对象仍与 family 共享引用，必须隔离
+            next = applyOpsToObject(JSON.parse(JSON.stringify(composeChatMetadata(family))), ops);
+        } catch (e) {
+            log('[chatfilesys-seam] chats/meta/patch 应用失败（未写入，避免静默丢内容）:', e);
+            return jsonResponse({ ok: false, reason: 'patch-apply-failed', detail: String(e?.message || e) }, 400);
+        }
+        const { hostMetadata: nextHost, model: nextModel } = splitChatMetadata(next);
+        const r = await adapter.saveModel({
+            familyId: family.familyId,
+            model: nextModel,
+            hostMetadata: nextHost,
+            expectedIntegrity: parseHostIntegrity(body?.integrity),
+        });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
-        return jsonResponse({ ok: true, applied: (body?.operations || []).length, integrity: toHostIntegrity(r.integrity) });
+        family.hostMetadata = nextHost;
+        family.model = nextModel;
+        return jsonResponse({ ok: true, applied: ops.length, integrity: toHostIntegrity(r.integrity) });
     }
 
     /** 读路径：chats/get-delta → 库分片读的区间响应（原生分页读兼容） */
@@ -237,7 +358,7 @@ export function installSeam(adapter, opts = {}) {
         const { floors, hasMore } = await adapter.loadFloors({ familyId: family.familyId, from, limit });
         return jsonResponse({
             chat: floors.map((f) => JSON.parse(f.content)),
-            chat_metadata: { extensions: { chatfilesys: family.model } },
+            chat_metadata: composeChatMetadata(family), // T0/R0：整份回显，不只本插件模型
             from_index: from,
             next_index: from + floors.length,
             total_messages: Object.keys(family.branchPaths?.[Object.keys(family.branchPaths)[0]] || {}).length,

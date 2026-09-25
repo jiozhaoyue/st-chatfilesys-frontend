@@ -54,6 +54,10 @@ function mockSqlClient() {
                     db.families.forEach((f) => { if (f.id === p[2]) f.model = p[0]; });
                     return [];
                 }
+                if (s.startsWith('UPDATE families SET host_metadata')) {
+                    db.families.forEach((f) => { if (f.id === p[2]) { f.host_metadata = p[0]; f.updated_at = p[1]; } });
+                    return [];
+                }
                 if (s.startsWith('UPDATE families SET name')) {
                     db.families.forEach((f) => { if (f.id === p[2]) f.name = p[0]; });
                     return [];
@@ -91,7 +95,7 @@ test('档1：migrate 建表被调；loadFamily 按 chatKey 命中并装配模型
     seedAuthority(db);
     const adapter = await createAuthorityAdapter({ authorityClient: client });
     const f = await adapter.loadFamily({ chatKey: 'av1::chat1' });
-    assert.equal(calls.migrate, 2); // 001_init + 002_model
+    assert.equal(calls.migrate, 3); // 001_init + 002_model + 003_host_metadata（T0/R0）
     assert.equal(f.familyId, 'f1');
     assert.equal(f.model.branches[0].id, 'b_main');
     assert.equal(f.model.branches[0].path[1], 'g1');
@@ -258,6 +262,49 @@ test('选档：mock authority 成功 → tier=authority', async () => {
 });
 
 /* ---------------- 档3 idb：内存 indexedDB stub ---------------- */
+
+test('档1：saveModel 携带 hostMetadata → 往返不丢，且未传时不清空（T0/R0）', async () => {
+    const { client, db } = mockSqlClient();
+    seedAuthority(db);
+    const adapter = await createAuthorityAdapter({ authorityClient: client });
+    const hostMetadata = {
+        main_chat: 'root_chat',
+        variables: { hp: 10 },
+        extensions: { 'third-party/someplugin': { flag: true } },
+    };
+    const r = await adapter.saveModel({ familyId: 'f1', model: null, hostMetadata, expectedIntegrity: null, keepCurrent: true });
+    assert.equal(r.ok, true);
+    assert.equal(JSON.parse(db.families[0].host_metadata).main_chat, 'root_chat');
+    const f = await adapter.loadFamily({ familyId: 'f1' });
+    assert.deepEqual(f.hostMetadata, hostMetadata);
+    // 之后再写一次不带 hostMetadata（例如只 bump 版本号）→ 不得把已有内容清空
+    await adapter.saveModel({ familyId: 'f1', model: null, expectedIntegrity: null, keepCurrent: true });
+    const f2 = await adapter.loadFamily({ familyId: 'f1' });
+    assert.deepEqual(f2.hostMetadata, hostMetadata);
+});
+
+test('档2：saveModel 携带 hostMetadata → 容器元数据往返不丢（T0/R0）', async () => {
+    const containers = new Map();
+    const doFetch = async (url, init) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        if (url.includes('chats/get')) return { ok: true, json: async () => containers.get(body.file_name) || [] };
+        if (url.includes('chats/save')) { containers.set(body.file_name, body.chat); return { ok: true, json: async () => ({ ok: true }) }; }
+        return { ok: true, json: async () => ({}) };
+    };
+    const adapter = await createOfficialAdapter({ fetch: doFetch });
+    const meta = {
+        familyId: 'f9', chatKey: 'av1::chat9', characterId: 'c1', name: 'chat9', integrity: 1,
+        branches: [{ id: 'b_main', name: '主分支', is_default: true, fork_floor: 0 }],
+        branchPaths: { b_main: { 1: 'g1' } },
+    };
+    const header = { user_name: 'unused', chat_metadata: { extensions: { cfsys_family: meta } } };
+    containers.set('__cfsys__f9.jsonl', [header, JSON.stringify({ floorNo: 1, variantId: 'g1', seq: 0, content: '{"mes":"a"}', contentHash: null, sendDate: 1 })]);
+    const hostMetadata = { main_chat: 'root_chat', extensions: { 'third-party/someplugin': { flag: true } } };
+    const r = await adapter.saveModel({ familyId: 'f9', model: null, hostMetadata, expectedIntegrity: null, keepCurrent: true });
+    assert.equal(r.ok, true);
+    const f = await adapter.loadFamily({ familyId: 'f9' });
+    assert.deepEqual(f.hostMetadata, hostMetadata);
+});
 
 test('档3 idb：upsert/读回一致（内存 stub）', async () => {
     // 最小 indexedDB stub：node:test 环境验证 idb.js 的逻辑分支（真实浏览器另由 e2e 覆盖）

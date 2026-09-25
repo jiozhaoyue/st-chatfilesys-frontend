@@ -59,6 +59,8 @@ function assembleFamily(meta) {
     return {
         familyId: meta.familyId, chatKey: meta.chatKey, characterId: meta.characterId,
         name: meta.name, integrity: meta.integrity ?? 1,
+        // T0/R0：聊天头保留面（宿主与其他插件写入的内容），读时由 seam 整份回显
+        hostMetadata: meta.hostMetadata ?? null,
         branches, branchPaths, model,
     };
 }
@@ -118,6 +120,7 @@ export async function createIdbAdapter(ctx = {}) {
                 familyId: family.familyId, chatKey: family.chatKey ?? null,
                 characterId: family.characterId ?? '', name: family.name ?? '',
                 integrity: family.integrity ?? 1, updatedAt: Date.now(),
+                hostMetadata: family.hostMetadata ?? null, // T0/R0：聊天头保留面
                 branches: family.branches || [], branchPaths: family.branchPaths || {},
             };
             await putMeta(meta);
@@ -211,12 +214,14 @@ export async function createIdbAdapter(ctx = {}) {
             return { ok: true, integrity: meta.integrity };
         },
 
-        async saveModel({ familyId, model, expectedIntegrity, keepCurrent }) {
+        async saveModel({ familyId, model, hostMetadata, expectedIntegrity, keepCurrent }) {
             const meta = await loadMeta(familyId);
             if (!meta) return { ok: false, reason: 'family-not-found' };
             if (expectedIntegrity != null && expectedIntegrity !== (meta.integrity ?? 1)) {
                 return { ok: false, conflict: true };
             }
+            // T0/R0：聊天头保留面落库（undefined = 本次不动它）
+            if (hostMetadata !== undefined) meta.hostMetadata = hostMetadata;
             if (!keepCurrent && model) {
                 meta.model = model;
                 meta.branches = (model.branches || []).map((b) => ({

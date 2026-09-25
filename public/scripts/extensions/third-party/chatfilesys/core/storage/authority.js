@@ -83,6 +83,13 @@ CREATE TABLE IF NOT EXISTS branch_paths (
                 migrations: [{ id: '002_model', statement: 'ALTER TABLE families ADD COLUMN model TEXT;' }],
             });
         } catch { /* 列已存在 */ }
+        // 003：聊天头保留列（T0/R0：宿主与其他插件写进聊天头的内容整份留库，读时回显）
+        try {
+            await client.sql.migrate({
+                database: DB,
+                migrations: [{ id: '003_host_metadata', statement: 'ALTER TABLE families ADD COLUMN host_metadata TEXT;' }],
+            });
+        } catch { /* 列已存在 */ }
         migrated = true;
     }
 
@@ -144,9 +151,13 @@ CREATE TABLE IF NOT EXISTS branch_paths (
                 groups: {},
             };
         }
+        // T0/R0：聊天头保留面（宿主与其他插件写入的内容），读时由 seam 整份回显
+        let hostMetadata = null;
+        try { hostMetadata = f.host_metadata ? JSON.parse(f.host_metadata) : null; } catch { hostMetadata = null; }
         return {
             familyId: f.id, chatKey: f.chat_key, characterId: f.character_id,
             name: f.name, integrity: f.integrity,
+            hostMetadata,
             branches, branchPaths, model,
         };
     }
@@ -294,12 +305,17 @@ CREATE TABLE IF NOT EXISTS branch_paths (
             return { ok: true, integrity };
         },
 
-        async saveModel({ familyId, model, expectedIntegrity, keepCurrent }) {
+        async saveModel({ familyId, model, hostMetadata, expectedIntegrity, keepCurrent }) {
             await ensureMigrated();
             const conflict = await checkIntegrity(familyId, expectedIntegrity);
             if (conflict) return { ok: false, conflict: true };
             const f = await loadFamilyRow(familyId);
             if (!f) return { ok: false, reason: 'family-not-found' };
+            // T0/R0：聊天头保留面落库（undefined = 本次不动它）
+            if (hostMetadata !== undefined) {
+                await q('UPDATE families SET host_metadata = ?, updated_at = ? WHERE id = ?',
+                    [JSON.stringify(hostMetadata), Date.now(), familyId]);
+            }
             let stored = null;
             try { stored = f.model ? JSON.parse(f.model) : null; } catch { stored = null; }
             const nextModel = keepCurrent ? stored : model;

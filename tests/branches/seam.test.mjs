@@ -11,6 +11,12 @@ function mockAdapter() {
     const calls = { loadFamily: 0, saveFloors: 0, applyOps: 0, saveModel: 0 };
     const family = {
         familyId: 'f1', chatKey: 'av1::chat1', characterId: 'c1', name: 'chat1', integrity: 5,
+        // T0/R0：聊天头保留面（其他插件命名空间 + 宿主字段）——读时须整份回显
+        hostMetadata: {
+            main_chat: 'root_chat',
+            variables: { hp: 10 },
+            extensions: { 'third-party/someplugin': { flag: true } },
+        },
         branches: [{ id: 'b_main', name: '主分支', is_default: true, fork_floor: 0, parent_branch_id: null }],
         branchPaths: { b_main: { 1: 'g1', 2: 'g2' } },
         model: {
@@ -27,7 +33,7 @@ function mockAdapter() {
         calls, family, floors,
         conflictNext: false,
         async loadFamily({ chatKey }) { this.calls.loadFamily++; return chatKey === family.chatKey ? family : null; },
-        async loadFloors() { return { floors, hasMore: false }; },
+        async loadFloors() { return { floors: this.floors, hasMore: false }; },
         async saveFloors() { this.calls.saveFloors++; return this.conflictNext ? { ok: false, conflict: true } : { ok: true, integrity: 6 }; },
         async applyOps() { this.calls.applyOps++; return this.conflictNext ? { ok: false, conflict: true } : { ok: true, integrity: 6 }; },
         async saveModel(args) { this.calls.saveModel++; this.lastSaveModelArgs = args; return this.conflictNext ? { ok: false, conflict: true } : { ok: true, integrity: 6 }; },
@@ -280,7 +286,7 @@ test('seam：meta → saveModel 持久化模型且响应合规', async () => {
     }
 });
 
-test('seam：meta/patch → saveModel keepCurrent 防漏写', async () => {
+test('seam：meta/patch → RFC6902 真正应用（T0/R0：不再整包丢弃）', async () => {
     const original = globalThis.fetch;
     const adapter = mockAdapter();
     const seam = installSeam(adapter);
@@ -289,14 +295,159 @@ test('seam：meta/patch → saveModel keepCurrent 防漏写', async () => {
             method: 'POST',
             body: JSON.stringify({
                 avatar_url: 'av1', file_name: 'chat1', integrity: 5,
-                operations: [{ op: 'replace', path: '/active_branch', value: 'b_y' }],
+                operations: [
+                    { op: 'replace', path: '/extensions/chatfilesys/active_branch', value: 'b_y' },
+                    { op: 'add', path: '/extensions/third-party~1someplugin/extra', value: [1, 2] },
+                    { op: 'replace', path: '/variables/hp', value: 7 },
+                ],
             }),
         });
         assert.equal(res.status, 200);
         const body = await res.json();
         assert.equal(body.ok, true);
-        assert.equal(adapter.lastSaveModelArgs.keepCurrent, true);
-        assert.equal(adapter.lastSaveModelArgs.model, null);
+        assert.equal(body.applied, 3);
+        // 模型侧改动生效
+        assert.equal(adapter.lastSaveModelArgs.model.active_branch, 'b_y');
+        // 聊天头侧改动生效，且其他内容不丢
+        assert.deepEqual(adapter.lastSaveModelArgs.hostMetadata.extensions['third-party/someplugin'],
+            { flag: true, extra: [1, 2] });
+        assert.equal(adapter.lastSaveModelArgs.hostMetadata.variables.hp, 7);
+        assert.equal(adapter.lastSaveModelArgs.hostMetadata.main_chat, 'root_chat');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：meta/patch 应用失败 → 400 且不写入（不静默丢内容）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    const seam = installSeam(adapter);
+    try {
+        const res = await globalThis.fetch('/api/chats/meta/patch', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1', integrity: 5,
+                operations: [{ op: 'remove', path: '/不存在的字段' }],
+            }),
+        });
+        assert.equal(res.status, 400);
+        const body = await res.json();
+        assert.equal(body.ok, false);
+        assert.equal(body.reason, 'patch-apply-failed');
+        assert.equal(adapter.calls.saveModel, 0, '失败时不得落库');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：get 回显聊天头整份内容（其他插件命名空间 + main_chat 不丢）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    const seam = installSeam(adapter);
+    try {
+        const res = await globalThis.fetch('/api/chats/get', {
+            method: 'POST', headers: {}, body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1' }),
+        });
+        const body = await res.json();
+        const meta = body[0].chat_metadata;
+        assert.equal(meta.main_chat, 'root_chat');
+        assert.deepEqual(meta.variables, { hp: 10 });
+        assert.deepEqual(meta.extensions['third-party/someplugin'], { flag: true });
+        assert.equal(meta.extensions.chatfilesys.active_branch, 'b_main'); // 本插件模型覆盖在 extensions 下
+        assert.equal(meta.integrity, 'cfsys:5');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：meta 整份写 → 其他插件命名空间并入保留（不因只认本插件模型而丢）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    const seam = installSeam(adapter);
+    try {
+        await globalThis.fetch('/api/chats/meta', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1', integrity: 5,
+                chat_metadata: {
+                    main_chat: 'root_chat',
+                    new_ns: { from: 'other-plugin' },
+                    extensions: {
+                        'third-party/someplugin': { flag: true },
+                        chatfilesys: { active_branch: 'b_x', branches: [], groups: {} },
+                    },
+                },
+            }),
+        });
+        const host = adapter.lastSaveModelArgs.hostMetadata;
+        assert.deepEqual(host.new_ns, { from: 'other-plugin' });
+        assert.deepEqual(host.extensions['third-party/someplugin'], { flag: true });
+        assert.equal('chatfilesys' in host.extensions, false, '本插件模型不得落进聊天头保留面');
+        assert.equal('integrity' in host, false, '版本号不得落进聊天头保留面');
+        assert.equal(adapter.lastSaveModelArgs.model.active_branch, 'b_x');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：messages 行整字段往返（extra 自定义键 / swipes / swipe_info 不丢）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    const row = {
+        name: 'AI', is_user: false, mes: 'hi', send_date: 123,
+        extra: { plugin_x: { deep: [1, 2, 3] }, bookmark_link: 'cp1' },
+        swipes: ['hi', 'hey'], swipe_info: [{ send_date: 1, extra: { k: 1 } }, { send_date: 2, extra: { k: 2 } }], swipe_id: 1,
+    };
+    adapter.floors = [{ floorNo: 1, variantId: 'g1', seq: 0, content: JSON.stringify(row), contentHash: null, sendDate: 123 }];
+    const seam = installSeam(adapter);
+    try {
+        const res = await globalThis.fetch('/api/chats/get', {
+            method: 'POST', headers: {}, body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1' }),
+        });
+        const body = await res.json();
+        assert.deepEqual(body[1], row, '消息行必须逐字段一致');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：宿主保存不得抹掉其他插件的命名空间（extensions 逐命名空间合并）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    const seam = installSeam(adapter);
+    try {
+        // 宿主这次只带自己的模型：extensions 里没有 third-party/someplugin
+        await globalThis.fetch('/api/chats/meta', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1', integrity: 5,
+                chat_metadata: { extensions: { chatfilesys: { active_branch: 'b_x', branches: [], groups: {} } } },
+            }),
+        });
+        const host = adapter.lastSaveModelArgs.hostMetadata;
+        assert.deepEqual(host.extensions['third-party/someplugin'], { flag: true },
+            '整体替换 extensions 会抹掉其他插件的命名空间（真机实测会时有时无地丢）');
+        assert.equal(host.main_chat, 'root_chat');
+        assert.deepEqual(host.variables, { hp: 10 });
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：群聊端点不在拦截路由内（保持原生，行为不变）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    adapter.calls.native = 0;
+    const seam = installSeam(adapter);
+    try {
+        const res = await globalThis.fetch('/api/chats/group/save', { method: 'POST', body: '{}' });
+        assert.equal(adapter.calls.saveModel + adapter.calls.saveFloors, 0, '群聊请求不得走本插件存储');
     } finally {
         seam.dispose();
         globalThis.fetch = original;

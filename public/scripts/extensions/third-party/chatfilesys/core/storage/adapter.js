@@ -15,7 +15,9 @@
  *   loadFloors({ familyId, from, limit }) -> { floors:[{floorNo,variantId,seq,content,contentHash,sendDate}], hasMore }
  *   saveFloors({ familyId, floors, expectedIntegrity }) -> { ok, integrity } | { ok:false, conflict:true }
  *   applyOps({ familyId, ops, expectedIntegrity })   -> { ok, integrity } | { ok:false, conflict:true }
- *   saveModel({ familyId, model, expectedIntegrity, keepCurrent }) -> { ok, integrity } | { ok:false, conflict:true }
+ *   saveModel({ familyId, model, hostMetadata, expectedIntegrity, keepCurrent }) -> { ok, integrity } | { ok:false, conflict:true }
+ *     - hostMetadata（T0/R0）：聊天头保留面——宿主与其他插件写进 chat_metadata 的内容整份留库、读时回显；
+ *       传 undefined 表示「本次不动它」，传对象表示覆盖。本插件自己的两项（extensions.chatfilesys 与 integrity）不在其中。
  *       model = store-bridge 模型形态（{active_branch, branches:[{...,path}], groups}）；
  *       持久化模型本体（active_branch/groups 不丢失）+ 同步重建 branches/branchPaths 结构表；
  *       keepCurrent=true 时忽略 model、保留现模型仅 bump integrity（chats/meta/patch 防漏写用）。

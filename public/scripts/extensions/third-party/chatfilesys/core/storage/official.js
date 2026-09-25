@@ -143,6 +143,8 @@ export async function createOfficialAdapter(ctx) {
         return {
             familyId: meta.familyId, chatKey: meta.chatKey, characterId: meta.characterId,
             name: meta.name, integrity: meta.integrity,
+            // T0/R0：聊天头保留面（宿主与其他插件写入的内容），读时由 seam 整份回显
+            hostMetadata: meta.hostMetadata ?? null,
             branches, branchPaths, model,
         };
     }
@@ -293,13 +295,15 @@ export async function createOfficialAdapter(ctx) {
             return { ok: true, integrity: meta.integrity };
         },
 
-        async saveModel({ familyId, model, expectedIntegrity, keepCurrent }) {
+        async saveModel({ familyId, model, hostMetadata, expectedIntegrity, keepCurrent }) {
             const raw = await loadFamilyRaw({ familyId });
             if (!raw) return { ok: false, reason: 'family-not-found' };
             if (expectedIntegrity != null && expectedIntegrity !== raw.family.integrity) {
                 return { ok: false, conflict: true };
             }
             const meta = { ...raw.family, integrity: raw.family.integrity + 1 };
+            // T0/R0：聊天头保留面落库（undefined = 本次不动它）
+            if (hostMetadata !== undefined) meta.hostMetadata = hostMetadata;
             if (!keepCurrent && model) {
                 // 模型本体持久化 + 结构视图同步（branches/branchPaths 由模型派生，保持读路径一致）
                 meta.model = model;
