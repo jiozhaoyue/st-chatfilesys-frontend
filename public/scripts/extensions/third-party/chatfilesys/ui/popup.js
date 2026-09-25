@@ -15,6 +15,7 @@ const TABS = [
     { key: 'floors', label: '楼层' },
     { key: 'batch', label: '批量操作' },
     { key: 'export', label: '导出' },
+    { key: 'trash', label: '回收站' }, // N15：列出 / 还原 / 立刻清理
 ];
 
 function fallbackTabShell() {
@@ -23,6 +24,31 @@ function fallbackTabShell() {
     const bodies = TABS.map((t, i) => `
         <div class="chatfilesys-tabbody" data-tabbody="${t.key}" ${i === 0 ? '' : 'hidden'}></div>`).join('');
     return { html: `<div class="chatfilesys-tabs">${headers}</div>${bodies}`, manual: true };
+}
+
+/**
+ * 回收站页签内容：异步拉列表 → 行内「还原 / 立刻清理」。
+ * 每次打开面板拉一次（列表可能被导入旅程改动），失败只提示不抛。
+ */
+async function loadTrashInto(container, listTrash) {
+    try {
+        const items = (await listTrash()) || [];
+        if (!items.length) {
+            container.innerHTML = '<div class="chatfilesys-note">回收站为空。删除聊天源文件时会把副本先放这里（保留 7 天）。</div>';
+            return;
+        }
+        container.innerHTML = items.map((x) => `
+            <div class="chatfilesys-trash-row" data-trash="${esc(x.trashId)}">
+                <span class="src" title="${esc(x.source)}">${esc(String(x.source || '').split('::').pop())}</span>
+                <span class="meta">${x.movedAt ? new Date(Number(x.movedAt)).toLocaleString() : ''}</span>
+                <span class="actions">
+                    <button class="menu_button" data-action="trash-restore" data-trash="${esc(x.trashId)}" title="还原为聊天文件">还原</button>
+                    <button class="menu_button" data-action="trash-purge" data-trash="${esc(x.trashId)}" title="立刻从回收站永久删除">立刻清理</button>
+                </span>
+            </div>`).join('');
+    } catch (e) {
+        container.innerHTML = `<div class="chatfilesys-note">回收站读取失败：${esc(String(e?.message || e))}</div>`;
+    }
 }
 
 /**
@@ -80,7 +106,10 @@ export function createPopupContent(ctx, view) {
     const bodyOf = (key) => shellHost.querySelector(`[data-tabbody="${key}"]`);
 
     const refresh = (v) => {
-        const { model, chat, familyName, warning = '', isGroupChat = false, autoExport = false } = v;
+        const {
+            model, chat, familyName, warning = '', isGroupChat = false, autoExport = false,
+            treeDirection = 'down', canSummarize = false, listTrash = null, trashNote = '',
+        } = v;
         const active = model ? getActiveBranch(model) : null;
         const maxF = active ? branchMaxFloor(active) : 0;
 
@@ -139,9 +168,10 @@ export function createPopupContent(ctx, view) {
                 forkLast.dataset.floor = String(maxF);
                 forkLast.innerHTML = `<i class="fa-solid fa-code-fork"></i> 在最后一层（F${maxF}）之后分叉`;
             }
-            renderTree(svgHost, { model });
+            renderTree(svgHost, { model, direction: treeDirection });
             const list = treeBody.querySelector('.chatfilesys-branchlist');
-            if (list) list.innerHTML = model.branches.map((b) => branchRow(model, b, model.active_branch)).join('');
+            if (list) list.innerHTML = model.branches
+                .map((b) => branchRow(model, b, model.active_branch, { canSummarize })).join('');
         }
 
         // Tab「楼层」
@@ -153,6 +183,18 @@ export function createPopupContent(ctx, view) {
         if (batchBody && !batchBody.dataset.placeholder) {
             batchBody.dataset.placeholder = '1';
             batchBody.innerHTML = '<div class="chatfilesys-note">批量编辑/搜索/过滤将在四期提供（增强 JSONL 操作）。</div>';
+        }
+
+        // Tab「回收站」（N15：列出 / 还原 / 立刻清理；档位不支持枚举时明说）
+        const trashBody = bodyOf('trash');
+        if (trashBody) {
+            if (typeof listTrash !== 'function') {
+                trashBody.innerHTML = `<div class="chatfilesys-note">${esc(trashNote || '回收站当前不可用。')}</div>`;
+            } else if (!trashBody.dataset.hooked) {
+                trashBody.dataset.hooked = '1';
+                trashBody.innerHTML = '<div class="chatfilesys-note chatfilesys-trash-loading">正在读取回收站…</div>';
+                loadTrashInto(trashBody, listTrash);
+            }
         }
 
         // Tab「导出」

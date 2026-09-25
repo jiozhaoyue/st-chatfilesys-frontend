@@ -5,7 +5,7 @@
  * 数据源：branches（path/fork_base）直出，纯前端渲染，无新数据依赖。
  */
 
-import { esc, branchColor, branchFloors, branchMaxFloor, getActiveBranch } from './common.js';
+import { esc, branchColor, branchFloors, branchMaxFloor, getActiveBranch, nodeLabel, branchSummaryOf } from './common.js';
 
 const NODE_W = 150;
 const NODE_H = 46;
@@ -30,8 +30,12 @@ function inferParent(model, b, placed) {
     return candidates[0];
 }
 
-/** 树布局：depth=Y，DFS 先序=X（兄弟按 branches 创建顺序） */
-export function layoutTree(model) {
+/**
+ * 树布局：DFS 先序 = 兄弟轴，depth = 深度轴。
+ * @param {object} model
+ * @param {{direction?: 'down'|'right'}} [opts] down = 深度向下（兄弟横排，默认）；right = 深度向右（兄弟竖排，N13）
+ */
+export function layoutTree(model, opts = {}) {
     const placed = [];
     const parentOf = new Map();
     const childrenOf = new Map();
@@ -65,13 +69,17 @@ export function layoutTree(model) {
     };
     for (const r of roots) walk(r.id, 0);
 
-    const byId = new Map(model.branches.map((b) => [b.id, b]));
-    return model.branches.map((b) => ({
-        branch: b,
-        x: (pos.get(b.id) ?? 0) * (NODE_W + GAP_X),
-        y: (depth.get(b.id) ?? 0) * (NODE_H + GAP_Y),
-        parent: parentOf.get(b.id),
-    }));
+    const horizontal = opts.direction === 'right';
+    return model.branches.map((b) => {
+        const along = (pos.get(b.id) ?? 0);       // 兄弟轴
+        const deep = (depth.get(b.id) ?? 0);      // 深度轴
+        return {
+            branch: b,
+            x: (horizontal ? deep : along) * (NODE_W + GAP_X),
+            y: (horizontal ? along : deep) * (NODE_H + GAP_Y),
+            parent: parentOf.get(b.id),
+        };
+    });
 }
 
 /**
@@ -79,9 +87,9 @@ export function layoutTree(model) {
  * @param {HTMLElement} container
  * @param {{model: object, selectedId?: string}} view
  */
-export function renderTree(container, { model }) {
+export function renderTree(container, { model, direction = 'down' }) {
     if (!container || !model) return;
-    const layout = layoutTree(model);
+    const layout = layoutTree(model, { direction });
     const active = getActiveBranch(model);
     const width = Math.max(...layout.map((n) => n.x)) + NODE_W + 20;
     const height = Math.max(...layout.map((n) => n.y)) + NODE_H + 20;
@@ -96,16 +104,19 @@ export function renderTree(container, { model }) {
             <text class="chatfilesys-edge-label" x="${(x1 + x2) / 2}" y="${my - 4}">⎇F${n.branch.fork_base}</text>`;
     }).join('');
 
+    const order = new Map(model.branches.map((b, i) => [b.id, i]));
     const nodes = layout.map((n) => {
         const b = n.branch;
         const isActive = b.id === active?.id;
-        const name = b.name.length > 10 ? `${b.name.slice(0, 10)}…` : b.name;
+        // N5/N13：节点标签默认自动序号（#N），有自定义名时附在序号后
+        const name = nodeLabel(b, order.get(b.id) ?? 0);
+        const summary = branchSummaryOf(b);
         return `<g class="chatfilesys-tnode ${isActive ? 'active' : ''}" data-action="switch" data-branch="${esc(b.id)}"
                 transform="translate(${n.x},${n.y})">
             <rect width="${NODE_W}" height="${NODE_H}" rx="8" style="stroke:${branchColor(model, b.id)}"></rect>
             <circle cx="14" cy="${NODE_H / 2}" r="5" fill="${branchColor(model, b.id)}"></circle>
             <text class="chatfilesys-tnode-name" x="26" y="19">${esc(name)}${b.is_default ? '（默认）' : ''}</text>
-            <text class="chatfilesys-tnode-meta" x="26" y="35">${branchFloors(b)} 层${isActive ? ' · 当前' : ''}</text>
+            <text class="chatfilesys-tnode-meta" x="26" y="35">${esc(summary || `${branchFloors(b)} 层`)}${isActive ? ' · 当前' : ''}</text>
         </g>`;
     }).join('');
 
@@ -115,7 +126,10 @@ export function renderTree(container, { model }) {
                 ${edges}${nodes}
             </svg>
         </div>
-        <div class="chatfilesys-tree-hint">滚轮缩放 · 拖拽平移 · 点击节点切换分支</div>`;
+        <div class="chatfilesys-tree-hint">
+            <button class="menu_button" data-action="tree-direction" title="切换树的方向">${direction === 'right' ? '向右展开 ↓ 切回向下' : '向下展开 ↓ 切到向右'}</button>
+            <span>节点编号 = 走法顺序（自定义名附在编号后）· 滚轮缩放 · 拖拽平移 · 点击节点切换</span>
+        </div>`;
 
     bindPanZoom(container.querySelector('.chatfilesys-tree-vp'), container.querySelector('.chatfilesys-tree'));
 }

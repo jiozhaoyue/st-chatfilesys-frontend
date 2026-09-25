@@ -53,5 +53,7 @@ export function createTrash({ backend, maxAgeMs = DEFAULT_MAX_AGE_MS }) {
         onPurge(cb) { purgeListeners.push(cb); },
         async listAll() { return backend.listTrash(); },
         async restore({ trashId }) { return backend.restoreFromTrash({ trashId }); },
+        /** 单条立刻清理（N15「立刻清理」；策略层的唯一删除入口，不绕过它直接调后端） */
+        async purge({ trashId }) { return backend.deleteFromTrash({ trashId }); },
     };
 }

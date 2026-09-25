@@ -46,20 +46,75 @@ export function getActiveBranch(model) {
 }
 
 /** 分支行（弹窗「分支树」Tab 的列表视图） */
-export function branchRow(model, b, activeId) {
+export function branchRow(model, b, activeId, { canSummarize = false } = {}) {
     const floors = branchFloors(b);
     const isForked = b.fork_base > 0;
+    const summary = branchSummaryOf(b);
     return `
         <div class="chatfilesys-branch ${b.id === activeId ? 'active' : ''}" data-action="switch" data-branch="${esc(b.id)}"
              title="${isForked ? `第 ${b.fork_base} 层后分叉` : '主分支'} · 点击切换">
             <span class="dot" style="background:${branchColor(model, b.id)}"></span>
             <span class="name">${esc(b.name)}${b.is_default ? ' <span style="opacity:.5;font-size:10px">默认</span>' : ''}</span>
+            ${summary ? `<span class="chatfilesys-branch-summary" title="${esc(summary)}">✨ ${esc(summary)}</span>` : ''}
             <span class="actions">
+                ${canSummarize ? `<button class="menu_button" data-action="ai-summary" data-branch="${esc(b.id)}" title="用 AI 总结这条分支（手动触发）"><i class="fa-solid fa-wand-magic-sparkles"></i></button>` : ''}
                 <button class="menu_button" data-action="rename" data-branch="${esc(b.id)}" title="重命名"><i class="fa-solid fa-pencil"></i></button>
                 ${!b.is_default ? `<button class="menu_button" data-action="delete-branch" data-branch="${esc(b.id)}" title="删除分支"><i class="fa-solid fa-trash"></i></button>` : ''}
             </span>
             <span class="meta">${isForked ? `⎇F${b.fork_base} · ` : ''}${floors} 层</span>
         </div>`;
+}
+
+/* ---------------- 走法标签与摘要（N5/N13） ---------------- */
+
+/** 插件自动生成的名字（用户没改过）——树上默认只显示序号，省宽度 */
+const AUTO_NAME_RE = /^(主分支|分支\d+|分叉·F\d+)$/;
+
+/**
+ * 走法显示标签：**默认自动序号**（`#N`，按 branches 顺序）；有自定义名时附在序号后。
+ * @param {{name?: string}} b
+ * @param {number} idx branches 里的下标
+ */
+export function nodeLabel(b, idx) {
+    const name = String(b?.name ?? '').trim();
+    const ordinal = `#${idx + 1}`;
+    if (!name || AUTO_NAME_RE.test(name)) return ordinal;
+    const short = name.length > 8 ? `${name.slice(0, 8)}…` : name;
+    return `${ordinal} ${short}`;
+}
+
+/** 走法的 AI 摘要（N13：手动触发后才存在；空则无） */
+export function branchSummaryOf(b) {
+    const s = String(b?.summary ?? '').trim();
+    if (!s) return '';
+    return s.length > 24 ? `${s.slice(0, 24)}…` : s;
+}
+
+/**
+ * 拼出某条走法的消息行（N13：AI 总结的输入）。
+ * 活跃走法引用的组在 body（ctx.chat）；非活跃走法引用的组折在 model.groups 里。
+ * @param {object} model
+ * @param {Array} chat 当前 body（ctx.chat）
+ * @param {object} branch 目标走法
+ * @returns {Array<object>} 该走法的消息行（楼层升序）
+ */
+export function assembleBranchLines(model, chat, branch) {
+    if (!model || !branch) return [];
+    const activeGids = new Set(Object.values(getActiveBranch(model)?.path || {}));
+    const out = [];
+    const floors = Object.keys(branch.path || {}).map(Number).sort((a, b2) => a - b2);
+    for (const f of floors) {
+        const gid = branch.path[f];
+        if (activeGids.has(gid)) {
+            const line = chat?.[f - 1];
+            if (line) out.push(line);
+            continue;
+        }
+        const g = model.groups?.[gid];
+        const variant = g?.variants?.[g.active ?? 0];
+        if (variant) out.push(variant);
+    }
+    return out;
 }
 
 /** 楼层行 */

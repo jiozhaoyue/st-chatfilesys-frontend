@@ -33,7 +33,7 @@ import { createStorageAdapter } from './core/storage/adapter.js';
 import { modelFromStore, storeFromModel } from './core/store-bridge.js';
 import { createTrash } from './core/trash.js';
 import { runImport } from './core/importer.js';
-import { getActiveBranch, branchMaxFloor } from './ui/common.js';
+import { getActiveBranch, branchMaxFloor, assembleBranchLines } from './ui/common.js';
 import { createPopupContent } from './ui/popup.js';
 import { injectMessageTools, injectAllMessages } from './ui/marker.js';
 import { ensureBadge, updateBadge } from './ui/badge.js';
@@ -81,6 +81,31 @@ function loadSettings() {
     if (typeof extension_settings[MODULE_NAME].mirror_sync_on_write !== 'boolean') {
         extension_settings[MODULE_NAME].mirror_sync_on_write = true;
     }
+}
+
+/** 回收站不可用时的说明（N15：不假装有空列表） */
+function trashUnavailableNote() {
+    if (!storageState) return '回收站只在库模式下可用（当前是 JSONL 增强模式）。';
+    return '当前存储档位不支持枚举回收站条目（只有档1 Authority 能列目录）；已经快照的条目不会被自动删除。';
+}
+
+/** 分支树展开方向（N13：可切「向下 / 向右」；持久化到设置） */
+function treeDirection() {
+    return extension_settings[MODULE_NAME]?.tree_direction === 'right' ? 'right' : 'down';
+}
+
+/** AI 总结能力检测（N13：生成链路不可用时按钮隐藏并降级） */
+function canSummarize() {
+    const c = ctx();
+    return typeof c.generateQuietPrompt === 'function' || typeof c.generateRaw === 'function';
+}
+
+async function generateSummary(text) {
+    const c = ctx();
+    const prompt = `请用不超过 20 个字概括下面这段对话的走向，只输出概括本身，不要引号、不要解释：\n\n${text}`;
+    if (typeof c.generateQuietPrompt === 'function') return String(await c.generateQuietPrompt({ quietPrompt: prompt }) ?? '');
+    if (typeof c.generateRaw === 'function') return String(await c.generateRaw({ prompt }) ?? '');
+    throw new Error('宿主无可用生成链路');
 }
 
 function autoExportEnabled() {
@@ -244,6 +269,11 @@ function currentView() {
         isGroupChat: Boolean(c.groupId),
         autoExport: autoExportEnabled(),
         activeName: active?.name || '',
+        treeDirection: treeDirection(),
+        canSummarize: canSummarize(),
+        // N15：档1 有目录枚举；档2/档3 无枚举端点 → 明说不可用，不给假「空列表」
+        listTrash: storageState?.tier === 'authority' ? async () => (getTrash()?.listAll?.() ?? []) : null,
+        trashNote: trashUnavailableNote(),
     };
 }
 
@@ -861,6 +891,81 @@ async function importJsonlFlow() {
     renderAll();
 }
 
+/* ---------------- T4：树方向 / AI 总结 / 回收站 ---------------- */
+
+/** 切换分支树展开方向（N13；持久化 + 重绘） */
+function toggleTreeDirection() {
+    const next = treeDirection() === 'right' ? 'down' : 'right';
+    extension_settings[MODULE_NAME].tree_direction = next;
+    renderAll();
+    toastr.info(`分支树：${next === 'right' ? '向右展开' : '向下展开'}`, '聊天文件系统');
+}
+
+/**
+ * AI 总结某条走法（N13：**手动触发**；生成链路不可用即报错降级，按钮本就不渲染）。
+ * 摘要写进 model.branches[i].summary（随模型持久化），不是分支名。
+ */
+async function summarizeBranch(branchId) {
+    const model = getModel();
+    const b = model ? getBranch(model, branchId) : null;
+    if (!b) return;
+    if (!canSummarize()) { toastr.warning('当前宿主没有可用的生成链路，AI 总结不可用。', '聊天文件系统'); return; }
+    const lines = assembleBranchLines(model, ctx().chat || [], b);
+    if (!lines.length) { toastr.warning('这条走法没有可总结的内容。', '聊天文件系统'); return; }
+    const text = lines.map((l) => `${l.name || (l.is_user ? '用户' : 'AI')}: ${String(l.mes || '').slice(0, 200)}`).join('\n').slice(0, 4000);
+    toastr.info('正在生成摘要…', '聊天文件系统', { timeOut: 1500 });
+    try {
+        const summary = (await generateSummary(text)).trim().replace(/^[「"'']|[」"'']$/g, '').slice(0, 60);
+        if (!summary) { toastr.warning('生成结果为空，未写入摘要。', '聊天文件系统'); return; }
+        b.summary = summary;
+        setModel(model);
+        await ctx().saveMetadata();
+        renderAll();
+        toastr.success(`「${b.name}」摘要：${summary}`, '聊天文件系统');
+    } catch (e) {
+        console.warn(`[${MODULE_NAME}] AI 总结失败（降级不阻断）:`, e);
+        toastr.error(`AI 总结失败：${e?.message || e}`, '聊天文件系统');
+    }
+}
+
+/** 回收站：还原为聊天文件（还原到它原来的聊天键） */
+async function restoreTrashEntry(trashId) {
+    const trash = getTrash();
+    if (!trash || !trashId) return;
+    if (!(await popupConfirm('把这条回收站条目还原成聊天文件？同名聊天已存在时会被覆盖。'))) return;
+    try {
+        const r = await trash.restore({ trashId });
+        if (!r?.ok) { toastr.error(`还原失败：${r?.reason || '未知原因'}`, '聊天文件系统'); return; }
+        const fileName = String(r.source || '').split('::').pop();
+        if (!fileName) { toastr.error('还原失败：条目缺少源文件名。', '聊天文件系统'); return; }
+        const seam = storageState?.seam;
+        const doFetch = (...a) => (seam?.native ? seam.native(...a) : globalThis.fetch(...a));
+        const headers = typeof ctx().getRequestHeaders === 'function' ? ctx().getRequestHeaders() : {};
+        const lines = String(r.content || '').split('\n').filter(Boolean);
+        const res = await doFetch('/api/chats/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...headers },
+            body: JSON.stringify({ ch_name: fileName, file_name: fileName, avatar_url: String(r.source || '').split('::')[0], chat: lines, force: true }),
+        });
+        if (!res?.ok) throw new Error(`HTTP ${res?.status}`);
+        toastr.success(`已还原为「${fileName}」。`, '聊天文件系统');
+        renderAll();
+    } catch (e) {
+        toastr.error(`还原失败：${e?.message || e}`, '聊天文件系统');
+    }
+}
+
+/** 回收站：立刻清理（永久删除该条目） */
+async function purgeTrashEntry(trashId) {
+    const trash = getTrash();
+    if (!trash || !trashId) return;
+    if (!(await popupConfirm('从回收站永久删除这一条？此操作不可撤销。'))) return;
+    const r = await trash.purge({ trashId });
+    if (r?.ok) toastr.success('已从回收站永久删除。', '聊天文件系统');
+    else toastr.error(`清理失败：${r?.reason || '未知原因'}`, '聊天文件系统');
+    renderAll();
+}
+
 /* ---------------- 交互委托（设置页 + 弹窗内容共用同一套 data-action） ---------------- */
 
 async function handleAction(action, el) {
@@ -877,6 +982,10 @@ async function handleAction(action, el) {
         case 'export': return await exportCurrentBranch();
         case 'run-import': return await importJsonlFlow();
         case 'sync-mirror': return await syncMirrorNow();
+        case 'tree-direction': return toggleTreeDirection();
+        case 'ai-summary': return await summarizeBranch(el.dataset.branch);
+        case 'trash-restore': return await restoreTrashEntry(el.dataset.trash);
+        case 'trash-purge': return await purgeTrashEntry(el.dataset.trash);
         default: return undefined;
     }
 }
@@ -1028,7 +1137,7 @@ export async function init() {
         return;
     }
 
-    ensureBadge(() => openManagementPopup());
+    ensureBadge(); // R5：纯状态显示——加分支标识之外不加任何东西，开面板只走设置页/斜杠命令/快捷键
     registerGlobalEntries();
     registerEventListeners();
     registerMarkerListeners();

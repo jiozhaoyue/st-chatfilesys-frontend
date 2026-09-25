@@ -43,9 +43,16 @@ def main():
                 const actions = [...root.querySelectorAll('[data-action]')].map(x => x.dataset.action);
                 return { actions, hasExport: !!root.querySelector('#chatfilesys-auto-export'),
                          hasStatus: !!root.querySelector('.chatfilesys-settings-status'),
+                         hasModePicker: !!root.querySelector('#chatfilesys-storage-mode'),
+                         popupInSettings: !!root.querySelector('.chatfilesys-popup'),
                          text: root.innerText };
             }""")
-            ok1 = ac1 and set(ac1['actions']) <= {'open-popup'} and ac1['hasExport'] and ac1['hasStatus']
+            # R5（2026-09-25 铁律）：设置页只有「设置项 + 入口按钮」，**面板本体只在弹窗里**；
+            # 设置级动作白名单 = 打开面板 / 导入存量聊天 / 与库同步一次（T2 新增后两个）
+            allowed = {'open-popup', 'run-import', 'sync-mirror'}
+            ok1 = (ac1 and set(ac1['actions']) <= allowed and 'open-popup' in ac1['actions']
+                   and ac1['hasExport'] and ac1['hasStatus'] and ac1.get('hasModePicker')
+                   and not ac1.get('popupInSettings'))
             results.append(report("AC1 设置页仅设置项+打开按钮", bool(ok1), str(ac1 and ac1['actions'])))
 
             # ---------- AC2 三入口 ----------

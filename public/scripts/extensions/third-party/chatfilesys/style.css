@@ -326,7 +326,7 @@
     text-shadow: 0 0 4px rgba(0, 0, 0, .8);
 }
 
-/* ---------- 分支徽章（输入框上方） ---------- */
+/* ---------- 分支徽章（输入框上方，R5：纯状态显示，不可点击） ---------- */
 
 #chatfilesys-badge {
     position: absolute;
@@ -340,15 +340,48 @@
     border: 1px solid var(--SmartThemeQuoteColor, #58a6ff);
     background: rgba(0, 0, 0, .55);
     color: var(--SmartThemeBodyColor, #c9d1d9);
-    cursor: pointer;
     white-space: nowrap;
     max-width: 60%;
     overflow: hidden;
     text-overflow: ellipsis;
+    pointer-events: none; /* 纯状态：不挡点击、不聚焦（开面板走设置页/斜杠命令/快捷键） */
 }
 
-#chatfilesys-badge:hover {
-    background: rgba(88, 166, 255, .15);
+/* ---------- 走法摘要（N13）与回收站页签（N15） ---------- */
+
+.chatfilesys-popup .chatfilesys-branch-summary {
+    font-size: 10.5px;
+    opacity: .7;
+    margin-left: 6px;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.chatfilesys-popup .chatfilesys-trash-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 4px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, #30363d);
+    font-size: 12px;
+}
+
+.chatfilesys-popup .chatfilesys-trash-row .src {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.chatfilesys-popup .chatfilesys-trash-row .meta {
+    font-size: 10.5px;
+    opacity: .6;
+}
+
+.chatfilesys-tree-hint button {
+    margin-right: 8px;
 }
 
 /* ---------- 图例（弹窗树 Tab 底部） ---------- */
