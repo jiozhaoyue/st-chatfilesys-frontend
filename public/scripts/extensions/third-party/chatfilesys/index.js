@@ -27,6 +27,8 @@ import { enableForChat, registerAppendedGroup, createBranch, renameBranch, delet
 import { planSwitch, planDeleteFloor } from './core/projection.js';
 import { createChatWriter } from './core/chat-writer.js';
 import { installSeam } from './core/seam.js';
+import { createMirror } from './core/mirror.js';
+import { normMode, isPureLike, isMirror, STORAGE_MODES, STORAGE_MODE_LABELS } from './core/mode.js';
 import { createStorageAdapter } from './core/storage/adapter.js';
 import { modelFromStore, storeFromModel } from './core/store-bridge.js';
 import { createTrash } from './core/trash.js';
@@ -73,9 +75,11 @@ function loadSettings() {
     if (typeof extension_settings[MODULE_NAME].auto_export !== 'boolean') {
         extension_settings[MODULE_NAME].auto_export = false;
     }
-    // 纯库模式开关（design.md §8.3：'off'|'pure'，默认 off，安装旅程引导开启）
-    if (extension_settings[MODULE_NAME].storage_mode !== 'pure') {
-        extension_settings[MODULE_NAME].storage_mode = 'off';
+    // 存储模式（T2/R1：'off' JSONL 增强 | 'pure' 纯数据库 | 'mirror' 双写；默认 off）
+    extension_settings[MODULE_NAME].storage_mode = normMode(extension_settings[MODULE_NAME].storage_mode);
+    // 双写：与库同步一次的开关（T2.5 的「文件落后」提示数据源在 mirror.state）
+    if (typeof extension_settings[MODULE_NAME].mirror_sync_on_write !== 'boolean') {
+        extension_settings[MODULE_NAME].mirror_sync_on_write = true;
     }
 }
 
@@ -83,13 +87,24 @@ function autoExportEnabled() {
     return Boolean(extension_settings[MODULE_NAME]?.auto_export);
 }
 
+/** 当前存储模式（单点判定走 core/mode.js） */
+function storageMode() {
+    return normMode(extension_settings[MODULE_NAME]?.storage_mode);
+}
+
+/** 是否走库的模式（pure / mirror 都装接缝） */
 function pureDbMode() {
-    return extension_settings[MODULE_NAME]?.storage_mode === 'pure';
+    return isPureLike(storageMode());
+}
+
+/** 是否双写（额外落标准聊天文件） */
+function mirrorMode() {
+    return isMirror(storageMode());
 }
 
 /* ---------------- 纯库模式：存储适配器 + seam 接缝（design.md §8.3） ---------------- */
 
-let storageState = null; // { tier, adapter, dispose, seam, trash }
+let storageState = null; // { tier, adapter, dispose, seam, trash, mirror }
 
 /** 回收站实例（纯库模式启用后可用；backend = adapter 本身即契约实现者） */
 function getTrash() {
@@ -110,9 +125,20 @@ async function enablePureDb() {
             headers: () => (typeof ctx().getRequestHeaders === 'function' ? ctx().getRequestHeaders() : {}),
             log: console.warn,
         });
-        const seam = installSeam(adapter, { log: console.warn });
-        storageState = { tier, adapter, dispose, seam };
-        console.log(`[chatfilesys] 纯库模式已启用（存储档位：${tier}）`);
+        // 双写模式：成功写标脏 → 1.5s 防抖落标准聊天文件（§4；失败只 warn 不阻断）
+        const seam = installSeam(adapter, {
+            log: console.warn,
+            // 只在双写模式下标脏（切回纯库模式后即时停写，磁盘文件保留为快照）
+            onWrote: (evt) => { if (mirrorMode()) storageState?.mirror?.markDirty(evt); },
+        });
+        const mirror = createMirror({
+            adapter,
+            native: (...args) => seam.native(...args),
+            headers: () => (typeof ctx().getRequestHeaders === 'function' ? ctx().getRequestHeaders() : {}),
+            log: console.warn,
+        });
+        storageState = { tier, adapter, dispose, seam, mirror };
+        console.log(`[chatfilesys] 库模式已启用（存储档位：${tier}；模式：${storageMode()}）`);
         renderStorageBadge();
         return storageState;
     } catch (e) {
@@ -125,10 +151,11 @@ async function enablePureDb() {
 function disablePureDb() {
     if (!storageState) return;
     try {
+        storageState.mirror?.dispose?.();
         storageState.seam?.dispose();
         storageState.dispose?.();
     } catch (e) {
-        console.warn('[chatfilesys] 纯库模式卸载异常:', e);
+        console.warn('[chatfilesys] 库模式卸载异常:', e);
     }
     storageState = null;
     renderStorageBadge();
@@ -138,12 +165,21 @@ function disablePureDb() {
 function renderStorageBadge() {
     const el = document.querySelector('#chatfilesys-storage-badge');
     if (!el) return;
+    const mode = storageMode();
     if (!pureDbMode()) {
         el.innerHTML = '<span class="chatfilesys-badge">存储：JSONL 增强模式</span>';
-        return;
+    } else {
+        const tierName = { authority: 'Authority SQL', official: '官方通道', idb: 'IndexedDB 缓存' }[storageState?.tier] || '未就绪';
+        const mirrorNote = mirrorMode()
+            ? (storageState?.mirror?.state?.pending ? ' · 文件落后' : ' · 文件已同步')
+            : '';
+        el.innerHTML = `<span class="chatfilesys-badge">存储：${mode === 'mirror' ? '双写' : '纯库'} · ${tierName}${mirrorNote}</span>`;
     }
-    const tierName = { authority: 'Authority SQL', official: '官方通道', idb: 'IndexedDB 缓存' }[storageState?.tier] || '未就绪';
-    el.innerHTML = `<span class="chatfilesys-badge">存储：纯库 · ${tierName}</span>`;
+    // T2.5：同步按钮只在双写模式可用
+    const syncBtn = document.querySelector('#chatfilesys-settings [data-action="sync-mirror"]');
+    if (syncBtn) syncBtn.disabled = !mirrorMode();
+    const modeSel = document.querySelector('#chatfilesys-storage-mode');
+    if (modeSel && modeSel.value !== mode) modeSel.value = mode;
 }
 
 /* ---------------- 模型读写 ---------------- */
@@ -781,11 +817,18 @@ async function importJsonlFlow() {
     const trash = getTrash();
     if (!trash) { toastr.error('回收站未就绪，导入中止。', '聊天文件系统'); return; }
 
-    // 删除源文件确认（N2 用户旅程：默认删 → 回收站 7 天）
-    const deleteSources = await popupConfirm(
+    // N2 用户旅程第一问：删除源文件（默认删 → 回收站 7 天）
+    const deleteSourcesAsked = await popupConfirm(
         `将检测本角色的存量聊天（不含当前打开的聊天与库隐容器），智能合并入库。\n\n` +
         '完成后删除源 jsonl 文件？\n（推荐：删除——副本先进回收站保留 7 天，可随时还原）',
     );
+    // N2 第二问：是否保持 jsonl 双写绑定（**默认否**）——选「是」= 进入双写模式且不删源文件
+    const keepBinding = await popupConfirm(
+        '是否保持 jsonl 双写绑定？\n\n' +
+        '是：库为事实源，同时把每个家族落一份标准聊天文件（原生酒馆可直接打开），源文件不删除。\n' +
+        '否：源文件按上一问的选择处理。',
+    );
+    const deleteSources = keepBinding ? false : deleteSourcesAsked;
 
     const result = await runImport({
         adapter: storageState.adapter,
@@ -811,6 +854,10 @@ async function importJsonlFlow() {
         toastr.success(`${parts.join('，')}。`, '聊天文件系统', { timeOut: 6000 });
         console.log(`[${MODULE_NAME}] 导入结果:`, result);
     }
+    if (keepBinding && result.totalFiles > 0) {
+        extension_settings[MODULE_NAME].storage_mode = 'mirror';
+        toastr.info('已进入双写模式：之后每次改动都会把库内容同步落成标准聊天文件。', '聊天文件系统', { timeOut: 6000 });
+    }
     renderAll();
 }
 
@@ -829,6 +876,7 @@ async function handleAction(action, el) {
         case 'delete-floor': return await deleteFloorFlow(floor);
         case 'export': return await exportCurrentBranch();
         case 'run-import': return await importJsonlFlow();
+        case 'sync-mirror': return await syncMirrorNow();
         default: return undefined;
     }
 }
@@ -854,19 +902,75 @@ function bindSettingsEvents(settingsRoot) {
         extension_settings[MODULE_NAME].auto_export = Boolean(this.checked);
         toastr.info(`保存后自动导出已${this.checked ? '开启' : '关闭'}`, '聊天文件系统');
     });
-    // 纯库模式开关（N2：安装旅程引导开启；此处为手动开关入口）
-    settingsRoot.on('change', '#chatfilesys-pure-db', async function () {
-        const on = Boolean(this.checked);
-        extension_settings[MODULE_NAME].storage_mode = on ? 'pure' : 'off';
-        if (on) {
-            await enablePureDb();
-            toastr.info('纯库模式已开启——新聊天将存入数据库；存量聊天经管理面板导入。', '聊天文件系统');
-        } else {
-            disablePureDb();
-            toastr.info('已切回 JSONL 增强模式。', '聊天文件系统');
-        }
-        renderAll();
+    // 存储模式三选一（T2/R1）：切换一律经 setStorageMode（带安全动作，不得切一次丢一次数据）
+    settingsRoot.on('change', '#chatfilesys-storage-mode', async function () {
+        const next = String(this.value || 'off');
+        const ok = await setStorageMode(next);
+        if (!ok) this.value = storageMode(); // 切换被安全动作中止 → 控件回位
     });
+}
+
+/**
+ * 模式切换（design.md §1 的安全动作表）：
+ * - off → 库：提示先走导入旅程（未导入的聊天保持原生、不被接管）
+ * - 库 → off：**先把当前走法落成标准聊天文件**，成功才切；失败中止（否则切完内容就没有来源了）
+ * - pure → mirror：立即落一次文件；mirror → pure：停止落文件、磁盘文件保留为快照
+ * @returns {Promise<boolean>} 是否完成切换
+ */
+async function setStorageMode(next) {
+    const target = normMode(next);
+    const cur = storageMode();
+    if (target === cur) return true;
+    if (target !== 'off' && cur === 'off') {
+        toastr.info('已切到库模式——存量聊天请点「导入存量聊天」录入；未导入的聊天仍走原生文件。', '聊天文件系统');
+    }
+    if (target === 'off' && cur !== 'off') {
+        const r = await exportCurrentChatFile();
+        if (!r.ok && r.reason !== 'not-in-library') {
+            toastr.error(`导出当前聊天文件失败（${r.reason}），已保持原模式以免内容失去来源。`, '聊天文件系统');
+            return false;
+        }
+    }
+    extension_settings[MODULE_NAME].storage_mode = target;
+    if (target === 'off') {
+        if (cur === 'mirror') toastr.info('磁盘上的聊天文件保留为快照，不再同步。', '聊天文件系统');
+        disablePureDb();
+    } else {
+        await enablePureDb();
+        if (isMirror(target)) {
+            const r = await exportCurrentChatFile();
+            if (!r.ok && r.reason !== 'not-in-library') {
+                toastr.warning(`首次落文件失败：${r.reason}（库仍是事实源，可点「与库同步一次」重试）`, '聊天文件系统');
+            }
+        }
+    }
+    renderStorageBadge();
+    renderAll();
+    toastr.success(`存储模式：${STORAGE_MODE_LABELS[target]}`, '聊天文件系统');
+    return true;
+}
+
+/** 把当前聊天所在家族落成标准聊天文件（切模式 / pure→mirror / 同步按钮共用） */
+async function exportCurrentChatFile() {
+    if (!storageState?.mirror) return { ok: false, reason: '库模式未启用' };
+    try {
+        return await storageState.mirror.exportByChatKey(normalizeChatKeyOf(ctx()));
+    } catch (e) {
+        return { ok: false, reason: String(e?.message || e) };
+    }
+}
+
+/** T2.5：「与库同步一次」——把所有脏家族立刻落盘（失败只 warn 不阻断） */
+async function syncMirrorNow() {
+    if (!mirrorMode()) { toastr.warning('当前不是双写模式。', '聊天文件系统'); return; }
+    const results = await storageState.mirror.flushNow();
+    const failed = (results || []).filter((r) => !r?.ok);
+    if (failed.length) {
+        toastr.error(`同步完成，但有 ${failed.length} 个家族落文件失败（${failed.map((f) => f.reason).slice(0, 2).join('；')}）`, '聊天文件系统');
+    } else {
+        toastr.success('已把库内容落成标准聊天文件。', '聊天文件系统');
+    }
+    renderStorageBadge();
 }
 
 /* ---------------- 全局入口（PRD 决策 #7：设置页按钮 / /cb / Alt+B） ---------------- */
@@ -911,7 +1015,12 @@ export async function init() {
         const settingsRoot = $('#chatfilesys-settings .chatfilesys-settings-content');
         settingsStatusEl = $('#chatfilesys-settings .chatfilesys-settings-status');
         $('#chatfilesys-auto-export').prop('checked', autoExportEnabled());
-        $('#chatfilesys-pure-db').prop('checked', pureDbMode());
+        const modeSel = $('#chatfilesys-storage-mode');
+        if (modeSel.length) {
+            modeSel.empty();
+            for (const m of STORAGE_MODES) modeSel.append($('<option>').attr('value', m).text(STORAGE_MODE_LABELS[m]));
+            modeSel.val(storageMode());
+        }
         bindActions(settingsRoot[0]);
         bindSettingsEvents(settingsRoot);
     } catch (e) {

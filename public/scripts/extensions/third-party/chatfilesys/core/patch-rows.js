@@ -53,6 +53,27 @@ export function activePathOf(model, branchId) {
 }
 
 /**
+ * 按走法 path 从行表投影出**有序消息行**（宿主 body 的那一份）。
+ * 读路径（seam）与双写落盘（mirror）共用同一份投影，保证「库里看到的」与「文件里写下的」
+ * 永远是同一序列。
+ * @param {object} path 走法 path（{floorNo: variantId}）
+ * @param {Array<{floorNo:number, variantId:string, content:string}>} rows 家族全部行
+ * @returns {Array<object>} 解析后的消息行（缺行/不可解析的行跳过——库不自洽时宁缺不崩）
+ */
+export function projectionOf(path, rows) {
+    const byKey = new Map((rows || []).map((r) => [`${r.floorNo}#${r.variantId}`, r]));
+    const out = [];
+    for (const f of pathFloors(path)) {
+        const row = byKey.get(`${f}#${path[f]}`);
+        if (!row) continue;
+        try {
+            out.push(JSON.parse(row.content));
+        } catch { /* 不可解析行跳过 */ }
+    }
+    return out;
+}
+
+/**
  * 行表写回：按 (floorNo, variantId) upsert，再按键删除。
  * @param {Array} rows 库内现有行
  * @param {Array} upserts planBodyPatch 产出的行

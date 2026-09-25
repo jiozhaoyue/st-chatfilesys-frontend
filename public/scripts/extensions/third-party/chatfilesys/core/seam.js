@@ -9,11 +9,13 @@
  * - 冲突（integrity 乐观锁）→ 409，调用方按宿主语义重拉重放
  * - 任何异常 → console.warn + 透传原始 fetch（L0-11 静默降级，绝不阻断宿主）
  * - dispose 可恢复原始 fetch（ws-delivery installFetchProxy 先例模式）
+ * - 成功写经 `opts.onWrote({familyId, chatKey})` 通知调用方（T2 双写模式的落盘信号）
  *
  * 适配器契约 = design.md §2 StorageAdapterAPI（duck-typed 参数注入，本模块不感知具体后端）。
  */
 
 import { applyOpsToObject } from './ops-apply.js';
+import { projectionOf } from './patch-rows.js';
 import { normIntegrity } from './integrity.js';
 import { planTakeover, branchIdForKey, classifyNewChat } from './takeover.js';
 
@@ -293,6 +295,13 @@ export function installSeam(adapter, opts = {}) {
     const pageSize = opts.pageSize ?? 200;
     const log = opts.log ?? console.warn;
     const originalFetch = globalThis.fetch;
+    // 成功写回调（T2 双写模式用）：参数 { familyId, chatKey }，只做通知、不改写结果
+    const onWrote = typeof opts.onWrote === 'function' ? opts.onWrote : null;
+    const notifyWrote = (family, chatKey) => {
+        if (!onWrote) return;
+        try { onWrote({ familyId: family?.familyId, chatKey }); }
+        catch (e) { log('[chatfilesys-seam] onWrote 回调异常（忽略，不影响本次写）:', e); }
+    };
 
     /**
      * 未命中家族 → 尝试接管原生「创建分支 / 创建检查点」（T1/R2.1，裁定 N22）。
@@ -354,13 +363,9 @@ export function installSeam(adapter, opts = {}) {
         if (!family) return null; // 未接管：透传原生路径
         // T1：投影走法按键绑定解析（原生分支/检查点键各自代表一条走法；无绑定回落活跃走法）
         const branch = branchFor(family, chatKey) || family.model?.branches?.[0];
-        const activePath = branch?.path || null;
         const { floors } = await adapter.loadFloors({ familyId: family.familyId, from: 0, limit: pageSize });
         // 投影过滤：body = 该走法 path 引用的行（导入合并/分叉产生的非本走法变体行不进 body）
-        const rows = (activePath
-            ? floors.filter((f) => activePath[f.floorNo] === f.variantId)
-            : floors
-        ).map((f) => JSON.parse(f.content));
+        const rows = projectionOf(branch?.path, floors);
         const header = {
             user_name: 'unused',
             character_name: 'unused',
@@ -424,6 +429,7 @@ export function installSeam(adapter, opts = {}) {
         await ensurePathCovers(adapter, family, branch, floors, log); // 新楼层必须进 path，否则读回被投影过滤丢掉
         const r = await adapter.saveFloors({ familyId: family.familyId, floors, expectedIntegrity: expectedIntegrityOf(body) });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
+        notifyWrote(family, chatKey);
         return jsonResponse({ ok: true, integrity: normIntegrity(r.integrity) });
     }
 
@@ -461,6 +467,7 @@ export function installSeam(adapter, opts = {}) {
             });
             if (rMeta?.integrity != null) integrity = rMeta.integrity;
         }
+        notifyWrote(family, chatKey);
         return jsonResponse({ ok: true, appended: messages.length, created: false, integrity: normIntegrity(integrity) });
     }
 
@@ -508,6 +515,7 @@ export function installSeam(adapter, opts = {}) {
             log(`[chatfilesys-seam] chats/patch 未应用：${r.reason}${r.detail ? '｜' + r.detail : ''}`);
             return jsonResponse({ ok: false, reason: r.reason, detail: r.detail || null }, conflict ? 409 : 400);
         }
+        notifyWrote(family, chatKey);
         return jsonResponse({
             ok: true,
             applied: (body?.operations || []).length,
@@ -552,6 +560,7 @@ export function installSeam(adapter, opts = {}) {
         });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
         family.hostMetadata = mergedHost;
+        notifyWrote(family, chatKey);
         return jsonResponse({ ok: true, updated: true, total_messages: 0, created: false, integrity: normIntegrity(r.integrity) });
     }
 
@@ -590,6 +599,7 @@ export function installSeam(adapter, opts = {}) {
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
         family.hostMetadata = nextHost;
         family.model = nextModel;
+        notifyWrote(family, chatKey);
         return jsonResponse({ ok: true, applied: ops.length, integrity: normIntegrity(r.integrity) });
     }
 
