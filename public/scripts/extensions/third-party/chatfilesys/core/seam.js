@@ -14,6 +14,8 @@
  */
 
 import { applyOpsToObject } from './ops-apply.js';
+import { normIntegrity } from './integrity.js';
+import { planTakeover, branchIdForKey, classifyNewChat } from './takeover.js';
 
 /** 拦截的路由（URL 路径尾部匹配；meta 系 = 分支模型保存通道，get-delta = 原生分页读） */
 const ROUTES = [
@@ -35,28 +37,15 @@ export function normalizeChatKey(avatarUrl, fileName) {
 }
 
 /**
- * integrity 形态桥接：库内数字计数器 ⇄ 宿主字符串 slug。
- * 真机事实（2026-09-24 Dev Luker script.js）：宿主 chat_metadata.integrity 是字符串
- * （无则自造 uuid 且 applyIntegrityFromWritePayload 只认非空字符串——数字被静默丢弃，
- * 宿主锁值永不前进）；get 响应 header 不带 integrity 时宿主 saveChatInternal 以
- * 「chat not fully loaded」拒绝保存。边界统一转 slug，库内保持数字。
+ * 入向版本号（T1/N19：字符串形态，不再做数字⇄slug 桥接）。
+ * `force` = 宿主显式覆盖信号 → 不锁版本号。
+ * 其余情形原样交给适配器做字符串相等判定；调用方未带版本号（宿主原生 saveChat 不带
+ * integrity）时返回 null = 不锁。
+ * @returns {string|null}
  */
-function toHostIntegrity(n) {
-    return `cfsys:${n}`;
-}
-
-/**
- * 宿主发来的 integrity（slug / 纯数字 / 宿主自造 uuid / 空）→ 库乐观锁值。
- * 非 cfsys 形态的 uuid 说明宿主未从库拿到过 slug（混合状态）→ null 放行不锁。
- * @returns {number|null}
- */
-function parseHostIntegrity(v) {
-    if (typeof v === 'number' && Number.isFinite(v)) return v;
-    if (typeof v !== 'string' || !v.trim()) return null;
-    const m = /^cfsys:(\d+)$/.exec(v.trim());
-    if (m) return Number(m[1]);
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
+function expectedIntegrityOf(body) {
+    if (body?.force) return null;
+    return normIntegrity(body?.integrity);
 }
 
 /** 解析 Request 的 URL 路径（支持字符串与 Request 对象；无 location 环境（node:test）用占位基准） */
@@ -90,12 +79,31 @@ const OWN_EXTENSION_KEY = 'chatfilesys';
  * 合成完整 chat_metadata（读响应用，T0/R0：聊天记录零丢失）。
  * 宿主与其他插件写进聊天头的内容**整份回显**；本插件两项覆盖在各自位置。
  * `extensions` 是**合并**而不是覆盖——其他插件也把命名空间挂在 extensions 下。
- * @param {{hostMetadata?: object, model?: object, integrity?: any}} family
+ *
+ * T1：`main_chat` 是**按键**的——分支/检查点键各有各的父，家族级的 hostMetadata 是所有键
+ * 共用的（混进去会让根聊天也冒出「返回父聊天」）。故按键绑定的 `mainChat` 覆盖回显。
+ * @param {{hostMetadata?: object, model?: object, integrity?: any, keyBindings?: object}} family
+ * @param {string} [chatKey] 本次请求的聊天键（决定 main_chat 覆盖）
  */
-function composeChatMetadata(family) {
+function composeChatMetadata(family, chatKey) {
     const host = family?.hostMetadata && typeof family.hostMetadata === 'object' ? family.hostMetadata : {};
     const extensions = { ...(host.extensions || {}), [OWN_EXTENSION_KEY]: family?.model ?? null };
-    return { ...host, integrity: toHostIntegrity(family?.integrity), extensions };
+    const meta = { ...host, integrity: normIntegrity(family?.integrity), extensions };
+    const bound = chatKey != null ? family?.keyBindings?.[chatKey] : null;
+    if (bound?.mainChat) meta.main_chat = bound.mainChat;
+    return meta;
+}
+
+/**
+ * 入向聊天头并入前的处理（T1）：绑定键（分支/检查点）的 `main_chat` 属于该键自己，
+ * 不得混进家族级 hostMetadata——否则根键也会带上「返回父聊天」。
+ * @returns {object} 可并入家族级的聊天头内容
+ */
+function stripKeyOwnedMeta(family, chatKey, incomingHost) {
+    const src = incomingHost && typeof incomingHost === 'object' ? incomingHost : {};
+    if (chatKey == null || !family?.keyBindings?.[chatKey]) return src;
+    const { main_chat: _omit, ...rest } = src; // eslint-disable-line no-unused-vars
+    return rest;
 }
 
 /**
@@ -148,6 +156,48 @@ function modelSwitchesBranch(family, incoming) {
     const storedActive = family?.model?.active_branch;
     if (!incoming?.active_branch || !Array.isArray(incoming.branches)) return false;
     return incoming.active_branch !== storedActive;
+}
+
+/** 本次请求（某个聊天键）实际读写的那条走法 */
+function branchFor(family, chatKey) {
+    const id = branchIdForKey(family, chatKey);
+    return family?.model?.branches?.find((b) => b.id === id) || null;
+}
+
+/**
+ * 键绑定跟随走法切换（T1）。
+ *
+ * 原生分支/检查点键各自绑定一条走法；而 UI 的「切换走法」是在**当前键**上把
+ * `model.active_branch` 改掉后落库的。若不同步改该键的绑定，读路径仍按键绑定解析，
+ * 用户会看到「切了但内容没变」。故：某键上发生切换 → 该键重新指向新走法。
+ * 无绑定的键（根键）返回 null：它本来就靠 `active_branch` 解析，不需要绑定。
+ * @param {{active_branch?: string}|null} nextModel 含目标走法的形态
+ * @returns {object|null} 需要落库的新 keyBindings（无需改则 null）
+ */
+function followKeyBinding(family, chatKey, nextModel) {
+    const kb = family?.keyBindings;
+    const want = nextModel?.active_branch;
+    if (!kb || !chatKey || !want) return null;
+    const cur = kb[chatKey];
+    if (!cur || cur.branchId === want) return null;
+    return { ...kb, [chatKey]: { ...cur, branchId: want } };
+}
+
+/**
+ * 入向模型的 `active_branch` 归属（T1）。
+ *
+ * 家族只有**一个** `active_branch`，而根键没有绑定、靠它解析投影。若绑定键（原生分支/检查点）
+ * 上的走法切换把它带跑，用户点「返回父聊天」回到根键时会看到**截断内容**。
+ * 故：绑定键上的切换只改该键的绑定（`followKeyBinding`），家族活跃走法保持不动。
+ * 根键（无绑定）不 pin —— 那里的切换就是家族级切换，语义正确。
+ * @returns {object|null} 落库用模型（active_branch 已归属）
+ */
+function pinActiveForBoundKey(family, chatKey, incomingModel) {
+    if (!incomingModel || chatKey == null) return incomingModel ?? null;
+    if (!family?.keyBindings?.[chatKey]) return incomingModel;
+    const stored = family?.model?.active_branch;
+    if (!stored || stored === incomingModel.active_branch) return incomingModel;
+    return { ...incomingModel, active_branch: stored };
 }
 
 /**
@@ -207,24 +257,24 @@ function filterMetaOps(ops, composedCurrent) {
 }
 
 /**
- * 把新写入的楼层并入**当前走法的 path**（T0 实测暴露的必要条件）。
+ * 把新写入的楼层并入**本次请求所在走法的 path**（T0 实测暴露的必要条件）。
  *
- * 读路径按「活跃分支 path 引用的行」做投影过滤——若写入时只落行、不落 path，
- * 这些行就会被当成「其他分支的折叠行」而**读不回来**（消息写进库却像丢了）。
+ * 读路径按「该走法 path 引用的行」做投影过滤——若写入时只落行、不落 path，
+ * 这些行就会被当成「其他走法的折叠行」而**读不回来**（消息写进库却像丢了）。
  * 因此任何追加/全量写都要同步扩展 path。
  *
  * @param {import('./storage/adapter.js').StorageAdapterAPI} adapter
- * @param {{model?: {active_branch?: string, branches?: Array<{id: string, path: object}>}}} family
+ * @param {{model?: object}} family
+ * @param {object} branch 目标走法（按键绑定解析出的那条）
  * @param {Array<{floorNo: number, variantId: string}>} floors
  * @param {Function} log
  */
-async function ensurePathCovers(adapter, family, floors, log) {
-    const active = family?.model?.branches?.find((b) => b.id === family.model.active_branch);
-    if (!active) return;
+async function ensurePathCovers(adapter, family, branch, floors, log) {
+    if (!branch) return;
     let changed = false;
     for (const f of floors) {
-        if (active.path[f.floorNo] !== f.variantId) {
-            active.path[f.floorNo] = f.variantId;
+        if (branch.path[f.floorNo] !== f.variantId) {
+            branch.path[f.floorNo] = f.variantId;
             changed = true;
         }
     }
@@ -244,16 +294,69 @@ export function installSeam(adapter, opts = {}) {
     const log = opts.log ?? console.warn;
     const originalFetch = globalThis.fetch;
 
-    /** 读路径：chats/get → 库分片读 → 活跃分支投影 → [header, ...rows] */
+    /**
+     * 未命中家族 → 尝试接管原生「创建分支 / 创建检查点」（T1/R2.1，裁定 N22）。
+     *
+     * 判定链（三重，任一不满足即透传，宁可不接管）：
+     *   ① 父线索：请求头 `chat_metadata.main_chat`（宿主创建分支/检查点时写入）→ 父键能命中家族
+     *   ② 内容闸门：正文行序列必须是父走法当前投影的**逐行前缀**
+     *   ③ 类型：分支名宿主自动生成不可改 → 命中 ` - Branch #<n>` 即分支，其余即检查点
+     * 全部通过 → 在父家族内建一条走法 + 键绑定，落库后回成功（**磁盘不产生复制文件**）。
+     * @returns {Response|null} null = 未接管，调用方透传原生路径（行为与改造前一致）
+     */
+    async function tryTakeoverNewKey({ chatKey, fileName, avatarUrl, rows, incomingMeta }) {
+        const hostMain = incomingMeta?.main_chat;
+        if (!hostMain || !rows.length) return null;
+        const parentKey = normalizeChatKey(avatarUrl, hostMain);
+        const parent = await adapter.loadFamily({ chatKey: parentKey });
+        if (!parent) return null;
+        const parentBranchId = branchIdForKey(parent, parentKey);
+        const parentPath = parent.model?.branches?.find((b) => b.id === parentBranchId)?.path || {};
+        // 只需覆盖前 rows.length 层的行（含同层的其他变体行，故多取一页）
+        const { floors } = await adapter.loadFloors({ familyId: parent.familyId, from: 0, limit: rows.length + pageSize });
+        const parentContents = floors
+            .filter((f) => parentPath[f.floorNo] === f.variantId)
+            .map((f) => f.content);
+        const plan = planTakeover({
+            kind: classifyNewChat(fileName),
+            rows,
+            parentContents,
+            parentModel: parent.model,
+            parentBranchId,
+            parentKey,
+            newKey: chatKey,
+            fileName,
+            mainChat: hostMain,
+            parentBindings: parent.keyBindings,
+        });
+        if (!plan.ok) {
+            log(`[chatfilesys-seam] 疑似原生分支/检查点「${fileName}」未接管（${plan.reason}），透传原生路径`);
+            return null;
+        }
+        const r = await adapter.saveModel({
+            familyId: parent.familyId,
+            model: plan.model,
+            keyBindings: plan.keyBindings,
+            expectedIntegrity: null, // 建键不是对已有内容的写，不走乐观锁
+        });
+        if (!r || r.ok === false) {
+            log('[chatfilesys-seam] 原生分支/检查点接管落库失败，透传原生路径:', r?.reason);
+            return null;
+        }
+        log(`[chatfilesys-seam] 已接管原生${plan.kind === 'branch' ? '分支' : '检查点'}「${fileName}」→ 库内走法 ${plan.branchId}（第 ${plan.forkFloor} 层分叉，磁盘不落文件）`);
+        return jsonResponse({ ok: true, integrity: normIntegrity(r.integrity) });
+    }
+
+    /** 读路径：chats/get → 库分片读 → 本次键所在走法投影 → [header, ...rows] */
     async function handleGet(body) {
         const chatKey = normalizeChatKey(body?.avatar_url, body?.file_name);
         const family = await adapter.loadFamily({ chatKey });
         if (!family) return null; // 未接管：透传原生路径
-        const active = family.model?.branches?.find((b) => b.id === family.model?.active_branch)
-            || family.model?.branches?.[0];
-        const activePath = active?.path || null;
+        // T1：投影走法按键绑定解析（原生分支/检查点键各自代表一条走法；无绑定回落活跃走法）
+        const branch = branchFor(family, chatKey) || family.model?.branches?.[0];
+        const activePath = branch?.path || null;
         const { floors } = await adapter.loadFloors({ familyId: family.familyId, from: 0, limit: pageSize });
-        // 投影过滤：body = 活跃分支 path 引用的行（导入合并/分叉产生的非活跃变体行不进 body）
+        // 投影过滤：body = 该走法 path 引用的行（导入合并/分叉产生的非本走法变体行不进 body）
         const rows = (activePath
             ? floors.filter((f) => activePath[f.floorNo] === f.variantId)
             : floors
@@ -263,54 +366,65 @@ export function installSeam(adapter, opts = {}) {
             character_name: 'unused',
             // 聊天头**整份回显**（T0/R0）：宿主与其他插件写进去的内容一律不得丢失；
             // 本插件两项（integrity 与 extensions.chatfilesys）覆盖在各自位置。
-            chat_metadata: composeChatMetadata(family),
+            chat_metadata: composeChatMetadata(family, chatKey),
         };
         return jsonResponse([header, ...rows]);
     }
 
-    /** 写路径：chats/save → 全量 upsert 库分片 */
+    /** 写路径：chats/save → 全量 upsert 库分片（未命中家族时先试接管原生分支/检查点） */
     async function handleSave(body) {
         const chatKey = normalizeChatKey(body?.avatar_url, body?.file_name);
-        const family = await adapter.loadFamily({ chatKey });
-        if (!family) return null;
         // 宿主 save 请求体 chat = [header, ...messages]（script.js saveChatInternal 真机事实）：
         // 首行是 {user_name, character_name, chat_metadata} 无 mes——剥掉，防 header 污染楼层
         const allRows = Array.isArray(body?.chat) ? body.chat : [];
         const isHeaderRow = (r) => r && typeof r === 'object' && !('mes' in r) && ('chat_metadata' in r || 'user_name' in r);
         const hasHeader = allRows.length > 0 && isHeaderRow(allRows[0]);
         const rows = hasHeader ? allRows.slice(1) : allRows;
+        const incomingMeta = hasHeader ? allRows[0]?.chat_metadata ?? null : null;
+
+        const family = await adapter.loadFamily({ chatKey });
+        if (!family) {
+            // T1：原生「创建分支/创建检查点」= 宿主往一个新键全量写 → 在此拦下改为库内走法
+            return await tryTakeoverNewKey({
+                chatKey, fileName: body?.file_name, avatarUrl: body?.avatar_url, rows, incomingMeta,
+            });
+        }
         // 聊天头整份并入（T0/R0）：宿主与其他插件写进去的命名空间、main_chat、变量……一律落库，
         // 只有本插件两项例外——extensions.chatfilesys 走模型通道，integrity 由库自管。
-        const incomingMeta = hasHeader ? allRows[0]?.chat_metadata ?? null : null;
         const { hostMetadata: incomingHost, model: incomingModel } = splitChatMetadata(incomingMeta);
-        const mergedHost = mergeHostMetadata(family.hostMetadata, incomingHost);
+        const mergedHost = mergeHostMetadata(family.hostMetadata, stripKeyOwnedMeta(family, chatKey, incomingHost));
         const hostChanged = JSON.stringify(mergedHost) !== JSON.stringify(family.hostMetadata || {});
-        const modelChanged = Boolean(incomingModel) && JSON.stringify(incomingModel) !== JSON.stringify(family.model);
-        if (hostChanged || modelChanged) {
+        const pinned = pinActiveForBoundKey(family, chatKey, incomingModel);
+        const modelChanged = Boolean(pinned) && JSON.stringify(pinned) !== JSON.stringify(family.model);
+        const nextBindings = followKeyBinding(family, chatKey, incomingModel);
+        if (hostChanged || modelChanged || nextBindings) {
             const rMeta = await adapter.saveModel({
                 familyId: family.familyId,
-                model: modelChanged ? incomingModel : family.model,
+                model: modelChanged ? pinned : family.model,
                 hostMetadata: hostChanged ? mergedHost : undefined,
+                keyBindings: nextBindings || undefined,
                 expectedIntegrity: null,
-                keepCurrent: !modelChanged, // 模型没变则不重建结构表，只写聊天头
+                keepCurrent: !modelChanged, // 模型没变则不重建结构表，只写聊天头/键绑定
             });
             if (rMeta && rMeta.ok === false) log('[chatfilesys-seam] 聊天头落库失败:', rMeta.reason);
-            if (modelChanged) family.model = incomingModel;
+            if (modelChanged) family.model = pinned;
             if (hostChanged) family.hostMetadata = mergedHost;
+            if (nextBindings) family.keyBindings = nextBindings;
         }
-        // 全量保存 = body 数组逐行 upsert（floorNo = 行序 +1；family.model 内含活跃分支路径）
+        // 全量保存 = body 数组逐行 upsert（floorNo = 行序 +1；变体身份取自本次键所在走法的 path）
+        const branch = branchFor(family, chatKey);
         const floors = rows.map((row, i) => ({
             floorNo: i + 1,
-            variantId: family.model.branches.find((b) => b.id === family.model.active_branch)?.path?.[i + 1] || `g${i + 1}`,
+            variantId: branch?.path?.[i + 1] || `g${i + 1}`,
             seq: 0,
             content: JSON.stringify(row),
             contentHash: null, // save 路径不做合并判定，hash 留空由适配器按需补
             sendDate: row?.send_date ?? null,
         }));
-        await ensurePathCovers(adapter, family, floors, log); // 新楼层必须进 path，否则读回被投影过滤丢掉
-        const r = await adapter.saveFloors({ familyId: family.familyId, floors, expectedIntegrity: parseHostIntegrity(body?.integrity) });
+        await ensurePathCovers(adapter, family, branch, floors, log); // 新楼层必须进 path，否则读回被投影过滤丢掉
+        const r = await adapter.saveFloors({ familyId: family.familyId, floors, expectedIntegrity: expectedIntegrityOf(body) });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
-        return jsonResponse({ ok: true, integrity: toHostIntegrity(r.integrity) });
+        return jsonResponse({ ok: true, integrity: normIntegrity(r.integrity) });
     }
 
     /** 写路径：chats/append → 新楼层追加入库（T0c：请求体带的聊天头一并并入） */
@@ -322,10 +436,11 @@ export function installSeam(adapter, opts = {}) {
         // 其他插件命名空间跟着这条写进来时必须落地，否则「写命名空间 + 发消息」这一步会丢。
         // 模型不动：结构由本插件（UI）与 ensurePathCovers 维护，宿主副本可能是旧版。
         const { hostMetadata: incomingHost } = splitChatMetadata(body?.chat_metadata);
-        const mergedHost = mergeHostMetadata(family.hostMetadata, incomingHost);
+        const mergedHost = mergeHostMetadata(family.hostMetadata, stripKeyOwnedMeta(family, chatKey, incomingHost));
         const hostChanged = JSON.stringify(mergedHost) !== JSON.stringify(family.hostMetadata || {});
         const messages = Array.isArray(body?.messages) ? body.messages : [];
-        const activePath = family.model.branches.find((b) => b.id === family.model.active_branch)?.path || {};
+        const branch = branchFor(family, chatKey);
+        const activePath = branch?.path || {};
         const base = Math.max(0, ...Object.keys(activePath).map(Number), 0);
         const floors = messages.map((row, i) => ({
             floorNo: base + i + 1,
@@ -335,8 +450,8 @@ export function installSeam(adapter, opts = {}) {
             contentHash: null,
             sendDate: row?.send_date ?? null,
         }));
-        await ensurePathCovers(adapter, family, floors, log); // 新楼层必须进 path，否则读回被投影过滤丢掉
-        const r = await adapter.saveFloors({ familyId: family.familyId, floors, expectedIntegrity: parseHostIntegrity(body?.integrity) });
+        await ensurePathCovers(adapter, family, branch, floors, log); // 新楼层必须进 path，否则读回被投影过滤丢掉
+        const r = await adapter.saveFloors({ familyId: family.familyId, floors, expectedIntegrity: expectedIntegrityOf(body) });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
         let integrity = r.integrity;
         if (hostChanged) {
@@ -346,7 +461,7 @@ export function installSeam(adapter, opts = {}) {
             });
             if (rMeta?.integrity != null) integrity = rMeta.integrity;
         }
-        return jsonResponse({ ok: true, appended: messages.length, created: false, integrity: toHostIntegrity(integrity) });
+        return jsonResponse({ ok: true, appended: messages.length, created: false, integrity: normIntegrity(integrity) });
     }
 
     /**
@@ -369,14 +484,21 @@ export function installSeam(adapter, opts = {}) {
         const { hostMetadata: incomingHost, model: incomingModel } = splitChatMetadata(body?.chat_metadata);
         const mergedHost = mergeHostMetadata(family.hostMetadata, incomingHost);
         const hostChanged = JSON.stringify(mergedHost) !== JSON.stringify(family.hostMetadata || {});
+        // 入向模型只在「走法切换」时决定结构：宿主内存副本可能是旧版，
+        // 让旧副本盖掉本插件的结构更新会丢新走法（非切换时以库内模型为准）
+        const switchTarget = modelSwitchesBranch(family, incomingModel) ? incomingModel.active_branch : null;
+        const adoptModel = switchTarget ? pinActiveForBoundKey(family, chatKey, incomingModel) : undefined;
+        const nextBindings = switchTarget ? followKeyBinding(family, chatKey, { active_branch: switchTarget }) : null;
         const r = await adapter.applyOps({
             familyId: family.familyId,
             ops: Array.isArray(body?.operations) ? body.operations : [],
-            // 入向模型只在「走法切换」时决定结构：宿主内存副本可能是旧版，
-            // 让旧副本盖掉本插件的结构更新会丢新走法（非切换时以库内模型为准）
-            model: modelSwitchesBranch(family, incomingModel) ? incomingModel : undefined,
+            model: adoptModel,
+            // 投影基准（T1）：切换时 = 目标走法（宿主 ops 是按它的 body 算的）；
+            // 否则 = 本次键所在走法（原生分支/检查点键各有各的 body）
+            branchId: switchTarget ?? branchIdForKey(family, chatKey),
             hostMetadata: hostChanged ? mergedHost : undefined,
-            expectedIntegrity: body?.force ? null : parseHostIntegrity(body?.integrity),
+            keyBindings: nextBindings || undefined,
+            expectedIntegrity: expectedIntegrityOf(body),
         });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
         if (r && r.ok === false) {
@@ -390,7 +512,7 @@ export function installSeam(adapter, opts = {}) {
             ok: true,
             applied: (body?.operations || []).length,
             total_messages: r.totalMessages ?? 0,
-            integrity: toHostIntegrity(r.integrity),
+            integrity: normIntegrity(r.integrity),
         });
     }
 
@@ -420,16 +542,17 @@ export function installSeam(adapter, opts = {}) {
         if (!family) return null;
         // T0/R0：消息头整份并入（其他插件命名空间、main_chat、变量……），本插件两项走各自通道
         const { hostMetadata: incomingHost, model } = splitChatMetadata(body?.chat_metadata);
-        const mergedHost = mergeHostMetadata(family.hostMetadata, incomingHost);
+        const mergedHost = mergeHostMetadata(family.hostMetadata, stripKeyOwnedMeta(family, chatKey, incomingHost));
         const r = await adapter.saveModel({
             familyId: family.familyId,
-            model,
+            model: pinActiveForBoundKey(family, chatKey, model),
             hostMetadata: mergedHost,
-            expectedIntegrity: parseHostIntegrity(body?.integrity),
+            keyBindings: followKeyBinding(family, chatKey, model) || undefined,
+            expectedIntegrity: expectedIntegrityOf(body),
         });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
         family.hostMetadata = mergedHost;
-        return jsonResponse({ ok: true, updated: true, total_messages: 0, created: false, integrity: toHostIntegrity(r.integrity) });
+        return jsonResponse({ ok: true, updated: true, total_messages: 0, created: false, integrity: normIntegrity(r.integrity) });
     }
 
     /**
@@ -442,29 +565,32 @@ export function installSeam(adapter, opts = {}) {
         const family = await adapter.loadFamily({ chatKey });
         if (!family) return null;
         const rawOps = Array.isArray(body?.operations) ? body.operations : [];
-        const { ops, dropped } = filterMetaOps(rawOps, composeChatMetadata(family));
+        const composed = composeChatMetadata(family, chatKey);
+        const { ops, dropped } = filterMetaOps(rawOps, composed);
         if (dropped.length) {
             log(`[chatfilesys-seam] chats/meta/patch 丢弃 ${dropped.length} 条删除/自管项 op（避免宿主旧副本抹掉内容）：${dropped.join('、')}`);
         }
         let next;
         try {
             // 深拷贝后应用：composeChatMetadata 是浅拷贝，嵌套对象仍与 family 共享引用，必须隔离
-            next = applyOpsToObject(JSON.parse(JSON.stringify(composeChatMetadata(family))), ops);
+            next = applyOpsToObject(JSON.parse(JSON.stringify(composed)), ops);
         } catch (e) {
             log(`[chatfilesys-seam] chats/meta/patch 应用失败（未写入，避免静默丢内容）：${String(e?.message || e)}`);
             return jsonResponse({ ok: false, reason: 'patch-apply-failed', detail: String(e?.message || e) }, 400);
         }
-        const { hostMetadata: nextHost, model: nextModel } = splitChatMetadata(next);
+        const { hostMetadata: nextHostRaw, model: nextModel } = splitChatMetadata(next);
+        const nextHost = stripKeyOwnedMeta(family, chatKey, nextHostRaw);
         const r = await adapter.saveModel({
             familyId: family.familyId,
-            model: nextModel,
+            model: pinActiveForBoundKey(family, chatKey, nextModel),
             hostMetadata: nextHost,
-            expectedIntegrity: parseHostIntegrity(body?.integrity),
+            keyBindings: followKeyBinding(family, chatKey, nextModel) || undefined,
+            expectedIntegrity: expectedIntegrityOf(body),
         });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
         family.hostMetadata = nextHost;
         family.model = nextModel;
-        return jsonResponse({ ok: true, applied: ops.length, integrity: toHostIntegrity(r.integrity) });
+        return jsonResponse({ ok: true, applied: ops.length, integrity: normIntegrity(r.integrity) });
     }
 
     /** 读路径：chats/get-delta → 库分片读的区间响应（原生分页读兼容） */
@@ -477,7 +603,7 @@ export function installSeam(adapter, opts = {}) {
         const { floors, hasMore } = await adapter.loadFloors({ familyId: family.familyId, from, limit });
         return jsonResponse({
             chat: floors.map((f) => JSON.parse(f.content)),
-            chat_metadata: composeChatMetadata(family), // T0/R0：整份回显，不只本插件模型
+            chat_metadata: composeChatMetadata(family, chatKey), // T0/R0：整份回显，不只本插件模型
             from_index: from,
             next_index: from + floors.length,
             total_messages: Object.keys(family.branchPaths?.[Object.keys(family.branchPaths)[0]] || {}).length,

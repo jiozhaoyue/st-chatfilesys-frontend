@@ -31,6 +31,10 @@ function mockSqlClient() {
                 if (s.startsWith('SELECT * FROM families WHERE id')) return db.families.filter((f) => f.id === p[0]);
                 if (s.startsWith('SELECT integrity FROM families WHERE id')) return db.families.filter((f) => f.id === p[0]).map((f) => ({ integrity: f.integrity }));
                 if (s.startsWith('SELECT id, name, updated_at FROM families')) return db.families.map((f) => ({ id: f.id, name: f.name, updated_at: f.updated_at }));
+                if (s.startsWith('SELECT * FROM families WHERE key_bindings')) {
+                    // T1：档1 的绑定键回落查询（键绑定列非空且非空对象）
+                    return db.families.filter((f) => f.key_bindings && f.key_bindings !== p[0]);
+                }
                 if (s.startsWith('SELECT * FROM branches')) return db.branches.filter((b) => b.family_id === p[0]);
                 if (s.startsWith('SELECT * FROM branch_paths')) return db.branch_paths.filter((b) => b.family_id === p[0]);
                 if (s.startsWith('SELECT * FROM floors WHERE family_id')) {
@@ -52,7 +56,12 @@ function mockSqlClient() {
                     return [];
                 }
                 if (s.startsWith('UPDATE families SET integrity')) {
-                    db.families.forEach((f) => { if (f.id === p[1]) { f.integrity = f.integrity + 1; f.updated_at = p[0]; } });
+                    // T1/N19：UPDATE families SET integrity = ?, updated_at = ? WHERE id = ?
+                    db.families.forEach((f) => { if (f.id === p[2]) { f.integrity = p[0]; f.updated_at = p[1]; } });
+                    return [];
+                }
+                if (s.startsWith('UPDATE families SET key_bindings')) {
+                    db.families.forEach((f) => { if (f.id === p[2]) { f.key_bindings = p[0]; f.updated_at = p[1]; } });
                     return [];
                 }
                 if (s.startsWith('UPDATE families SET model')) {
@@ -105,7 +114,7 @@ test('档1：migrate 建表被调；loadFamily 按 chatKey 命中并装配模型
     seedAuthority(db);
     const adapter = await createAuthorityAdapter({ authorityClient: client });
     const f = await adapter.loadFamily({ chatKey: 'av1::chat1' });
-    assert.equal(calls.migrate, 3); // 001_init + 002_model + 003_host_metadata（T0/R0）
+    assert.equal(calls.migrate, 4); // 001_init + 002_model + 003_host_metadata + 004_key_bindings（T1）
     assert.equal(f.familyId, 'f1');
     assert.equal(f.model.branches[0].id, 'b_main');
     assert.equal(f.model.branches[0].path[1], 'g1');
@@ -216,7 +225,9 @@ test('档1：saveModel keepCurrent → 不改模型仅 bump integrity', async ()
     const before = db.families[0].integrity;
     const r = await adapter.saveModel({ familyId: 'f1', model: null, expectedIntegrity: null, keepCurrent: true });
     assert.equal(r.ok, true);
-    assert.equal(db.families[0].integrity, before + 1);
+    // T1/N19：每次成功写生成**新字符串**（不再是数字递增）
+    assert.equal(typeof db.families[0].integrity, 'string');
+    assert.notEqual(db.families[0].integrity, before);
     assert.equal(JSON.parse(db.families[0].model).active_branch, 'b_z'); // 模型未动
 });
 
@@ -364,7 +375,7 @@ test('档1：applyOps 字段级补丁落库 + 聊天头与行同次写（T0b/T0c
         expectedIntegrity: 1,
     });
     assert.equal(r.ok, true);
-    assert.equal(r.integrity, 2);
+    assert.equal(typeof r.integrity, 'string'); // T1/N19：字符串版本号
     assert.equal(r.totalMessages, 1);
     const f = await adapter.loadFamily({ familyId: 'f1' });
     assert.deepEqual(f.hostMetadata, hostMetadata);
@@ -387,6 +398,28 @@ test('档1：applyOps 删层 → 行按键删除 + 走法前移（非活跃走�
     assert.deepEqual(keys, ['1#g2', '1#g7', '2#g3']); // 旧键行清掉，支线 g7 换到第 1 层
     const f = await adapter.loadFamily({ familyId: 'f1' });
     assert.deepEqual(f.model.branches.find((b) => b.id === 'b1').path, { 1: 'g7' });
+});
+
+test('档1：applyOps 传 branchId → 按该走法投影（改的是它的变体行，不是活跃走法的）', async () => {
+    const { client, db } = mockSqlClient();
+    seedTwoBranches(db); // b_main={1:g1,2:g2,3:g3}；b1={1:g1,2:g7}（g7 = 支线二，折叠组）
+    const adapter = await createAuthorityAdapter({ authorityClient: client });
+    // 以支线 b1（path={1:g1,2:g7}）为投影基准：1 号元素 = 2#g7；
+    // 活跃走法 b_main（path={1:g1,2:g2,3:g3}）的 1 号元素 = 2#g2 —— 投影基准不同，落点就不同
+    const r = await adapter.applyOps({
+        familyId: 'f1',
+        branchId: 'b1',
+        ops: [{ op: 'replace', path: '/1', value: { mes: '支线改过' } }],
+        expectedIntegrity: 1,
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.totalMessages, 2, 'b1 有 2 层');
+    const rowAt = (floor, variant) => {
+        const row = db.floors.find((f) => f.floor_no === floor && f.variant_id === variant);
+        return JSON.parse(row.content);
+    };
+    assert.equal(rowAt(2, 'g7').mes, '支线改过', '改的是支线自己的变体行');
+    assert.equal(rowAt(2, 'g2').mes, '二', '活跃走法的行不受影响');
 });
 
 test('档1：applyOps test 不通过 → {ok:false, reason:test-failed} 且不写', async () => {
@@ -433,14 +466,14 @@ test('档2：applyOps 字段级补丁 + 删层（容器整文档重写后读回�
         expectedIntegrity: 1,
     });
     assert.equal(r1.ok, true);
-    assert.equal(r1.integrity, 2);
+    assert.equal(typeof r1.integrity, 'string'); // T1/N19
     let { floors } = await adapter.loadFloors({ familyId: 'f9', from: 0, limit: 10 });
     assert.deepEqual(JSON.parse(floors[0].content).extra, { 'third-party/probe': { n: 1 } });
 
     const r2 = await adapter.applyOps({
         familyId: 'f9',
         ops: [{ op: 'remove', path: '/0' }],
-        expectedIntegrity: 2,
+        expectedIntegrity: r1.integrity, // 用上一写回发的字符串版本号
     });
     assert.equal(r2.ok, true);
     ({ floors } = await adapter.loadFloors({ familyId: 'f9', from: 0, limit: 10 }));
@@ -465,6 +498,75 @@ test('档2：applyOps 冲突 → {ok:false, conflict:true}（expectedIntegrity �
     ]);
     const r = await adapter.applyOps({ familyId: 'f9', ops: [{ op: 'remove', path: '/0' }], expectedIntegrity: 1 });
     assert.deepEqual(r, { ok: false, conflict: true });
+});
+
+/* ---------------- 键绑定（T1）：三个档都要按绑定键命中家族 ---------------- */
+
+test('档1：saveModel 携带 keyBindings → 往返不丢，且 loadFamily 按绑定键命中同一家族', async () => {
+    const { client, db } = mockSqlClient();
+    seedAuthority(db);
+    const adapter = await createAuthorityAdapter({ authorityClient: client });
+    const kb = {
+        'av1::chat1': { branchId: 'b_main' },
+        'av1::chat1 - checkpoint #1': { branchId: 'b1', isCheckpoint: true, markerFloor: 1 },
+    };
+    const r = await adapter.saveModel({ familyId: 'f1', model: null, keyBindings: kb, expectedIntegrity: null, keepCurrent: true });
+    assert.equal(r.ok, true);
+    // 落库形态：key_bindings 列 JSON 文本
+    assert.deepEqual(JSON.parse(db.families[0].key_bindings), kb);
+    // 主键之外的绑定键也命中同一家族（原生检查点键导航靠这条）
+    const byBound = await adapter.loadFamily({ chatKey: 'av1::chat1 - checkpoint #1' });
+    assert.equal(byBound.familyId, 'f1');
+    assert.deepEqual(byBound.keyBindings, kb);
+    // 未传 keyBindings 的写不得清空已有绑定（与 hostMetadata 同约定）
+    await adapter.saveModel({ familyId: 'f1', model: null, expectedIntegrity: null, keepCurrent: true });
+    assert.deepEqual((await adapter.loadFamily({ familyId: 'f1' })).keyBindings, kb);
+});
+
+test('档1：integrity 字符串不等 → 冲突（N19：宿主自造 uuid 也被检出）', async () => {
+    const { client, db } = mockSqlClient();
+    seedAuthority(db);
+    db.families[0].integrity = 'c-abc-1';
+    const adapter = await createAuthorityAdapter({ authorityClient: client });
+    assert.deepEqual(await adapter.saveFloors({ familyId: 'f1', floors: [], expectedIntegrity: 'c-abc-1' }), { ok: true, integrity: (await adapter.loadFamily({ familyId: 'f1' })).integrity });
+    const bad = await adapter.saveFloors({ familyId: 'f1', floors: [], expectedIntegrity: '3f2b8c11-uuid' });
+    assert.equal(bad.conflict, true);
+});
+
+test('档2：saveModel 携带 keyBindings → 容器 meta 往返不丢，绑定键命中（含重启后由持久索引重联）', async () => {
+    const containers = new Map();
+    const doFetch = async (url, init) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        if (url.includes('chats/get')) return { ok: true, json: async () => containers.get(body.file_name) || [] };
+        if (url.includes('chats/save')) { containers.set(body.file_name, body.chat); return { ok: true, json: async () => ({ ok: true }) }; }
+        return { ok: true, json: async () => ({}) };
+    };
+    const meta = {
+        familyId: 'f9', chatKey: 'av1::chat9', characterId: 'c1', name: 'chat9', integrity: 'c-1',
+        branches: [{ id: 'b_main', name: '主分支', is_default: true, fork_floor: 0 }],
+        branchPaths: { b_main: { 1: 'g1' } },
+    };
+    containers.set('__cfsys__f9.jsonl', [
+        { user_name: 'unused', chat_metadata: { extensions: { cfsys_family: meta } } },
+        JSON.stringify({ floorNo: 1, variantId: 'g1', seq: 0, content: '{"mes":"a"}', contentHash: null, sendDate: 1 }),
+    ]);
+    const adapter = await createOfficialAdapter({ fetch: doFetch });
+    const kb = { 'av1::chat9 - branch #1': { branchId: 'b1' } };
+    await adapter.saveModel({ familyId: 'f9', model: null, keyBindings: kb, expectedIntegrity: null, keepCurrent: true });
+    // 容器 meta 已带绑定
+    const saved = containers.get('__cfsys__f9.jsonl')[0].chat_metadata.extensions.cfsys_family;
+    assert.deepEqual(saved.keyBindings, kb);
+    // 持久索引里也登记了绑定键（重启后 warmup 才能重联）
+    const idxRows = containers.get('__cfsys__index.jsonl').slice(1).map((row) => JSON.parse(JSON.parse(row).content).chatKey);
+    assert.ok(idxRows.includes('av1::chat9 - branch #1'));
+
+    // 模拟重启：新 adapter 只有持久索引，容器内容按需读
+    const adapter2 = await createOfficialAdapter({ fetch: doFetch });
+    const byBound = await adapter2.loadFamily({ chatKey: 'av1::chat9 - branch #1' });
+    assert.equal(byBound.familyId, 'f9');
+    assert.deepEqual(byBound.keyBindings, kb);
+    // 未绑定键仍不命中（不误吞）
+    assert.equal(await adapter2.loadFamily({ chatKey: 'av1::别的聊天' }), null);
 });
 
 test('档3 idb：upsert/读回一致（内存 stub）', async () => {

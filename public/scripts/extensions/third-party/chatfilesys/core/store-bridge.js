@@ -9,6 +9,8 @@
  * 纯函数：无 DOM、无网络、无适配器依赖。
  */
 
+import { nextIntegrity } from './integrity.js';
+
 /**
  * 库 family + 楼层行 → 现有模型形态（含 groups 折叠组重建）。
  * @param {object} family 适配器 loadFamily 返回（branches/branchPaths/model）
@@ -71,7 +73,7 @@ export function storeFromModel(model, identity) {
         chatKey: identity.chatKey,
         characterId: identity.characterId,
         name: identity.name,
-        integrity: identity.integrity ?? 1,
+        integrity: identity.integrity ?? nextIntegrity(), // T1/N19：新建家族即拿字符串版本号
         branches,
         branchPaths,
     };

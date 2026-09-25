@@ -6,6 +6,7 @@
  */
 
 import { planBodyPatch, activePathOf, applyRowWrites, pathFloors } from '../patch-rows.js';
+import { nextIntegrity, integrityConflict } from '../integrity.js';
 
 const DB_NAME = 'cfsys-cache';
 const DB_VERSION = 1;
@@ -63,6 +64,8 @@ function assembleFamily(meta) {
         name: meta.name, integrity: meta.integrity ?? 1,
         // T0/R0：聊天头保留面（宿主与其他插件写入的内容），读时由 seam 整份回显
         hostMetadata: meta.hostMetadata ?? null,
+        // T1：聊天键 → 走法绑定（原生分支/检查点键各自代表一条走法）
+        keyBindings: meta.keyBindings ?? {},
         branches, branchPaths, model,
     };
 }
@@ -118,7 +121,9 @@ export async function createIdbAdapter(ctx = {}) {
             if (familyId != null) meta = await loadMeta(familyId);
             else if (chatKey != null) {
                 const all = await reqAsPromise(tx(db, 'families', 'readonly').getAll());
-                meta = all.find((f) => f.chatKey === chatKey) || null;
+                // T1：主键命中之外还要认键绑定（原生分支/检查点键 → 同一家族）
+                meta = all.find((f) => f.chatKey === chatKey)
+                    || all.find((f) => f.keyBindings && f.keyBindings[chatKey]) || null;
             }
             if (!meta) return null;
             return assembleFamily(meta);
@@ -134,8 +139,9 @@ export async function createIdbAdapter(ctx = {}) {
             const meta = {
                 familyId: family.familyId, chatKey: family.chatKey ?? null,
                 characterId: family.characterId ?? '', name: family.name ?? '',
-                integrity: family.integrity ?? 1, updatedAt: Date.now(),
+                integrity: family.integrity ?? nextIntegrity(), updatedAt: Date.now(),
                 hostMetadata: family.hostMetadata ?? null, // T0/R0：聊天头保留面
+                keyBindings: family.keyBindings ?? {}, // T1：键绑定
                 branches: family.branches || [], branchPaths: family.branchPaths || {},
             };
             await putMeta(meta);
@@ -155,7 +161,7 @@ export async function createIdbAdapter(ctx = {}) {
             const meta = await loadMeta(familyId);
             if (!meta) return { ok: false, reason: 'family-not-found' };
             meta.name = newName;
-            meta.integrity = (meta.integrity ?? 1) + 1;
+            meta.integrity = nextIntegrity();
             meta.updatedAt = Date.now();
             await putMeta(meta);
             return { ok: true, integrity: meta.integrity };
@@ -176,7 +182,7 @@ export async function createIdbAdapter(ctx = {}) {
         async saveFloors({ familyId, floors, expectedIntegrity }) {
             const meta = await loadMeta(familyId);
             if (!meta) return { ok: false, authorityReason: undefined, reason: 'family-not-found' };
-            if (expectedIntegrity != null && expectedIntegrity !== (meta.integrity ?? 1)) {
+            if (integrityConflict(expectedIntegrity, meta.integrity)) {
                 return { ok: false, conflict: true };
             }
             const merged = new Map((await floorsOf(familyId)).map((r) => [`${r.floorNo}#${r.variantId}`, r]));
@@ -187,7 +193,7 @@ export async function createIdbAdapter(ctx = {}) {
                 });
             }
             await putFloors([...merged.values()]);
-            meta.integrity = (meta.integrity ?? 1) + 1;
+            meta.integrity = nextIntegrity();
             meta.updatedAt = Date.now();
             await putMeta(meta);
             return { ok: true, integrity: meta.integrity };
@@ -197,18 +203,19 @@ export async function createIdbAdapter(ctx = {}) {
          * 消息补丁（T0b）：投影 → 应用 → 按键写回（详见 `core/patch-rows.js`）。
          * model / hostMetadata 与行同一次提交（宿主 patch 请求体带整份 chat_metadata，T0c）。
          */
-        async applyOps({ familyId, ops, expectedIntegrity, model, hostMetadata }) {
+        async applyOps({ familyId, ops, expectedIntegrity, model, hostMetadata, keyBindings, branchId }) {
             const meta = await loadMeta(familyId);
             if (!meta) return { ok: false, reason: 'family-not-found' };
-            if (expectedIntegrity != null && expectedIntegrity !== (meta.integrity ?? 1)) {
+            if (integrityConflict(expectedIntegrity, meta.integrity)) {
                 return { ok: false, conflict: true };
             }
             const current = assembleFamily(meta);
             const plan = planBodyPatch({
                 rows: await floorsOf(familyId),
-                path: activePathOf(current.model),
+                path: activePathOf(current.model, branchId),
                 ops,
                 model: model || current.model,
+                branchId,
             });
             if (!plan.ok) return { ok: false, reason: plan.reason, detail: plan.detail };
             const rows = applyRowWrites(await floorsOf(familyId), plan.rows, plan.deletes);
@@ -217,6 +224,7 @@ export async function createIdbAdapter(ctx = {}) {
             for (const d of plan.deletes) store.delete([familyId, d.floorNo, d.variantId]);
             await putFloors(rows.map((r) => ({ ...r, familyId })));
             if (hostMetadata !== undefined) meta.hostMetadata = hostMetadata;
+            if (keyBindings !== undefined) meta.keyBindings = keyBindings;
             if (plan.model) {
                 meta.model = plan.model;
                 meta.branches = (plan.model.branches || []).map((b) => ({
@@ -227,24 +235,25 @@ export async function createIdbAdapter(ctx = {}) {
                 for (const b of plan.model.branches || []) branchPaths[b.id] = b.path || {};
                 meta.branchPaths = branchPaths;
             }
-            meta.integrity = (meta.integrity ?? 1) + 1;
+            meta.integrity = nextIntegrity();
             meta.updatedAt = Date.now();
             await putMeta(meta);
             return { ok: true, integrity: meta.integrity, totalMessages: pathFloors(plan.path).length };
         },
 
-        async saveModel({ familyId, model, hostMetadata, expectedIntegrity, keepCurrent }) {
+        async saveModel({ familyId, model, hostMetadata, keyBindings, expectedIntegrity, keepCurrent }) {
             const meta = await loadMeta(familyId);
             if (!meta) return { ok: false, reason: 'family-not-found' };
-            if (expectedIntegrity != null && expectedIntegrity !== (meta.integrity ?? 1)) {
+            if (integrityConflict(expectedIntegrity, meta.integrity)) {
                 return { ok: false, conflict: true };
             }
             // T0/R0：聊天头保留面落库（undefined = 本次不动它）
             if (hostMetadata !== undefined) meta.hostMetadata = hostMetadata;
+            if (keyBindings !== undefined) meta.keyBindings = keyBindings;
             if (!keepCurrent && model) {
                 applyModelToMeta(meta, model);
             }
-            meta.integrity = (meta.integrity ?? 1) + 1;
+            meta.integrity = nextIntegrity();
             meta.updatedAt = Date.now();
             await putMeta(meta);
             return { ok: true, integrity: meta.integrity };

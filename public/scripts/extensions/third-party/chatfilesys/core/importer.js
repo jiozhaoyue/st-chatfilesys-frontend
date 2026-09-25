@@ -50,7 +50,7 @@ export function planImport(candidates, opts = {}) {
 export async function buildFamilyFromJsonl(lines, identity) {
     const { rows, stats } = await prepareRows(lines);
     const model = enableForChat(rows.map((r) => r.row)); // 主分支 = 全部楼层
-    const family = storeFromModel(model, { ...identity, integrity: 1 });
+    const family = storeFromModel(model, identity) // 版本号由 store-bridge 生成（T1/N19 字符串形态）;
     const floors = rows.map((r) => ({
         floorNo: r.floorNo,
         variantId: `g${r.floorNo}`,

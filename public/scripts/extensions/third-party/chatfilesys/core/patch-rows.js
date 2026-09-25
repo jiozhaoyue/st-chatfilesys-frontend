@@ -41,9 +41,14 @@ export function pathFloors(path) {
     return Object.keys(path || {}).map(Number).filter((n) => Number.isInteger(n) && n > 0).sort((a, b) => a - b);
 }
 
-/** 模型 → 活跃走法的 path（宿主那份 body 的投影基准；无模型返回 {}） */
-export function activePathOf(model) {
-    const b = model?.branches?.find((x) => x.id === model.active_branch);
+/**
+ * 模型 → 指定走法的 path（宿主那份 body 的投影基准；无模型返回 {}）。
+ * T1：默认取活跃走法；原生分支/检查点键要传**该键所在走法**（`branchId`），
+ * 否则在分支聊天里改消息会按父走法的下标投影 → 写错行。
+ */
+export function activePathOf(model, branchId) {
+    const id = branchId ?? model?.active_branch;
+    const b = model?.branches?.find((x) => x.id === id);
     return b?.path || {};
 }
 
@@ -73,12 +78,17 @@ function elementIndex(token, len) {
  * @param {Array<{floorNo:number, variantId:string, content:string, sendDate?:any}>} args.rows 家族全部行
  * @param {object} args.path 当前活跃走法的 path（{floorNo: variantId}）——宿主那份 body 的投影基准
  * @param {Array<{op:string, path:string, value?:any, from?:string}>} args.ops 宿主 ops
+ * @param {string} [args.branchId] 投影基准走法（ops 的下标是对着它的 body 算的）。
+ *        未传 = 入向模型的 active_branch（= 走法切换的目标走法）
  * @param {object|null} [args.model] 入向模型（含目标走法 path；用于「换变体/追加」的变体身份判定）
  * @param {Function} [args.allocateGid] 新变体号分配器（入参 = 已占用 gid 集合）
  * @returns {{ok:true, rows:Array, deletes:Array<{floorNo:number,variantId:string}>, path:object, model:object|null, stats:object}
  *          | {ok:false, reason:string, detail?:string}}
  */
-export function planBodyPatch({ rows, path, ops, model = null, allocateGid }) {
+export function planBodyPatch({ rows, path, ops, model = null, branchId = null, allocateGid }) {
+    // 投影基准走法：宿主 ops 是对着它的 body 算下标的。原生分支/检查点键各有各的 body，
+    // 必须按该键所在走法投影（否则在分支聊天里改消息会按活跃走法的下标写错行）。
+    const basisId = branchId ?? model?.active_branch ?? null;
     const allRows = Array.isArray(rows) ? rows : [];
     const rowAt = new Map();
     for (const r of allRows) rowAt.set(`${r.floorNo}#${r.variantId}`, r);
@@ -173,7 +183,7 @@ export function planBodyPatch({ rows, path, ops, model = null, allocateGid }) {
     }
 
     /* ── 3. 变体身份判定：插入/换变体的位置优先沿用目标走法声明的变体 ── */
-    const targetPath = model?.branches?.find((b) => b.id === model.active_branch)?.path || null;
+    const targetPath = model?.branches?.find((b) => b.id === basisId)?.path || null;
     const candAt = (floor) => (targetPath ? targetPath[floor] : undefined);
     const rowContentMatches = (floor, gid, line) => {
         const row = rowAt.get(`${floor}#${gid}`);
@@ -234,7 +244,7 @@ export function planBodyPatch({ rows, path, ops, model = null, allocateGid }) {
         };
         if (nextModel) {
             nextModel.branches = (nextModel.branches || []).map((b) => (
-                b.id === nextModel.active_branch ? { ...b, path: nextPathForBranch } : { ...b, path: remap(b.path || {}) }
+                b.id === basisId ? { ...b, path: nextPathForBranch } : { ...b, path: remap(b.path || {}) }
             ));
             // 折叠组的楼层号随全局删层前移；落在被删楼层的组丢弃
             const groups = {};
@@ -248,11 +258,11 @@ export function planBodyPatch({ rows, path, ops, model = null, allocateGid }) {
     } else if (!sameAsTarget && newLen > oldLen) {
         if (midInsert) return { ok: false, reason: 'mid-insert-unsupported', detail: `插入位置 <${oldLen}` };
         if (nextModel) {
-            nextModel.branches = (nextModel.branches || []).map((b) => (b.id === nextModel.active_branch ? { ...b, path: nextPathForBranch } : b));
+            nextModel.branches = (nextModel.branches || []).map((b) => (b.id === basisId ? { ...b, path: nextPathForBranch } : b));
         }
     } else if (nextModel) {
         // 重投影 / 同长编辑：只把活跃走法的 path 收敛到解析结果（其他走法原样保留）
-        nextModel.branches = (nextModel.branches || []).map((b) => (b.id === nextModel.active_branch ? { ...b, path: nextPathForBranch } : b));
+        nextModel.branches = (nextModel.branches || []).map((b) => (b.id === basisId ? { ...b, path: nextPathForBranch } : b));
     }
 
     /* ── 5. 行表写回：被引用的行 upsert，已无任何走法在「该楼层」引用的旧行删除 ── */

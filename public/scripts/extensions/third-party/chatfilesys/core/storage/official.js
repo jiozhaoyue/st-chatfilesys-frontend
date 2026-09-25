@@ -10,6 +10,7 @@
  */
 
 import { planBodyPatch, activePathOf, applyRowWrites, pathFloors } from '../patch-rows.js';
+import { nextIntegrity, integrityConflict } from '../integrity.js';
 
 const PREFIX = '__cfsys__';
 const TRASH_PREFIX = '__cfsys__trash__';
@@ -47,10 +48,13 @@ export async function createOfficialAdapter(ctx) {
     }
 
     // 会话内已知家族缓存（loadFamily 按 chatKey 命中；重启后由 listFamilies 补齐）
+    // T1：除主键外还登记**键绑定**（原生分支/检查点键 → 同一家族），否则那些键读不回库
     const knownByKey = new Map();
 
     function remember(family) {
-        if (family?.chatKey) knownByKey.set(family.chatKey, family);
+        if (!family) return;
+        const keys = [family.chatKey, ...Object.keys(family.keyBindings || {})];
+        for (const k of keys) if (k) knownByKey.set(k, family);
     }
 
     /* ---- 持久 chatKey 索引（固定名索引容器，official 档重启重联）---- */
@@ -61,7 +65,12 @@ export async function createOfficialAdapter(ctx) {
         const rows = c?.floorRows || [];
         const idx = {};
         for (const r of rows) {
-            if (r?.chatKey && r?.familyId) idx[r.chatKey] = r.familyId;
+            // 行形态 = 楼层行对象（配对 JSON 在 `content` 字段里）；兼容早期扁平写法
+            let pair = r;
+            if (!pair?.chatKey || !pair?.familyId) {
+                try { pair = JSON.parse(r?.content ?? 'null'); } catch { pair = null; }
+            }
+            if (pair?.chatKey && pair?.familyId) idx[pair.chatKey] = pair.familyId;
         }
         return idx;
     }
@@ -147,6 +156,8 @@ export async function createOfficialAdapter(ctx) {
             name: meta.name, integrity: meta.integrity,
             // T0/R0：聊天头保留面（宿主与其他插件写入的内容），读时由 seam 整份回显
             hostMetadata: meta.hostMetadata ?? null,
+            // T1：聊天键 → 走法绑定（原生分支/检查点键各自代表一条走法）
+            keyBindings: meta.keyBindings ?? {},
             branches, branchPaths, model,
         };
     }
@@ -203,7 +214,7 @@ export async function createOfficialAdapter(ctx) {
             // 已存在同 familyId 容器 → 拒绝（导入旅程防重复建档）
             const c = await readContainer(hiddenName(family.familyId)).catch(() => null);
             if (c?.meta) return { ok: false, reason: 'familyId-exists' };
-            const meta = { ...family, integrity: family.integrity ?? 1 };
+            const meta = { ...family, integrity: family.integrity ?? nextIntegrity() };
             delete meta.model; // 建档时无模型本体，读路径派生
             await writeContainer(hiddenName(family.familyId), meta, []);
             remember(assembleFamily(meta, []));
@@ -226,7 +237,7 @@ export async function createOfficialAdapter(ctx) {
         async renameFamily({ familyId, newName }) {
             const raw = await loadFamilyRaw({ familyId });
             if (!raw) return { ok: false, reason: 'family-not-found' };
-            const meta = { ...raw.family, name: newName, integrity: raw.family.integrity + 1 };
+            const meta = { ...raw.family, name: newName, integrity: nextIntegrity() };
             meta.branches = raw.family.branches;
             meta.branchPaths = raw.family.branchPaths;
             await writeContainer(hiddenName(familyId), meta, raw.floorRows);
@@ -254,7 +265,7 @@ export async function createOfficialAdapter(ctx) {
         async saveFloors({ familyId, floors, expectedIntegrity }) {
             const raw = await loadFamilyRaw({ familyId });
             if (!raw) return { ok: false, reason: 'family-not-found' };
-            if (expectedIntegrity != null && expectedIntegrity !== raw.family.integrity) {
+            if (integrityConflict(expectedIntegrity, raw.family.integrity)) {
                 return { ok: false, conflict: true };
             }
             // upsert：按 (floorNo, variantId) 合并
@@ -266,7 +277,7 @@ export async function createOfficialAdapter(ctx) {
                 });
             }
             const rows = [...merged.values()].sort((a, b) => a.floorNo - b.floorNo || a.seq - b.seq);
-            const meta = { ...raw.family, integrity: raw.family.integrity + 1 };
+            const meta = { ...raw.family, integrity: nextIntegrity() };
             meta.branches = raw.family.branches; meta.branchPaths = raw.family.branchPaths;
             await writeContainer(hiddenName(familyId), meta, rows);
             remember(assembleFamily(meta, rows));
@@ -278,43 +289,48 @@ export async function createOfficialAdapter(ctx) {
          * model / hostMetadata 与行同一次写（宿主 patch 请求体里带的是整份 chat_metadata，
          * 其中的走法模型与外来命名空间都必须一起落地，T0c）。
          */
-        async applyOps({ familyId, ops, expectedIntegrity, model, hostMetadata }) {
+        async applyOps({ familyId, ops, expectedIntegrity, model, hostMetadata, keyBindings, branchId }) {
             const raw = await loadFamilyRaw({ familyId });
             if (!raw) return { ok: false, reason: 'family-not-found' };
-            if (expectedIntegrity != null && expectedIntegrity !== raw.family.integrity) {
+            if (integrityConflict(expectedIntegrity, raw.family.integrity)) {
                 return { ok: false, conflict: true };
             }
             const plan = planBodyPatch({
                 rows: raw.floorRows,
-                path: activePathOf(raw.family.model),
+                path: activePathOf(raw.family.model, branchId),
                 ops,
                 model: model || raw.family.model,
+                branchId,
             });
             if (!plan.ok) return { ok: false, reason: plan.reason, detail: plan.detail };
             const rows = applyRowWrites(raw.floorRows, plan.rows, plan.deletes);
-            const meta = { ...raw.family, integrity: raw.family.integrity + 1 };
+            const meta = { ...raw.family, integrity: nextIntegrity() };
             if (hostMetadata !== undefined) meta.hostMetadata = hostMetadata;
+            if (keyBindings !== undefined) meta.keyBindings = keyBindings;
             applyModelToMeta(meta, plan.model || raw.family.model);
             await writeContainer(hiddenName(familyId), meta, rows);
             remember(assembleFamily(meta, rows));
+            if (keyBindings !== undefined) await persistIndex(); // T1：新键必须进持久索引，重启才重联
             return { ok: true, integrity: meta.integrity, totalMessages: pathFloors(plan.path).length };
         },
 
-        async saveModel({ familyId, model, hostMetadata, expectedIntegrity, keepCurrent }) {
+        async saveModel({ familyId, model, hostMetadata, keyBindings, expectedIntegrity, keepCurrent }) {
             const raw = await loadFamilyRaw({ familyId });
             if (!raw) return { ok: false, reason: 'family-not-found' };
-            if (expectedIntegrity != null && expectedIntegrity !== raw.family.integrity) {
+            if (integrityConflict(expectedIntegrity, raw.family.integrity)) {
                 return { ok: false, conflict: true };
             }
-            const meta = { ...raw.family, integrity: raw.family.integrity + 1 };
+            const meta = { ...raw.family, integrity: nextIntegrity() };
             // T0/R0：聊天头保留面落库（undefined = 本次不动它）
             if (hostMetadata !== undefined) meta.hostMetadata = hostMetadata;
+            if (keyBindings !== undefined) meta.keyBindings = keyBindings;
             if (!keepCurrent && model) {
                 // 模型本体持久化 + 结构视图同步
                 applyModelToMeta(meta, model);
             }
             await writeContainer(hiddenName(familyId), meta, raw.floorRows);
             remember(assembleFamily(meta, raw.floorRows));
+            if (keyBindings !== undefined) await persistIndex(); // T1：新键必须进持久索引，重启才重联
             return { ok: true, integrity: meta.integrity };
         },
 

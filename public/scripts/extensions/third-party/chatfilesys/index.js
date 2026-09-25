@@ -639,7 +639,14 @@ function onChatChanged() {
     renderAll();
 }
 
-/** 新聊天自动建家族（PRD 决策 #6）；已有聊天保持原生，启用由用户显式触发 */
+/**
+ * 新聊天自动建家族（PRD 决策 #6）；已有聊天保持原生，启用由用户显式触发。
+ *
+ * T1 守卫（AC3）：原生「创建分支 / 创建检查点」产生的键**不得**建成独立家族——
+ *  - 该键已在库内绑定（接缝接管已登记）→ 跳过建档（它属于父家族的一条走法）
+ *  - 键名形如分支/检查点 → 跳过建档，交给接缝写路径的接管判定
+ *    （接管判定不通过时该键就是一个原生 jsonl 文件，由导入旅程收编，不在这里建档）
+ */
 async function onChatCreated() {
     const c = ctx();
     if (c.groupId) { renderAll(); return; }
@@ -648,6 +655,17 @@ async function onChatCreated() {
         if (storageState) {
             try {
                 const chatKey = normalizeChatKeyOf(c);
+                const existing = await storageState.adapter.loadFamily({ chatKey }).catch(() => null);
+                if (existing) {
+                    console.log(`[chatfilesys] "${chatKey}" 已是库内家族 ${existing.familyId} 的键（原生分支/检查点），跳过建档`);
+                    renderAll();
+                    return;
+                }
+                if (looksLikeNativeBranchOrCheckpoint(c.chatId)) {
+                    console.log(`[chatfilesys] "${chatKey}" 形如原生分支/检查点键，跳过建档（由接缝接管判定处理）`);
+                    renderAll();
+                    return;
+                }
                 const family = storeFromModel(
                     enableForChat(c.chat || []),
                     { familyId: `f_${newId36()}`, chatKey, characterId: String(c.characterId ?? ''), name: familyName() },
@@ -667,6 +685,12 @@ async function onChatCreated() {
         }
     }
     renderAll();
+}
+
+/** 文件名是否形如宿主自动生成的「分支 / 检查点」键（bookmarks.js 命名规则） */
+function looksLikeNativeBranchOrCheckpoint(fileName) {
+    const n = String(fileName || '').replace(/\.jsonl$/i, '');
+    return / - (?:Branch|Checkpoint) #\d+$/i.test(n);
 }
 
 /** 当前聊天的库 chatKey（seam.normalizeChatKey 同规则） */

@@ -10,7 +10,7 @@ import { installSeam, normalizeChatKey } from '../../public/scripts/extensions/t
 function mockAdapter() {
     const calls = { loadFamily: 0, saveFloors: 0, applyOps: 0, saveModel: 0 };
     const family = {
-        familyId: 'f1', chatKey: 'av1::chat1', characterId: 'c1', name: 'chat1', integrity: 5,
+        familyId: 'f1', chatKey: 'av1::chat1', characterId: 'c1', name: 'chat1', integrity: 'c-5',
         // T0/R0：聊天头保留面（其他插件命名空间 + 宿主字段）——读时须整份回显
         hostMetadata: {
             main_chat: 'root_chat',
@@ -34,10 +34,10 @@ function mockAdapter() {
         conflictNext: false,
         async loadFamily({ chatKey }) { this.calls.loadFamily++; return chatKey === family.chatKey ? family : null; },
         async loadFloors() { return { floors: this.floors, hasMore: false }; },
-        async saveFloors() { this.calls.saveFloors++; return this.conflictNext ? { ok: false, conflict: true } : { ok: true, integrity: 6 }; },
-        async applyOps() { this.calls.applyOps++; return this.conflictNext ? { ok: false, conflict: true } : { ok: true, integrity: 6 }; },
-        async saveModel(args) { this.calls.saveModel++; this.lastSaveModelArgs = args; return this.conflictNext ? { ok: false, conflict: true } : { ok: true, integrity: 6 }; },
-        async renameFamily() { return { ok: true, integrity: 6 }; },
+        async saveFloors() { this.calls.saveFloors++; return this.conflictNext ? { ok: false, conflict: true } : { ok: true, integrity: 'c-6' }; },
+        async applyOps() { this.calls.applyOps++; return this.conflictNext ? { ok: false, conflict: true } : { ok: true, integrity: 'c-6' }; },
+        async saveModel(args) { this.calls.saveModel++; this.lastSaveModelArgs = args; return this.conflictNext ? { ok: false, conflict: true } : { ok: true, integrity: 'c-6' }; },
+        async renameFamily() { return { ok: true, integrity: 'c-6' }; },
         async deleteFamily() { return { ok: true }; },
     };
 }
@@ -92,13 +92,13 @@ test('seam：save → applyOps 调用且响应 ok', async () => {
         const res = await globalThis.fetch('/api/chats/save', {
             method: 'POST',
             body: JSON.stringify({
-                avatar_url: 'av1', file_name: 'chat1', integrity: 'cfsys:5',
+                avatar_url: 'av1', file_name: 'chat1', integrity: 'c-5',
                 chat: [{ name: '我', is_user: true, mes: 'a' }, { name: 'AI', is_user: false, mes: 'b' }],
             }),
         });
         const body = await res.json();
         assert.equal(body.ok, true);
-        assert.equal(body.integrity, 'cfsys:6'); // 宿主字符串 slug 形态（applyIntegrityFromWritePayload 只认字符串）
+        assert.equal(body.integrity, 'c-6'); // T1/N19：库内字符串版本号原样回显（不再桥接）
         assert.equal(adapter.calls.saveFloors, 1);
     } finally {
         seam.dispose();
@@ -110,7 +110,7 @@ test('seam：save 请求体带 header 行 → 剥掉不污染楼层（真机形�
     const original = globalThis.fetch;
     const adapter = mockAdapter();
     let captured = null;
-    adapter.saveFloors = async (args) => { captured = args; return { ok: true, integrity: 6 }; };
+    adapter.saveFloors = async (args) => { captured = args; return { ok: true, integrity: 'c-6' }; };
     const seam = installSeam(adapter);
     try {
         const res = await globalThis.fetch('/api/chats/save', {
@@ -118,7 +118,7 @@ test('seam：save 请求体带 header 行 → 剥掉不污染楼层（真机形�
             body: JSON.stringify({
                 avatar_url: 'av1', file_name: 'chat1',
                 chat: [
-                    { user_name: 'unused', character_name: 'unused', chat_metadata: { integrity: 'cfsys:5' } },
+                    { user_name: 'unused', character_name: 'unused', chat_metadata: { integrity: 'c-5' } },
                     { name: '我', is_user: true, mes: 'a' },
                 ],
             }),
@@ -133,7 +133,7 @@ test('seam：save 请求体带 header 行 → 剥掉不污染楼层（真机形�
     }
 });
 
-test('seam：get 响应 header 带 integrity slug（宿主 saveChatInternal 无 integrity 拒存）', async () => {
+test('seam：get 响应 header 带库内版本号（宿主 saveChatInternal 无 integrity 拒存）', async () => {
     const original = globalThis.fetch;
     const adapter = mockAdapter();
     const seam = installSeam(adapter);
@@ -142,25 +142,36 @@ test('seam：get 响应 header 带 integrity slug（宿主 saveChatInternal 无 
             method: 'POST', body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1' }),
         });
         const body = await res.json();
-        assert.equal(body[0].chat_metadata.integrity, 'cfsys:5');
+        assert.equal(body[0].chat_metadata.integrity, 'c-5');
     } finally {
         seam.dispose();
         globalThis.fetch = original;
     }
 });
 
-test('seam：integrity 桥接——宿主 uuid（非 cfsys 形态）→ null 放行不锁', async () => {
+test('seam：版本号形态统一为字符串——入向原样交给适配器（N19：作废「无法解析就放行」）', async () => {
     const original = globalThis.fetch;
     const adapter = mockAdapter();
-    let captured = null;
-    adapter.applyOps = async (args) => { captured = args; return { ok: true, integrity: 6 }; };
+    const seen = [];
+    adapter.applyOps = async (args) => { seen.push(args.expectedIntegrity); return { ok: true, integrity: 'c-6' }; };
     const seam = installSeam(adapter);
     try {
+        // 宿主自造 uuid（混合状态）：原样下传 → 适配器按字符串不等判定为冲突（不再静默放行）
         await globalThis.fetch('/api/chats/patch', {
             method: 'POST',
             body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1', integrity: '3f2b8c11-xxxx-uuid', operations: [] }),
         });
-        assert.equal(captured.expectedIntegrity, null); // uuid 不是库锁值 → 放行
+        // 数字入向（早期库内形态/老客户端）：归一成字符串
+        await globalThis.fetch('/api/chats/patch', {
+            method: 'POST',
+            body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1', integrity: 5, operations: [] }),
+        });
+        // 未带版本号 → null（不锁）
+        await globalThis.fetch('/api/chats/patch', {
+            method: 'POST',
+            body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1', operations: [] }),
+        });
+        assert.deepEqual(seen, ['3f2b8c11-xxxx-uuid', '5', null]);
     } finally {
         seam.dispose();
         globalThis.fetch = original;
@@ -171,7 +182,7 @@ test('seam：append → saveFloors 参数正确（floorNo 续接活跃分支 max
     const original = globalThis.fetch;
     const adapter = mockAdapter();
     let captured = null;
-    adapter.saveFloors = async (args) => { captured = args; return { ok: true, integrity: 6 }; };
+    adapter.saveFloors = async (args) => { captured = args; return { ok: true, integrity: 'c-6' }; };
     const seam = installSeam(adapter);
     try {
         const res = await globalThis.fetch('/api/chats/append', {
@@ -192,7 +203,7 @@ test('seam：patch → 消息补丁交给适配器应用（ops 原样转发 + �
     const original = globalThis.fetch;
     const adapter = mockAdapter();
     let captured = null;
-    adapter.applyOps = async (args) => { captured = args; return { ok: true, integrity: 6, totalMessages: 2 }; };
+    adapter.applyOps = async (args) => { captured = args; return { ok: true, integrity: 'c-6', totalMessages: 2 }; };
     const seam = installSeam(adapter);
     try {
         const ops = [{ op: 'replace', path: '/1', value: { mes: 'edited' } }];
@@ -204,10 +215,10 @@ test('seam：patch → 消息补丁交给适配器应用（ops 原样转发 + �
         assert.equal(body.ok, true);
         assert.equal(body.applied, 1);
         assert.equal(body.total_messages, 2);
-        assert.equal(body.integrity, 'cfsys:6');
+        assert.equal(body.integrity, 'c-6');
         assert.deepEqual(captured.ops, ops);
         assert.equal(captured.familyId, 'f1');
-        assert.equal(captured.expectedIntegrity, 5);
+        assert.equal(captured.expectedIntegrity, '5');
     } finally {
         seam.dispose();
         globalThis.fetch = original;
@@ -218,7 +229,7 @@ test('seam：patch 请求体带的聊天头并入落库（T0c：宿主 patch 常
     const original = globalThis.fetch;
     const adapter = mockAdapter();
     let captured = null;
-    adapter.applyOps = async (args) => { captured = args; return { ok: true, integrity: 6, totalMessages: 2 }; };
+    adapter.applyOps = async (args) => { captured = args; return { ok: true, integrity: 'c-6', totalMessages: 2 }; };
     const seam = installSeam(adapter);
     try {
         await globalThis.fetch('/api/chats/patch', {
@@ -249,7 +260,7 @@ test('seam：patch 只在「走法切换」时让入向模型决定结构（旧�
     const original = globalThis.fetch;
     const adapter = mockAdapter();
     const seen = [];
-    adapter.applyOps = async (args) => { seen.push(args.model); return { ok: true, integrity: 6, totalMessages: 2 }; };
+    adapter.applyOps = async (args) => { seen.push(args.model); return { ok: true, integrity: 'c-6', totalMessages: 2 }; };
     const seam = installSeam(adapter);
     const modelOf = (active) => ({
         active_branch: active,
@@ -312,7 +323,7 @@ test('seam：patch force=true → 不锁版本号（宿主显式覆盖信号）'
     const original = globalThis.fetch;
     const adapter = mockAdapter();
     let captured = null;
-    adapter.applyOps = async (args) => { captured = args; return { ok: true, integrity: 6, totalMessages: 2 }; };
+    adapter.applyOps = async (args) => { captured = args; return { ok: true, integrity: 'c-6', totalMessages: 2 }; };
     const seam = installSeam(adapter);
     try {
         await globalThis.fetch('/api/chats/patch', {
@@ -330,7 +341,7 @@ test('seam：append 请求体带的聊天头一并落库（T0c：命名空间跟
     const original = globalThis.fetch;
     const adapter = mockAdapter();
     let metaArgs = null;
-    adapter.saveModel = async (args) => { metaArgs = args; return { ok: true, integrity: 9 }; };
+    adapter.saveModel = async (args) => { metaArgs = args; return { ok: true, integrity: 'c-9' }; };
     const seam = installSeam(adapter);
     try {
         const res = await globalThis.fetch('/api/chats/append', {
@@ -342,7 +353,7 @@ test('seam：append 请求体带的聊天头一并落库（T0c：命名空间跟
             }),
         });
         const body = await res.json();
-        assert.equal(body.integrity, 'cfsys:9'); // 返回最终（元数据落库后）的版本号
+        assert.equal(body.integrity, 'c-9'); // 返回最终（元数据落库后）的版本号
         assert.ok(metaArgs, '应将聊天头落库');
         assert.equal(metaArgs.keepCurrent, true); // 模型不动（结构由本插件维护）
         assert.deepEqual(metaArgs.hostMetadata.extensions, {
@@ -412,19 +423,19 @@ test('seam：meta → saveModel 持久化模型且响应合规', async () => {
         const res = await globalThis.fetch('/api/chats/meta', {
             method: 'POST',
             body: JSON.stringify({
-                avatar_url: 'av1', file_name: 'chat1', integrity: 'cfsys:5',
+                avatar_url: 'av1', file_name: 'chat1', integrity: 'c-5',
                 chat_metadata: { extensions: { chatfilesys: { active_branch: 'b_x', branches: [], groups: { g1: [1] } } } },
             }),
         });
         assert.equal(res.status, 200);
         const body = await res.json();
         assert.equal(body.ok, true);
-        assert.equal(body.integrity, 'cfsys:6');
+        assert.equal(body.integrity, 'c-6');
         assert.equal(adapter.calls.saveModel, 1);
         assert.equal(adapter.lastSaveModelArgs.familyId, 'f1');
         assert.equal(adapter.lastSaveModelArgs.model.active_branch, 'b_x');
         assert.deepEqual(adapter.lastSaveModelArgs.model.groups, { g1: [1] });
-        assert.equal(adapter.lastSaveModelArgs.expectedIntegrity, 5); // slug 剥壳回数字
+        assert.equal(adapter.lastSaveModelArgs.expectedIntegrity, 'c-5');
     } finally {
         seam.dispose();
         globalThis.fetch = original;
@@ -585,7 +596,7 @@ test('seam：get 回显聊天头整份内容（其他插件命名空间 + main_c
         assert.deepEqual(meta.variables, { hp: 10 });
         assert.deepEqual(meta.extensions['third-party/someplugin'], { flag: true });
         assert.equal(meta.extensions.chatfilesys.active_branch, 'b_main'); // 本插件模型覆盖在 extensions 下
-        assert.equal(meta.integrity, 'cfsys:5');
+        assert.equal(meta.integrity, 'c-5');
     } finally {
         seam.dispose();
         globalThis.fetch = original;

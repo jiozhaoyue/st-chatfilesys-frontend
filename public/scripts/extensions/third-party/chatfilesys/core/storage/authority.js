@@ -11,6 +11,7 @@
  */
 
 import { planBodyPatch, activePathOf, pathFloors } from '../patch-rows.js';
+import { nextIntegrity, integrityConflict } from '../integrity.js';
 
 const DB = 'chatfilesys';
 const CHUNK = 500;
@@ -92,26 +93,43 @@ CREATE TABLE IF NOT EXISTS branch_paths (
                 migrations: [{ id: '003_host_metadata', statement: 'ALTER TABLE families ADD COLUMN host_metadata TEXT;' }],
             });
         } catch { /* 列已存在 */ }
+        // 004：键绑定列（T1：原生分支/检查点键 → 走法；JSON 文本）
+        // 版本号列形态说明：integrity 原为 INTEGER，N19 后写字符串。SQLite 动态类型按值存，
+        // 非数字串（c-…）原样存为 TEXT，故不做列类型重建；早期数字行由 normIntegrity 归一后比较。
+        try {
+            await client.sql.migrate({
+                database: DB,
+                migrations: [{ id: '004_key_bindings', statement: 'ALTER TABLE families ADD COLUMN key_bindings TEXT;' }],
+            });
+        } catch { /* 列已存在 */ }
         migrated = true;
     }
 
     const q = (statement, params = []) => client.sql.query({ database: DB, statement, params });
 
+
+    /** 写新版本号（N19：字符串形态，每次成功写一个新值） */
     async function bumpIntegrity(familyId) {
-        await q('UPDATE families SET integrity = integrity + 1, updated_at = ? WHERE id = ?', [Date.now(), familyId]);
-        const rows = await q('SELECT integrity FROM families WHERE id = ?', [familyId]);
-        return rows?.[0]?.integrity ?? 1;
+        const next = nextIntegrity();
+        await q('UPDATE families SET integrity = ?, updated_at = ? WHERE id = ?', [next, Date.now(), familyId]);
+        return next;
     }
 
     async function checkIntegrity(familyId, expected) {
         if (expected == null) return null;
         const rows = await q('SELECT integrity FROM families WHERE id = ?', [familyId]);
         const cur = rows?.[0]?.integrity;
-        if (cur !== expected) return jsonResponse409; // 哨兵：冲突标记
+        if (integrityConflict(expected, cur)) return jsonResponse409; // 哨兵：冲突标记
         return null;
     }
 
     const jsonResponse409 = { conflict: true };
+
+    /** 键绑定落库（T1；undefined = 本次不动它，与 hostMetadata 同约定） */
+    async function writeKeyBindings(familyId, keyBindings) {
+        await q('UPDATE families SET key_bindings = ?, updated_at = ? WHERE id = ?',
+            [JSON.stringify(keyBindings || {}), Date.now(), familyId]);
+    }
 
     async function loadFamilyRow(familyId) {
         await ensureMigrated();
@@ -156,10 +174,14 @@ CREATE TABLE IF NOT EXISTS branch_paths (
         // T0/R0：聊天头保留面（宿主与其他插件写入的内容），读时由 seam 整份回显
         let hostMetadata = null;
         try { hostMetadata = f.host_metadata ? JSON.parse(f.host_metadata) : null; } catch { hostMetadata = null; }
+        // T1：聊天键 → 走法绑定
+        let keyBindings = {};
+        try { keyBindings = f.key_bindings ? JSON.parse(f.key_bindings) : {}; } catch { keyBindings = {}; }
         return {
             familyId: f.id, chatKey: f.chat_key, characterId: f.character_id,
             name: f.name, integrity: f.integrity,
             hostMetadata,
+            keyBindings: keyBindings || {},
             branches, branchPaths, model,
         };
     }
@@ -200,6 +222,14 @@ CREATE TABLE IF NOT EXISTS branch_paths (
             } else if (chatKey != null) {
                 const rows = await q('SELECT * FROM families WHERE chat_key = ?', [chatKey]);
                 f = rows?.[0] || null;
+                if (!f) {
+                    // T1 回落：主键未命中 → 扫键绑定列（原生分支/检查点键 → 同一家族）。
+                    // 键绑定是每家族个位数项的小表，全扫可接受；档1 真机量化在 T3。
+                    const all = await q('SELECT * FROM families WHERE key_bindings IS NOT NULL AND key_bindings != ?', ['{}']);
+                    f = (all || []).find((r) => {
+                        try { return Boolean(JSON.parse(r.key_bindings || '{}')[chatKey]); } catch { return false; }
+                    }) || null;
+                }
             }
             if (!f) return null;
             return assembleFamily(f);
@@ -214,10 +244,14 @@ CREATE TABLE IF NOT EXISTS branch_paths (
                 if (byKey?.length) return { ok: false, reason: 'chatKey-exists' };
             }
             const now = Date.now();
+            const integrity = family.integrity ?? nextIntegrity();
             await q(
                 'INSERT INTO families (id, chat_key, character_id, name, integrity, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                [family.familyId, family.chatKey ?? '', family.characterId ?? '', family.name ?? '', 1, now, now],
+                [family.familyId, family.chatKey ?? '', family.characterId ?? '', family.name ?? '', integrity, now, now],
             );
+            if (family.keyBindings && Object.keys(family.keyBindings).length) {
+                await writeKeyBindings(family.familyId, family.keyBindings);
+            }
             for (const b of family.branches || []) {
                 await q(
                     'INSERT INTO branches (family_id, branch_id, parent_branch_id, name, fork_floor, is_default) VALUES (?, ?, ?, ?, ?, ?)',
@@ -230,7 +264,7 @@ CREATE TABLE IF NOT EXISTS branch_paths (
                     );
                 }
             }
-            return { ok: true, familyId: family.familyId, integrity: 1 };
+            return { ok: true, familyId: family.familyId, integrity };
         },
 
         async bindChatKey({ familyId, chatKey }) {
@@ -291,7 +325,7 @@ CREATE TABLE IF NOT EXISTS branch_paths (
          * 消息补丁（T0b）：投影 → 应用 → 按键写回（详见 `core/patch-rows.js`）。
          * 结构与档2/档3 共用同一个纯函数，差异只在持久化手法（SQL 按 key 删 + upsert）。
          */
-        async applyOps({ familyId, ops, expectedIntegrity, model, hostMetadata }) {
+        async applyOps({ familyId, ops, expectedIntegrity, model, hostMetadata, keyBindings, branchId }) {
             await ensureMigrated();
             const conflict = await checkIntegrity(familyId, expectedIntegrity);
             if (conflict) return { ok: false, conflict: true };
@@ -304,9 +338,10 @@ CREATE TABLE IF NOT EXISTS branch_paths (
             )).map(rowFromSql);
             const plan = planBodyPatch({
                 rows,
-                path: activePathOf(current.model),
+                path: activePathOf(current.model, branchId),
                 ops,
                 model: model || current.model,
+                branchId,
             });
             if (!plan.ok) return { ok: false, reason: plan.reason, detail: plan.detail };
             for (const d of plan.deletes) {
@@ -328,17 +363,19 @@ CREATE TABLE IF NOT EXISTS branch_paths (
                 await q('UPDATE families SET host_metadata = ?, updated_at = ? WHERE id = ?',
                     [JSON.stringify(hostMetadata), Date.now(), familyId]);
             }
+            if (keyBindings !== undefined) await writeKeyBindings(familyId, keyBindings);
             if (plan.model) await writeModel(familyId, plan.model);
             const integrity = await bumpIntegrity(familyId);
             return { ok: true, integrity, totalMessages: pathFloors(plan.path).length };
         },
 
-        async saveModel({ familyId, model, hostMetadata, expectedIntegrity, keepCurrent }) {
+        async saveModel({ familyId, model, hostMetadata, keyBindings, expectedIntegrity, keepCurrent }) {
             await ensureMigrated();
             const conflict = await checkIntegrity(familyId, expectedIntegrity);
             if (conflict) return { ok: false, conflict: true };
             const f = await loadFamilyRow(familyId);
             if (!f) return { ok: false, reason: 'family-not-found' };
+            if (keyBindings !== undefined) await writeKeyBindings(familyId, keyBindings);
             // T0/R0：聊天头保留面落库（undefined = 本次不动它）
             if (hostMetadata !== undefined) {
                 await q('UPDATE families SET host_metadata = ?, updated_at = ? WHERE id = ?',
