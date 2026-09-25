@@ -25,6 +25,14 @@ export function parsePointer(pointer) {
     return p.slice(1).split('/').map((t) => t.replace(/~1/g, '/').replace(/~0/g, '~'));
 }
 
+/**
+ * 路径段数组 → JSON Pointer 字符串（段内 `~` `/` 转义，与 parsePointer 互逆）。
+ * 用途：把一条 op 的路径前缀剥掉后重新拼出合法子路径（直接 join 会把段内的 `/` 误当分隔符）。
+ */
+export function joinPointer(tokens) {
+    return (tokens || []).map((t) => String(t).replace(/~/g, '~0').replace(/\//g, '~1')).join('/');
+}
+
 /** 按路径取值；缺失返回 { found: false } */
 function getAt(doc, tokens) {
     let cur = doc;
@@ -57,7 +65,8 @@ function parentOf(doc, tokens) {
     return { parent: value, key: tokens[tokens.length - 1] };
 }
 
-function deepEqual(a, b) {
+/** 深比较（JSON 语义）：`test` op 与变体身份判定共用 */
+export function deepEqual(a, b) {
     if (a === b) return true;
     if (typeof a !== typeof b) return false;
     if (a === null || b === null || typeof a !== 'object') return false;

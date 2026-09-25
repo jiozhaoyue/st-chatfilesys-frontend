@@ -188,11 +188,11 @@ test('seam：append → saveFloors 参数正确（floorNo 续接活跃分支 max
     }
 });
 
-test('seam：patch → ops 透传 applyOps', async () => {
+test('seam：patch → 消息补丁交给适配器应用（ops 原样转发 + 版本号 + 条数）', async () => {
     const original = globalThis.fetch;
     const adapter = mockAdapter();
     let captured = null;
-    adapter.applyOps = async (args) => { captured = args; return { ok: true, integrity: 6 }; };
+    adapter.applyOps = async (args) => { captured = args; return { ok: true, integrity: 6, totalMessages: 2 }; };
     const seam = installSeam(adapter);
     try {
         const ops = [{ op: 'replace', path: '/1', value: { mes: 'edited' } }];
@@ -203,7 +203,152 @@ test('seam：patch → ops 透传 applyOps', async () => {
         const body = await res.json();
         assert.equal(body.ok, true);
         assert.equal(body.applied, 1);
+        assert.equal(body.total_messages, 2);
+        assert.equal(body.integrity, 'cfsys:6');
         assert.deepEqual(captured.ops, ops);
+        assert.equal(captured.familyId, 'f1');
+        assert.equal(captured.expectedIntegrity, 5);
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：patch 请求体带的聊天头并入落库（T0c：宿主 patch 常载整份 chat_metadata）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    let captured = null;
+    adapter.applyOps = async (args) => { captured = args; return { ok: true, integrity: 6, totalMessages: 2 }; };
+    const seam = installSeam(adapter);
+    try {
+        await globalThis.fetch('/api/chats/patch', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1', integrity: 5,
+                operations: [{ op: 'add', path: '/0/extra/x', value: 1 }],
+                chat_metadata: {
+                    main_chat: 'root_chat',
+                    variables: { hp: 10 },
+                    extensions: { 'third-party/other': { v: 2 }, chatfilesys: null },
+                },
+            }),
+        });
+        // 入向命名空间并入（库内既有的 someplugin 不丢），本插件项不进 hostMetadata
+        assert.deepEqual(captured.hostMetadata.extensions, {
+            'third-party/someplugin': { flag: true },
+            'third-party/other': { v: 2 },
+        });
+        assert.equal(captured.hostMetadata.main_chat, 'root_chat');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：patch 只在「走法切换」时让入向模型决定结构（旧副本不盖库内结构）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    const seen = [];
+    adapter.applyOps = async (args) => { seen.push(args.model); return { ok: true, integrity: 6, totalMessages: 2 }; };
+    const seam = installSeam(adapter);
+    const modelOf = (active) => ({
+        active_branch: active,
+        branches: [{ id: 'b_main', path: { 1: 'g1', 2: 'g2' } }, { id: 'bX', path: { 1: 'g1' } }],
+        groups: {},
+    });
+    try {
+        // ① 入向模型与库内同走法（普通消息写）→ 不采用入向模型（可能是旧副本）
+        await globalThis.fetch('/api/chats/patch', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1', integrity: 5,
+                operations: [{ op: 'add', path: '/1/extra/x', value: 1 }],
+                chat_metadata: { extensions: { chatfilesys: modelOf('b_main') } },
+            }),
+        });
+        assert.equal(seen[0], undefined);
+        // ② 入向模型换了活跃走法 → 采用（重投影需要目标走法）
+        await globalThis.fetch('/api/chats/patch', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1', integrity: 5,
+                operations: [{ op: 'remove', path: '/1' }],
+                chat_metadata: { extensions: { chatfilesys: modelOf('bX') } },
+            }),
+        });
+        assert.equal(seen[1].active_branch, 'bX');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：patch test 不通过 → 409（宿主走冲突重放）；中间插入 → 400（宿主回退全量保存）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    const seam = installSeam(adapter);
+    try {
+        adapter.applyOps = async () => ({ ok: false, reason: 'test-failed', detail: '"/1"' });
+        let res = await globalThis.fetch('/api/chats/patch', {
+            method: 'POST',
+            body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1', operations: [{ op: 'test', path: '/1', value: 1 }] }),
+        });
+        assert.equal(res.status, 409);
+
+        adapter.applyOps = async () => ({ ok: false, reason: 'mid-insert-unsupported', detail: '插入位置 <2' });
+        res = await globalThis.fetch('/api/chats/patch', {
+            method: 'POST',
+            body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1', operations: [{ op: 'add', path: '/1', value: {} }] }),
+        });
+        assert.equal(res.status, 400);
+        assert.equal((await res.json()).reason, 'mid-insert-unsupported');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：patch force=true → 不锁版本号（宿主显式覆盖信号）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    let captured = null;
+    adapter.applyOps = async (args) => { captured = args; return { ok: true, integrity: 6, totalMessages: 2 }; };
+    const seam = installSeam(adapter);
+    try {
+        await globalThis.fetch('/api/chats/patch', {
+            method: 'POST',
+            body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1', integrity: 5, force: true, operations: [{ op: 'remove', path: '/1' }] }),
+        });
+        assert.equal(captured.expectedIntegrity, null);
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：append 请求体带的聊天头一并落库（T0c：命名空间跟着 append 进来）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    let metaArgs = null;
+    adapter.saveModel = async (args) => { metaArgs = args; return { ok: true, integrity: 9 }; };
+    const seam = installSeam(adapter);
+    try {
+        const res = await globalThis.fetch('/api/chats/append', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1', integrity: 5,
+                messages: [{ name: '我', mes: 'new', send_date: 9 }],
+                chat_metadata: { extensions: { 'third-party/late': { k: 1 } } },
+            }),
+        });
+        const body = await res.json();
+        assert.equal(body.integrity, 'cfsys:9'); // 返回最终（元数据落库后）的版本号
+        assert.ok(metaArgs, '应将聊天头落库');
+        assert.equal(metaArgs.keepCurrent, true); // 模型不动（结构由本插件维护）
+        assert.deepEqual(metaArgs.hostMetadata.extensions, {
+            'third-party/someplugin': { flag: true },
+            'third-party/late': { k: 1 },
+        });
     } finally {
         seam.dispose();
         globalThis.fetch = original;
@@ -296,9 +441,9 @@ test('seam：meta/patch → RFC6902 真正应用（T0/R0：不再整包丢弃）
             body: JSON.stringify({
                 avatar_url: 'av1', file_name: 'chat1', integrity: 5,
                 operations: [
-                    { op: 'replace', path: '/extensions/chatfilesys/active_branch', value: 'b_y' },
                     { op: 'add', path: '/extensions/third-party~1someplugin/extra', value: [1, 2] },
                     { op: 'replace', path: '/variables/hp', value: 7 },
+                    { op: 'add', path: '/top_note', value: 'n' },
                 ],
             }),
         });
@@ -306,13 +451,97 @@ test('seam：meta/patch → RFC6902 真正应用（T0/R0：不再整包丢弃）
         const body = await res.json();
         assert.equal(body.ok, true);
         assert.equal(body.applied, 3);
-        // 模型侧改动生效
-        assert.equal(adapter.lastSaveModelArgs.model.active_branch, 'b_y');
         // 聊天头侧改动生效，且其他内容不丢
         assert.deepEqual(adapter.lastSaveModelArgs.hostMetadata.extensions['third-party/someplugin'],
             { flag: true, extra: [1, 2] });
         assert.equal(adapter.lastSaveModelArgs.hostMetadata.variables.hp, 7);
+        assert.equal(adapter.lastSaveModelArgs.hostMetadata.top_note, 'n');
         assert.equal(adapter.lastSaveModelArgs.hostMetadata.main_chat, 'root_chat');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：meta/patch 的删除与自管项 op 按批次定性（T0c：宿主旧副本不得抹掉内容）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    const seam = installSeam(adapter);
+    try {
+        // 真机 op 形态（Dev 8003 实测）：宿主把「快照有、内存副本没有」的键一律 remove，
+        // 连本插件模型内部（path 项）也删。这一批同时要删别人的命名空间 → 判为旧副本差分。
+        const res = await globalThis.fetch('/api/chats/meta/patch', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1', integrity: 5,
+                operations: [
+                    { op: 'test', path: '/main_chat', value: 'root_chat' },
+                    { op: 'remove', path: '/main_chat' },
+                    { op: 'remove', path: '/variables/hp' },
+                    { op: 'remove', path: '/extensions/third-party~1someplugin' },
+                    { op: 'remove', path: '/extensions/chatfilesys/branches/0/path/2' },
+                    { op: 'add', path: '/extensions/chatfilesys/branches/0/path/3', value: 'g3' },
+                    { op: 'add', path: '/kept', value: 1 },
+                ],
+            }),
+        });
+        assert.equal(res.status, 200);
+        const meta = adapter.lastSaveModelArgs.hostMetadata;
+        assert.equal(meta.main_chat, 'root_chat'); // 顶层键不被宿主旧副本删掉
+        assert.deepEqual(meta.variables, { hp: 10 });
+        assert.deepEqual(meta.extensions['third-party/someplugin'], { flag: true });
+        assert.equal(meta.kept, 1); // 非删除的 op 照常生效
+        // 旧副本差分里自管路径的删除同样不可信；新增（本插件 UI 的登记）照常生效
+        const model = adapter.lastSaveModelArgs.model;
+        assert.deepEqual(model.branches[0].path, { 1: 'g1', 2: 'g2', 3: 'g3' });
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：干净批次的删除照常应用（本插件 deleteFloor 重编号走这条）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    const seam = installSeam(adapter);
+    try {
+        // 本插件 saveMetadata 的差分前后同源：只动自己的命名空间，不含别人的 remove
+        const res = await globalThis.fetch('/api/chats/meta/patch', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1', integrity: 5,
+                operations: [
+                    { op: 'replace', path: '/extensions/chatfilesys/active_branch', value: 'b_y' },
+                    { op: 'remove', path: '/extensions/chatfilesys/branches/0/path/2' },
+                ],
+            }),
+        });
+        assert.equal(res.status, 200);
+        const model = adapter.lastSaveModelArgs.model;
+        assert.equal(model.active_branch, 'b_y');
+        assert.deepEqual(model.branches[0].path, { 1: 'g1' }); // 楼层重编号：path/2 删除生效
+        assert.equal(adapter.lastSaveModelArgs.hostMetadata.main_chat, 'root_chat');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：meta/patch 整体替换 /extensions → 降级为逐命名空间合并（不抹别人）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    const seam = installSeam(adapter);
+    try {
+        await globalThis.fetch('/api/chats/meta/patch', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1', integrity: 5,
+                operations: [{ op: 'replace', path: '/extensions', value: { 'third-party/new': { a: 1 } } }],
+            }),
+        });
+        const ext = adapter.lastSaveModelArgs.hostMetadata.extensions;
+        assert.deepEqual(ext['third-party/new'], { a: 1 });
+        assert.deepEqual(ext['third-party/someplugin'], { flag: true }); // 库内既有命名空间不被整体替换抹掉
     } finally {
         seam.dispose();
         globalThis.fetch = original;
@@ -328,7 +557,7 @@ test('seam：meta/patch 应用失败 → 400 且不写入（不静默丢内容�
             method: 'POST',
             body: JSON.stringify({
                 avatar_url: 'av1', file_name: 'chat1', integrity: 5,
-                operations: [{ op: 'remove', path: '/不存在的字段' }],
+                operations: [{ op: 'replace', path: '/不存在的字段', value: 1 }],
             }),
         });
         assert.equal(res.status, 400);

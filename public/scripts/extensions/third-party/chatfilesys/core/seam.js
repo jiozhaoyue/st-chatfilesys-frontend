@@ -122,7 +122,7 @@ function splitChatMetadata(meta) {
  * `extensions.<插件名>` 下，若整体替换 `extensions`，宿主一次自带 `extensions` 的保存
  * 就会把所有插件的命名空间一起抹掉（真机实测：时有时无的丢命名空间）。
  * 每个命名空间内部按「该插件发来的整份即其最新值」替换，不做深合并。
- * 删除命名空间的唯一路径是 `chats/meta/patch` 的 remove op（那条路径不经本函数）。
+ * 删除命名空间：`chats/meta/patch` 的 remove op（**非旧副本差分**的那种）——本函数不删任何东西。
  *
  * @param {object} prev 库内已有
  * @param {object} incoming 本次入向
@@ -135,6 +135,75 @@ function mergeHostMetadata(prev, incoming) {
         merged.extensions = { ...(a.extensions || {}), ...(b.extensions || {}) };
     }
     return merged;
+}
+
+/**
+ * 入向模型是否代表一次「走法切换」。
+ * 只有切换才让入向模型决定结构：宿主内存里的模型副本可能是旧版（它不知道本插件刚登记的
+ * 追加楼层/新走法），让旧副本盖掉库内结构会丢东西。非切换场景一律以库内模型为准。
+ * @param {{model?: object}} family 库内家族
+ * @param {object|null} incoming 入向模型（chat_metadata.extensions.chatfilesys）
+ */
+function modelSwitchesBranch(family, incoming) {
+    const storedActive = family?.model?.active_branch;
+    if (!incoming?.active_branch || !Array.isArray(incoming.branches)) return false;
+    return incoming.active_branch !== storedActive;
+}
+
+/**
+ * 聊天头增量 op 过滤（T0c 真机证据，2026-09-25 Dev 8003 `test_chat_record_fidelity` 接缝日志）。
+ *
+ * 宿主的 `chats/meta/patch` 是**差分**：它把「服务端快照」改造成「宿主内存副本」，于是
+ * **凡是它内存副本里没有的键，都会发一条 `remove`**——实测 op 序列里出现：
+ *   `test /main_chat` + `remove /main_chat`、`remove /e2e_probe_top`、
+ *   `remove /extensions/third-party~1e2e_probe`，甚至 `remove /extensions/chatfilesys/branches/0/path/3`
+ *   （把本插件模型里的楼层引用也删了）。
+ * 触发条件：宿主快照被服务端刷新而内存副本仍是旧版（本插件的版本号乐观锁与直写都会造成这一点）。
+ * 原样落库 = 抹掉别的插件写进聊天头的内容，与 R0「自定义内容不得丢」直接冲突。
+ *
+ * **判定信号**：一个「要删别人的内容」的批次只可能来自旧副本差分——本插件自己发起的
+ * `saveMetadata()` 差分前后同源（都是内存副本），绝不会产生针对其他插件命名空间/顶层键的 remove。
+ * 于是按批次定性：
+ *   · 批次含**非自管路径的 remove**（= 旧副本差分）→ 删除一律不可信：`remove` 全部丢弃，
+ *     自管路径的 add/replace 照常（宿主可能确实带了更新的模型，交给行表一致性兜底）
+ *   · 否则（干净批次，例如本插件 `deleteFloor` 走法重编号）→ 原样应用，含自管路径的 remove
+ * 另外两条与批次无关的固定规则：
+ *   · 指向 `/integrity` 的 op 一律丢弃（版本号真源在库，宿主那份只是镜像）
+ *   · `replace`/`add` 到 `/extensions` 整对象 → 降级为**逐命名空间合并**（不整体替换别人）
+ *
+ * @param {Array} ops 入向 ops
+ * @param {object} composedCurrent 库内合成后的完整 chat_metadata（供合并规则用）
+ * @returns {{ops: Array, dropped: string[], staleCopy: boolean}} 过滤结果 + 丢弃说明 + 是否旧副本差分
+ */
+function filterMetaOps(ops, composedCurrent) {
+    const list = (Array.isArray(ops) ? ops : []).filter((o) => o && typeof o === 'object');
+    const pathOf = (o) => String(o.path ?? '');
+    const kindOf = (o) => String(o.op || '').toLowerCase();
+    const isOwn = (p) => p === `/extensions/${OWN_EXTENSION_KEY}` || p.startsWith(`/extensions/${OWN_EXTENSION_KEY}/`);
+    // 旧副本差分信号：有 op 要删「非自管路径」（别人的命名空间/宿主字段）
+    const staleCopy = list.some((o) => kindOf(o) === 'remove' && !isOwn(pathOf(o)) && pathOf(o) !== '/integrity');
+
+    const out = [];
+    const dropped = [];
+    for (const op of list) {
+        const kind = kindOf(op);
+        const path = pathOf(op);
+        if (path === '/integrity' || path.startsWith('/integrity/')) {
+            dropped.push(`${kind} ${path}（版本号真源在库）`);
+            continue;
+        }
+        if (kind === 'remove' && (staleCopy || !isOwn(path))) {
+            dropped.push(`remove ${path}（${staleCopy ? '旧副本差分' : '宿主对第三方内容的删除'}）`);
+            continue;
+        }
+        if ((kind === 'replace' || kind === 'add') && path === '/extensions') {
+            const merged = { ...(composedCurrent.extensions || {}), ...(op.value && typeof op.value === 'object' ? op.value : {}) };
+            out.push({ ...op, value: merged });
+            continue;
+        }
+        out.push(op);
+    }
+    return { ops: out, dropped, staleCopy };
 }
 
 /**
@@ -244,10 +313,17 @@ export function installSeam(adapter, opts = {}) {
         return jsonResponse({ ok: true, integrity: toHostIntegrity(r.integrity) });
     }
 
-    /** 写路径：chats/append → 新楼层追加入库 */    async function handleAppend(body) {
+    /** 写路径：chats/append → 新楼层追加入库（T0c：请求体带的聊天头一并并入） */
+    async function handleAppend(body) {
         const chatKey = normalizeChatKey(body?.avatar_url, body?.file_name);
         const family = await adapter.loadFamily({ chatKey });
         if (!family) return null;
+        // T0c：宿主 append 请求体同样带整份 chat_metadata（真机探针证实）——
+        // 其他插件命名空间跟着这条写进来时必须落地，否则「写命名空间 + 发消息」这一步会丢。
+        // 模型不动：结构由本插件（UI）与 ensurePathCovers 维护，宿主副本可能是旧版。
+        const { hostMetadata: incomingHost } = splitChatMetadata(body?.chat_metadata);
+        const mergedHost = mergeHostMetadata(family.hostMetadata, incomingHost);
+        const hostChanged = JSON.stringify(mergedHost) !== JSON.stringify(family.hostMetadata || {});
         const messages = Array.isArray(body?.messages) ? body.messages : [];
         const activePath = family.model.branches.find((b) => b.id === family.model.active_branch)?.path || {};
         const base = Math.max(0, ...Object.keys(activePath).map(Number), 0);
@@ -262,21 +338,60 @@ export function installSeam(adapter, opts = {}) {
         await ensurePathCovers(adapter, family, floors, log); // 新楼层必须进 path，否则读回被投影过滤丢掉
         const r = await adapter.saveFloors({ familyId: family.familyId, floors, expectedIntegrity: parseHostIntegrity(body?.integrity) });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
-        return jsonResponse({ ok: true, appended: messages.length, created: false, integrity: toHostIntegrity(r.integrity) });
+        let integrity = r.integrity;
+        if (hostChanged) {
+            const rMeta = await adapter.saveModel({
+                familyId: family.familyId, model: undefined, hostMetadata: mergedHost,
+                expectedIntegrity: null, keepCurrent: true,
+            });
+            if (rMeta?.integrity != null) integrity = rMeta.integrity;
+        }
+        return jsonResponse({ ok: true, appended: messages.length, created: false, integrity: toHostIntegrity(integrity) });
     }
 
-    /** 写路径：chats/patch → RFC6902 ops 库内执行 */
+    /**
+     * 写路径：chats/patch → 消息补丁**真正应用**（T0b）+ 同车元数据并入（T0c）。
+     *
+     * 真机事实（2026-09-25 探针 tests/e2e/probe_patch_ops.py，Dev 8003）：
+     * - 宿主编辑消息 / swipe → `test /N` + `replace /N`（整行）
+     * - 第三方插件改内存字段后保存 → `add /0/extra/第三方~1键`（**字段级**，深路径）
+     * - 删消息 → `test /N` + `remove /N`
+     * - 请求体**同时带整份 chat_metadata**（宿主内存副本）→ 其中的走法切换与其他插件命名空间
+     *   必须与消息写入一起落地，否则「挂在这条写上的元数据变化」静默丢失（T0c 的时有时无）。
+     *
+     * ops 打在「按活跃走法投影出来的 body 数组」上，库存的是含非活跃变体的行表——
+     * 投影 → 应用 → 按键写回由 `core/patch-rows.js` 统一完成（三档共用同一实现）。
+     */
     async function handlePatch(body) {
         const chatKey = normalizeChatKey(body?.avatar_url, body?.file_name);
         const family = await adapter.loadFamily({ chatKey });
         if (!family) return null;
+        const { hostMetadata: incomingHost, model: incomingModel } = splitChatMetadata(body?.chat_metadata);
+        const mergedHost = mergeHostMetadata(family.hostMetadata, incomingHost);
+        const hostChanged = JSON.stringify(mergedHost) !== JSON.stringify(family.hostMetadata || {});
         const r = await adapter.applyOps({
             familyId: family.familyId,
-            ops: body?.operations || [],
-            expectedIntegrity: parseHostIntegrity(body?.integrity),
+            ops: Array.isArray(body?.operations) ? body.operations : [],
+            // 入向模型只在「走法切换」时决定结构：宿主内存副本可能是旧版，
+            // 让旧副本盖掉本插件的结构更新会丢新走法（非切换时以库内模型为准）
+            model: modelSwitchesBranch(family, incomingModel) ? incomingModel : undefined,
+            hostMetadata: hostChanged ? mergedHost : undefined,
+            expectedIntegrity: body?.force ? null : parseHostIntegrity(body?.integrity),
         });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
-        return jsonResponse({ ok: true, applied: (body?.operations || []).length, integrity: toHostIntegrity(r.integrity) });
+        if (r && r.ok === false) {
+            // test 不通过 = 库内容与宿主的假设不一致 → 409 走宿主自己的冲突重放；
+            // 其余形态（中间插入、非法路径）→ 400，宿主按失败路径回退全量保存
+            const conflict = r.reason === 'test-failed';
+            log(`[chatfilesys-seam] chats/patch 未应用：${r.reason}${r.detail ? '｜' + r.detail : ''}`);
+            return jsonResponse({ ok: false, reason: r.reason, detail: r.detail || null }, conflict ? 409 : 400);
+        }
+        return jsonResponse({
+            ok: true,
+            applied: (body?.operations || []).length,
+            total_messages: r.totalMessages ?? 0,
+            integrity: toHostIntegrity(r.integrity),
+        });
     }
 
     /** 写路径：chats/rename → 家族重命名（隐藏容器模式下等价改名） */
@@ -320,19 +435,23 @@ export function installSeam(adapter, opts = {}) {
     /**
      * 写路径：chats/meta/patch → RFC6902 增量**真正应用**。
      * T0/R0：M1 时期这里整包丢弃（只递增版本号），导致其他插件写入的元数据不生效——本函数是修复点。
-     * 应用对象 = 整份 chat_metadata（合成 → 应用 → 拆回三份），故指向本插件模型或任一插件命名空间的 op 都能生效。
+     * 应用对象 = 整份 chat_metadata（合成 → 应用 → 拆回三份），故指向任一插件命名空间的 op 都能生效。
      */
     async function handleMetaPatch(body) {
         const chatKey = normalizeChatKey(body?.avatar_url, body?.file_name);
         const family = await adapter.loadFamily({ chatKey });
         if (!family) return null;
-        const ops = Array.isArray(body?.operations) ? body.operations : [];
+        const rawOps = Array.isArray(body?.operations) ? body.operations : [];
+        const { ops, dropped } = filterMetaOps(rawOps, composeChatMetadata(family));
+        if (dropped.length) {
+            log(`[chatfilesys-seam] chats/meta/patch 丢弃 ${dropped.length} 条删除/自管项 op（避免宿主旧副本抹掉内容）：${dropped.join('、')}`);
+        }
         let next;
         try {
             // 深拷贝后应用：composeChatMetadata 是浅拷贝，嵌套对象仍与 family 共享引用，必须隔离
             next = applyOpsToObject(JSON.parse(JSON.stringify(composeChatMetadata(family))), ops);
         } catch (e) {
-            log('[chatfilesys-seam] chats/meta/patch 应用失败（未写入，避免静默丢内容）:', e);
+            log(`[chatfilesys-seam] chats/meta/patch 应用失败（未写入，避免静默丢内容）：${String(e?.message || e)}`);
             return jsonResponse({ ok: false, reason: 'patch-apply-failed', detail: String(e?.message || e) }, 400);
         }
         const { hostMetadata: nextHost, model: nextModel } = splitChatMetadata(next);

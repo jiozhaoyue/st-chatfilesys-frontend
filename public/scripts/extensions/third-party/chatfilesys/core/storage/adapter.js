@@ -14,7 +14,13 @@
  *   deleteFamily({ familyId }) -> { ok }
  *   loadFloors({ familyId, from, limit }) -> { floors:[{floorNo,variantId,seq,content,contentHash,sendDate}], hasMore }
  *   saveFloors({ familyId, floors, expectedIntegrity }) -> { ok, integrity } | { ok:false, conflict:true }
- *   applyOps({ familyId, ops, expectedIntegrity })   -> { ok, integrity } | { ok:false, conflict:true }
+ *   applyOps({ familyId, ops, model?, hostMetadata?, expectedIntegrity }) -> { ok, integrity, totalMessages }
+ *     | { ok:false, conflict:true } | { ok:false, reason, detail }
+ *     - 消息补丁（T0b）：ops 是挂在**按活跃走法投影出来的 body 数组**上的 RFC6902（可含 `/N/字段` 深路径），
+ *       语义（投影 → 应用 → 按键写回 / 全局删层 / 重投影）统一由 `core/patch-rows.js` 实现，三档只是落库手法不同。
+ *     - model：**只有走法切换时**由 seam 传入（目标走法决定重投影结构）；未传表示以库内模型为准。
+ *     - hostMetadata：undefined = 不动它（同 saveModel）。
+ *     - 失败语义：`test-failed`（库内容与宿主假设不符）→ seam 映射 409；其余 reason → 400（宿主自行回退全量保存）。
  *   saveModel({ familyId, model, hostMetadata, expectedIntegrity, keepCurrent }) -> { ok, integrity } | { ok:false, conflict:true }
  *     - hostMetadata（T0/R0）：聊天头保留面——宿主与其他插件写进 chat_metadata 的内容整份留库、读时回显；
  *       传 undefined 表示「本次不动它」，传对象表示覆盖。本插件自己的两项（extensions.chatfilesys 与 integrity）不在其中。

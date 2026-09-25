@@ -5,6 +5,8 @@
  * seam 降到本档时只服务会话内读写，UI 提示「当前仅本地缓存」。
  */
 
+import { planBodyPatch, activePathOf, applyRowWrites, pathFloors } from '../patch-rows.js';
+
 const DB_NAME = 'cfsys-cache';
 const DB_VERSION = 1;
 
@@ -63,6 +65,19 @@ function assembleFamily(meta) {
         hostMetadata: meta.hostMetadata ?? null,
         branches, branchPaths, model,
     };
+}
+
+/** 模型写进 meta：本体 + 结构视图（branches/branchPaths 由模型派生，保持读路径一致） */
+function applyModelToMeta(meta, model) {
+    meta.model = model;
+    meta.branches = (model.branches || []).map((b) => ({
+        id: b.id, name: b.name, is_default: Boolean(b.is_default),
+        fork_floor: b.fork_base ?? 0, parent_branch_id: null,
+    }));
+    const branchPaths = {};
+    for (const b of model.branches || []) branchPaths[b.id] = b.path || {};
+    meta.branchPaths = branchPaths;
+    return meta;
 }
 
 /**
@@ -178,40 +193,44 @@ export async function createIdbAdapter(ctx = {}) {
             return { ok: true, integrity: meta.integrity };
         },
 
-        async applyOps({ familyId, ops, expectedIntegrity }) {
+        /**
+         * 消息补丁（T0b）：投影 → 应用 → 按键写回（详见 `core/patch-rows.js`）。
+         * model / hostMetadata 与行同一次提交（宿主 patch 请求体带整份 chat_metadata，T0c）。
+         */
+        async applyOps({ familyId, ops, expectedIntegrity, model, hostMetadata }) {
             const meta = await loadMeta(familyId);
             if (!meta) return { ok: false, reason: 'family-not-found' };
             if (expectedIntegrity != null && expectedIntegrity !== (meta.integrity ?? 1)) {
                 return { ok: false, conflict: true };
             }
-            const rows = (await floorsOf(familyId)).map((r) => ({ ...r }));
-            const arr = [...rows];
-            for (const op of ops || []) {
-                const m = /^\/?(?:chat\/)?(\d+)$/.exec(String(op.path || ''));
-                if (!m) continue;
-                const idx = Number(m[1]);
-                if (op.op === 'remove') arr.splice(idx, 1);
-                else if (op.op === 'add' && op.value != null) {
-                    arr.splice(idx, 0, {
-                        familyId, floorNo: idx + 1, variantId: `g${idx + 1}`, seq: 0,
-                        content: JSON.stringify(op.value), contentHash: null, sendDate: op.value?.send_date ?? null,
-                    });
-                } else if (op.op === 'replace' && op.value != null && arr[idx]) {
-                    arr[idx] = { ...arr[idx], content: JSON.stringify(op.value), sendDate: op.value?.send_date ?? null };
-                }
-            }
-            const renumbered = arr.map((r, i) => ({ ...r, floorNo: i + 1 }));
-            await putFloors(renumbered);
-            // 删掉被 splice 移除的旧行（key 含旧 floorNo）
-            const keep = new Set(renumbered.map((r) => `${r.floorNo}#${r.variantId}`));
+            const current = assembleFamily(meta);
+            const plan = planBodyPatch({
+                rows: await floorsOf(familyId),
+                path: activePathOf(current.model),
+                ops,
+                model: model || current.model,
+            });
+            if (!plan.ok) return { ok: false, reason: plan.reason, detail: plan.detail };
+            const rows = applyRowWrites(await floorsOf(familyId), plan.rows, plan.deletes);
+            // 先删后写：按键删除不再被引用的旧行（key 含旧 floorNo，upsert 覆盖不到）
             const store = tx(db, 'floors', 'readwrite');
-            for (const old of rows) {
-                if (!keep.has(`${old.floorNo}#${old.variantId}`)) store.delete([old.familyId, old.floorNo, old.variantId]);
+            for (const d of plan.deletes) store.delete([familyId, d.floorNo, d.variantId]);
+            await putFloors(rows.map((r) => ({ ...r, familyId })));
+            if (hostMetadata !== undefined) meta.hostMetadata = hostMetadata;
+            if (plan.model) {
+                meta.model = plan.model;
+                meta.branches = (plan.model.branches || []).map((b) => ({
+                    id: b.id, name: b.name, is_default: Boolean(b.is_default),
+                    fork_floor: b.fork_base ?? 0, parent_branch_id: null,
+                }));
+                const branchPaths = {};
+                for (const b of plan.model.branches || []) branchPaths[b.id] = b.path || {};
+                meta.branchPaths = branchPaths;
             }
             meta.integrity = (meta.integrity ?? 1) + 1;
             meta.updatedAt = Date.now();
             await putMeta(meta);
-            return { ok: true, integrity: meta.integrity };
+            return { ok: true, integrity: meta.integrity, totalMessages: pathFloors(plan.path).length };
         },
 
         async saveModel({ familyId, model, hostMetadata, expectedIntegrity, keepCurrent }) {
@@ -223,14 +242,7 @@ export async function createIdbAdapter(ctx = {}) {
             // T0/R0：聊天头保留面落库（undefined = 本次不动它）
             if (hostMetadata !== undefined) meta.hostMetadata = hostMetadata;
             if (!keepCurrent && model) {
-                meta.model = model;
-                meta.branches = (model.branches || []).map((b) => ({
-                    id: b.id, name: b.name, is_default: Boolean(b.is_default),
-                    fork_floor: b.fork_base ?? 0, parent_branch_id: null,
-                }));
-                const branchPaths = {};
-                for (const b of model.branches || []) branchPaths[b.id] = b.path || {};
-                meta.branchPaths = branchPaths;
+                applyModelToMeta(meta, model);
             }
             meta.integrity = (meta.integrity ?? 1) + 1;
             meta.updatedAt = Date.now();

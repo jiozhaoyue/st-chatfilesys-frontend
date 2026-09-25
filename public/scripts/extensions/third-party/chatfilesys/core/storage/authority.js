@@ -10,6 +10,8 @@
  * - 批量写按 500 行分块提交（防长持写锁）
  */
 
+import { planBodyPatch, activePathOf, pathFloors } from '../patch-rows.js';
+
 const DB = 'chatfilesys';
 const CHUNK = 500;
 
@@ -162,6 +164,27 @@ CREATE TABLE IF NOT EXISTS branch_paths (
         };
     }
 
+    /** 模型本体 + 结构表一次写（branches/branch_paths 由模型派生；父分支关系尽量保留现值） */
+    async function writeModel(familyId, model) {
+        await q('UPDATE families SET model = ?, updated_at = ? WHERE id = ?', [JSON.stringify(model), Date.now(), familyId]);
+        const existing = await q('SELECT branch_id, parent_branch_id FROM branches WHERE family_id = ?', [familyId]);
+        const parentOf = new Map(existing.map((b) => [b.branch_id, b.parent_branch_id ?? null]));
+        await q('DELETE FROM branches WHERE family_id = ?', [familyId]);
+        await q('DELETE FROM branch_paths WHERE family_id = ?', [familyId]);
+        for (const b of model.branches || []) {
+            await q(
+                'INSERT INTO branches (family_id, branch_id, parent_branch_id, name, fork_floor, is_default) VALUES (?, ?, ?, ?, ?, ?)',
+                [familyId, b.id, parentOf.has(b.id) ? parentOf.get(b.id) : null, b.name ?? b.id, b.fork_base ?? 0, b.is_default ? 1 : 0],
+            );
+            for (const [floorNo, variantId] of Object.entries(b.path || {})) {
+                await q(
+                    'INSERT INTO branch_paths (family_id, branch_id, floor_no, variant_id) VALUES (?, ?, ?, ?)',
+                    [familyId, b.id, Number(floorNo), variantId],
+                );
+            }
+        }
+    }
+
     return {
         async listFamilies({ characterId }) {
             await ensureMigrated();
@@ -264,45 +287,50 @@ CREATE TABLE IF NOT EXISTS branch_paths (
             return { ok: true, integrity };
         },
 
-        async applyOps({ familyId, ops, expectedIntegrity }) {
+        /**
+         * 消息补丁（T0b）：投影 → 应用 → 按键写回（详见 `core/patch-rows.js`）。
+         * 结构与档2/档3 共用同一个纯函数，差异只在持久化手法（SQL 按 key 删 + upsert）。
+         */
+        async applyOps({ familyId, ops, expectedIntegrity, model, hostMetadata }) {
             await ensureMigrated();
             const conflict = await checkIntegrity(familyId, expectedIntegrity);
             if (conflict) return { ok: false, conflict: true };
-            for (const op of ops || []) {
-                const m = /^\/?(?:chat\/)?(\d+)$/.exec(String(op.path || ''));
-                const idx = m ? Number(m[1]) : null;
-                if (op.op === 'remove' && idx != null) {
-                    // remove：删该行起、后续行整体前移（RFC6902 数组语义）
-                    await q('DELETE FROM floors WHERE family_id = ? AND floor_no = ?', [familyId, idx + 1]);
-                    await q(
-                        'UPDATE floors SET floor_no = floor_no - 1 WHERE family_id = ? AND floor_no > ?',
-                        [familyId, idx + 1],
-                    );
-                } else if (op.op === 'add' && idx != null && op.value != null) {
-                    await q(
-                        'UPDATE floors SET floor_no = floor_no + 1 WHERE family_id = ? AND floor_no >= ?',
-                        [familyId, idx + 1],
-                    );
+            const f = await loadFamilyRow(familyId);
+            if (!f) return { ok: false, reason: 'family-not-found' };
+            const current = await assembleFamily(f);
+            const rows = (await q(
+                'SELECT * FROM floors WHERE family_id = ? ORDER BY floor_no, seq',
+                [familyId],
+            )).map(rowFromSql);
+            const plan = planBodyPatch({
+                rows,
+                path: activePathOf(current.model),
+                ops,
+                model: model || current.model,
+            });
+            if (!plan.ok) return { ok: false, reason: plan.reason, detail: plan.detail };
+            for (const d of plan.deletes) {
+                await q('DELETE FROM floors WHERE family_id = ? AND floor_no = ? AND variant_id = ?', [familyId, d.floorNo, d.variantId]);
+            }
+            for (let i = 0; i < plan.rows.length; i += CHUNK) {
+                for (const r of plan.rows.slice(i, i + CHUNK)) {
                     await q(
                         `INSERT INTO floors (family_id, floor_no, variant_id, seq, content, content_hash, send_date)
-                         VALUES (?, ?, ?, 0, ?, NULL, ?)`,
-                        [familyId, idx + 1, `g${idx + 1}`, JSON.stringify(op.value), op.value?.send_date ?? null],
-                    );
-                    // 路径引用同步前移（与楼层重编号一致）
-                    await q(
-                        'UPDATE branch_paths SET floor_no = floor_no + 1 WHERE family_id = ? AND floor_no >= ?',
-                        [familyId, idx + 1],
-                    );
-                } else if (op.op === 'replace' && idx != null && op.value != null) {
-                    await q(
-                        'UPDATE floors SET content = ?, send_date = ? WHERE family_id = ? AND floor_no = ?',
-                        [JSON.stringify(op.value), op.value?.send_date ?? null, familyId, idx + 1],
+                         VALUES (?, ?, ?, ?, ?, ?, ?)
+                         ON CONFLICT(family_id, floor_no, variant_id) DO UPDATE SET
+                           seq = excluded.seq, content = excluded.content,
+                           content_hash = excluded.content_hash, send_date = excluded.send_date`,
+                        [familyId, r.floorNo, r.variantId, r.seq ?? 0, r.content, r.contentHash ?? null, r.sendDate ?? null],
                     );
                 }
-                // 其他 op 形态（test 等）：忽略（消息 API 不产生）
             }
+            if (hostMetadata !== undefined) {
+                await q('UPDATE families SET host_metadata = ?, updated_at = ? WHERE id = ?',
+                    [JSON.stringify(hostMetadata), Date.now(), familyId]);
+            }
+            if (plan.model) await writeModel(familyId, plan.model);
             const integrity = await bumpIntegrity(familyId);
-            return { ok: true, integrity };
+            return { ok: true, integrity, totalMessages: pathFloors(plan.path).length };
         },
 
         async saveModel({ familyId, model, hostMetadata, expectedIntegrity, keepCurrent }) {
@@ -320,25 +348,7 @@ CREATE TABLE IF NOT EXISTS branch_paths (
             try { stored = f.model ? JSON.parse(f.model) : null; } catch { stored = null; }
             const nextModel = keepCurrent ? stored : model;
             if (!keepCurrent && nextModel) {
-                // 模型本体持久化（active_branch/groups 往返不丢）
-                await q('UPDATE families SET model = ?, updated_at = ? WHERE id = ?', [JSON.stringify(nextModel), Date.now(), familyId]);
-                // 同步重建结构表（parent_branch_id 尽量保留现值）
-                const existing = await q('SELECT branch_id, parent_branch_id FROM branches WHERE family_id = ?', [familyId]);
-                const parentOf = new Map(existing.map((b) => [b.branch_id, b.parent_branch_id ?? null]));
-                await q('DELETE FROM branches WHERE family_id = ?', [familyId]);
-                await q('DELETE FROM branch_paths WHERE family_id = ?', [familyId]);
-                for (const b of nextModel.branches || []) {
-                    await q(
-                        'INSERT INTO branches (family_id, branch_id, parent_branch_id, name, fork_floor, is_default) VALUES (?, ?, ?, ?, ?, ?)',
-                        [familyId, b.id, parentOf.has(b.id) ? parentOf.get(b.id) : null, b.name ?? b.id, b.fork_base ?? 0, b.is_default ? 1 : 0],
-                    );
-                    for (const [floorNo, variantId] of Object.entries(b.path || {})) {
-                        await q(
-                            'INSERT INTO branch_paths (family_id, branch_id, floor_no, variant_id) VALUES (?, ?, ?, ?)',
-                            [familyId, b.id, Number(floorNo), variantId],
-                        );
-                    }
-                }
+                await writeModel(familyId, nextModel); // 模型本体 + 结构表重建（active_branch/groups 往返不丢）
             }
             const integrity = await bumpIntegrity(familyId);
             return { ok: true, integrity };

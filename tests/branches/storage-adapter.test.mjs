@@ -33,9 +33,14 @@ function mockSqlClient() {
                 if (s.startsWith('SELECT id, name, updated_at FROM families')) return db.families.map((f) => ({ id: f.id, name: f.name, updated_at: f.updated_at }));
                 if (s.startsWith('SELECT * FROM branches')) return db.branches.filter((b) => b.family_id === p[0]);
                 if (s.startsWith('SELECT * FROM branch_paths')) return db.branch_paths.filter((b) => b.family_id === p[0]);
-                if (s.startsWith('SELECT * FROM floors WHERE family_id')) return db.floors.filter((f) => f.family_id === p[0] && f.floor_no >= p[1]).sort((a, b) => a.floor_no - b.floor_no);
+                if (s.startsWith('SELECT * FROM floors WHERE family_id')) {
+                    const rows = db.floors.filter((f) => f.family_id === p[0] && (p[1] == null || f.floor_no >= p[1]));
+                    return [...rows].sort((a, b) => a.floor_no - b.floor_no || (a.seq ?? 0) - (b.seq ?? 0));
+                }
                 if (s.startsWith('INSERT INTO floors')) {
-                    db.floors.push({ family_id: p[0], floor_no: p[1], variant_id: p[2], seq: p[3], content: p[4], content_hash: p[5], send_date: p[6] });
+                    const existing = db.floors.find((f) => f.family_id === p[0] && f.floor_no === p[1] && f.variant_id === p[2]);
+                    if (existing) Object.assign(existing, { seq: p[3], content: p[4], content_hash: p[5], send_date: p[6] });
+                    else db.floors.push({ family_id: p[0], floor_no: p[1], variant_id: p[2], seq: p[3], content: p[4], content_hash: p[5], send_date: p[6] });
                     return [];
                 }
                 if (s.startsWith('INSERT INTO branches')) {
@@ -65,6 +70,11 @@ function mockSqlClient() {
                 if (s.startsWith('DELETE FROM')) {
                     const table = s.match(/DELETE FROM (\w+)/)[1];
                     const key = table === 'families' ? 'id' : 'family_id';
+                    if (table === 'floors' && p.length >= 3) {
+                        // 按键删单行（T0b：删层/换层后清旧键行）
+                        db.floors = db.floors.filter((r) => !(r.family_id === p[0] && r.floor_no === p[1] && r.variant_id === p[2]));
+                        return [];
+                    }
                     db[table] = p[0] == null ? [] : db[table].filter((r) => r[key] !== p[0]);
                     return [];
                 }
@@ -304,6 +314,157 @@ test('档2：saveModel 携带 hostMetadata → 容器元数据往返不丢（T0/
     assert.equal(r.ok, true);
     const f = await adapter.loadFamily({ familyId: 'f9' });
     assert.deepEqual(f.hostMetadata, hostMetadata);
+});
+
+/* ---------------- applyOps（T0b）：三档共用 patch-rows 语义 ---------------- */
+
+/** 档1/档2 共用的两走法家族种子（主分支 3 层；支线 b1 共享 1 层 + 私有 g7@g2） */
+function seedTwoBranches(db) {
+    db.families.push({
+        id: 'f1', chat_key: 'av1::chat1', character_id: 'c1', name: 'chat1', integrity: 1, created_at: 1, updated_at: 1,
+        model: JSON.stringify({
+            active_branch: 'b_main',
+            branches: [
+                { id: 'b_main', name: '主分支', is_default: true, fork_base: 0, path: { 1: 'g1', 2: 'g2', 3: 'g3' } },
+                { id: 'b1', name: '支线', is_default: false, fork_base: 1, path: { 1: 'g1', 2: 'g7' } },
+            ],
+            groups: { g7: { id: 'g7', floor: 2, owner: 'b1', active: 0, variants: [{ mes: '支线二' }] } },
+        }),
+    });
+    for (const b of [['b_main', 1, 'g1'], ['b_main', 2, 'g2'], ['b_main', 3, 'g3'], ['b1', 1, 'g1'], ['b1', 2, 'g7']]) {
+        db.branches.push({ family_id: 'f1', branch_id: b[0], parent_branch_id: null, name: b[0], fork_floor: 0, is_default: b[0] === 'b_main' ? 1 : 0 });
+    }
+    db.branch_paths.push({ family_id: 'f1', branch_id: 'b_main', floor_no: 1, variant_id: 'g1' });
+    db.branch_paths.push({ family_id: 'f1', branch_id: 'b_main', floor_no: 2, variant_id: 'g2' });
+    db.branch_paths.push({ family_id: 'f1', branch_id: 'b_main', floor_no: 3, variant_id: 'g3' });
+    db.branch_paths.push({ family_id: 'f1', branch_id: 'b1', floor_no: 1, variant_id: 'g1' });
+    db.branch_paths.push({ family_id: 'f1', branch_id: 'b1', floor_no: 2, variant_id: 'g7' });
+    const rows = [
+        [1, 'g1', { mes: '一' }], [2, 'g2', { mes: '二' }], [3, 'g3', { mes: '三' }],
+        [1, 'g1', { mes: '一' }], [2, 'g7', { mes: '支线二' }],
+    ];
+    for (const [floor_no, variant_id, obj] of rows) {
+        if (db.floors.some((f) => f.floor_no === floor_no && f.variant_id === variant_id)) continue;
+        db.floors.push({ family_id: 'f1', floor_no, variant_id, seq: 0, content: JSON.stringify(obj), content_hash: null, send_date: 1 });
+    }
+}
+
+test('档1：applyOps 字段级补丁落库 + 聊天头与行同次写（T0b/T0c）', async () => {
+    const { client, db } = mockSqlClient();
+    db.families.push({ id: 'f1', chat_key: 'av1::chat1', character_id: 'c1', name: 'chat1', integrity: 1, created_at: 1, updated_at: 1 });
+    db.branches.push({ family_id: 'f1', branch_id: 'b_main', parent_branch_id: null, name: '主分支', fork_floor: 0, is_default: 1 });
+    db.branch_paths.push({ family_id: 'f1', branch_id: 'b_main', floor_no: 1, variant_id: 'g1' });
+    db.floors.push({ family_id: 'f1', floor_no: 1, variant_id: 'g1', seq: 0, content: JSON.stringify({ mes: 'a', extra: {} }), content_hash: null, send_date: 1 });
+    const adapter = await createAuthorityAdapter({ authorityClient: client });
+    const hostMetadata = { main_chat: 'root', extensions: { 'third-party/p': { x: 1 } } };
+    const r = await adapter.applyOps({
+        familyId: 'f1',
+        ops: [{ op: 'add', path: '/0/extra/third-party~1probe', value: { n: 42 } }],
+        hostMetadata,
+        expectedIntegrity: 1,
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.integrity, 2);
+    assert.equal(r.totalMessages, 1);
+    const f = await adapter.loadFamily({ familyId: 'f1' });
+    assert.deepEqual(f.hostMetadata, hostMetadata);
+    const { floors } = await adapter.loadFloors({ familyId: 'f1', from: 0, limit: 10 });
+    assert.deepEqual(JSON.parse(floors[0].content).extra, { 'third-party/probe': { n: 42 } });
+});
+
+test('档1：applyOps 删层 → 行按键删除 + 走法前移（非活跃走法旧键行一并重写）', async () => {
+    const { client, db } = mockSqlClient();
+    seedTwoBranches(db);
+    const adapter = await createAuthorityAdapter({ authorityClient: client });
+    const r = await adapter.applyOps({
+        familyId: 'f1',
+        ops: [{ op: 'test', path: '/0', value: { mes: '一' } }, { op: 'remove', path: '/0' }],
+        expectedIntegrity: 1,
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.totalMessages, 2);
+    const keys = db.floors.map((f) => `${f.floor_no}#${f.variant_id}`).sort();
+    assert.deepEqual(keys, ['1#g2', '1#g7', '2#g3']); // 旧键行清掉，支线 g7 换到第 1 层
+    const f = await adapter.loadFamily({ familyId: 'f1' });
+    assert.deepEqual(f.model.branches.find((b) => b.id === 'b1').path, { 1: 'g7' });
+});
+
+test('档1：applyOps test 不通过 → {ok:false, reason:test-failed} 且不写', async () => {
+    const { client, db } = mockSqlClient();
+    seedTwoBranches(db);
+    const adapter = await createAuthorityAdapter({ authorityClient: client });
+    const before = db.floors.length;
+    const r = await adapter.applyOps({
+        familyId: 'f1',
+        ops: [{ op: 'test', path: '/0', value: { mes: '不是这一层' } }],
+        expectedIntegrity: 1,
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'test-failed');
+    assert.equal(db.floors.length, before);
+    assert.equal((await adapter.loadFamily({ familyId: 'f1' })).integrity, 1); // 版本号未动
+});
+
+test('档2：applyOps 字段级补丁 + 删层（容器整文档重写后读回一致）', async () => {
+    const containers = new Map();
+    const doFetch = async (url, init) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        if (url.includes('chats/get')) return { ok: true, json: async () => containers.get(body.file_name) || [] };
+        if (url.includes('chats/save')) { containers.set(body.file_name, body.chat); return { ok: true, json: async () => ({ ok: true }) }; }
+        return { ok: true, json: async () => ({}) };
+    };
+    const adapter = await createOfficialAdapter({ fetch: doFetch });
+    const meta = {
+        familyId: 'f9', chatKey: 'av1::chat9', characterId: 'c1', name: 'chat9', integrity: 1,
+        branches: [{ id: 'b_main', name: '主分支', is_default: true, fork_floor: 0 }],
+        branchPaths: { b_main: { 1: 'g1', 2: 'g2' } },
+    };
+    const rows = [
+        { floorNo: 1, variantId: 'g1', seq: 0, content: JSON.stringify({ mes: 'a', extra: {} }), contentHash: null, sendDate: 1 },
+        { floorNo: 2, variantId: 'g2', seq: 0, content: JSON.stringify({ mes: 'b' }), contentHash: null, sendDate: 2 },
+    ];
+    containers.set('__cfsys__f9.jsonl', [
+        { user_name: 'unused', chat_metadata: { extensions: { cfsys_family: meta } } },
+        ...rows.map((r) => JSON.stringify(r)),
+    ]);
+    const r1 = await adapter.applyOps({
+        familyId: 'f9',
+        ops: [{ op: 'add', path: '/0/extra/third-party~1probe', value: { n: 1 } }],
+        expectedIntegrity: 1,
+    });
+    assert.equal(r1.ok, true);
+    assert.equal(r1.integrity, 2);
+    let { floors } = await adapter.loadFloors({ familyId: 'f9', from: 0, limit: 10 });
+    assert.deepEqual(JSON.parse(floors[0].content).extra, { 'third-party/probe': { n: 1 } });
+
+    const r2 = await adapter.applyOps({
+        familyId: 'f9',
+        ops: [{ op: 'remove', path: '/0' }],
+        expectedIntegrity: 2,
+    });
+    assert.equal(r2.ok, true);
+    ({ floors } = await adapter.loadFloors({ familyId: 'f9', from: 0, limit: 10 }));
+    assert.equal(floors.length, 1);
+    assert.equal(JSON.parse(floors[0].content).mes, 'b');
+    const f = await adapter.loadFamily({ familyId: 'f9' });
+    assert.deepEqual(f.model.branches.find((b) => b.id === 'b_main').path, { 1: 'g2' });
+});
+
+test('档2：applyOps 冲突 → {ok:false, conflict:true}（expectedIntegrity 不符）', async () => {
+    const containers = new Map();
+    const doFetch = async (url, init) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        if (url.includes('chats/get')) return { ok: true, json: async () => containers.get(body.file_name) || [] };
+        if (url.includes('chats/save')) { containers.set(body.file_name, body.chat); return { ok: true, json: async () => ({ ok: true }) }; }
+        return { ok: true, json: async () => ({}) };
+    };
+    const adapter = await createOfficialAdapter({ fetch: doFetch });
+    containers.set('__cfsys__f9.jsonl', [
+        { user_name: 'unused', chat_metadata: { extensions: { cfsys_family: { familyId: 'f9', chatKey: 'av1::chat9', integrity: 7, branches: [{ id: 'b_main', name: '主分支', is_default: true, fork_floor: 0 }], branchPaths: { b_main: { 1: 'g1' } } } } } },
+        JSON.stringify({ floorNo: 1, variantId: 'g1', seq: 0, content: '{"mes":"a"}', contentHash: null, sendDate: 1 }),
+    ]);
+    const r = await adapter.applyOps({ familyId: 'f9', ops: [{ op: 'remove', path: '/0' }], expectedIntegrity: 1 });
+    assert.deepEqual(r, { ok: false, conflict: true });
 });
 
 test('档3 idb：upsert/读回一致（内存 stub）', async () => {

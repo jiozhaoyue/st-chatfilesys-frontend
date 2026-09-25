@@ -9,13 +9,13 @@
      - `chats/append` 追一条带自定义字段的消息行（`extra` 任意键 + `swipes` + `swipe_info`）
   ③ **读回深比对**：`chats/get` 响应的聊天头与消息行必须**逐字段一致**（T0 前这里会丢聊天头）
   ④ **宿主驱动写入后再复核**：UI 发一条消息（宿主自己走 append/save/meta-patch）→ 再读 → 外来内容仍在
-  ⑤ 宿主渲染复核：DOM 消息数与库内楼层一致
-  ⑥ 清场：删测试家族隐容器
+  ⑤ **T0b 字段级补丁**：`add/remove /N/field` 必须落库（真机事实：插件改消息字段发的是深路径 op），
+     `test` 不通过必须给 409（宿主走冲突重放，不得静默写）
+  ⑥ **T0c 命名空间随写路径不丢**：插件改名空间后 append/save 送到库内，后续宿主再写仍需存活
+  ⑦ 宿主渲染复核：DOM 消息数与库内楼层一致
+  ⑧ 清场：删测试家族隐容器
 
-通过判据只含**已证实**的契约（聊天头经接缝整份往返 / 追加行逐字段一致 / 宿主能渲染库内楼层）。
-两个**已知未修**项（不计入判据但每次打印）：
-  - T0b 消息字段级补丁 `/N/field` 在三档 `applyOps` 里被静默忽略（宿主编辑消息不落库）
-  - T0c 宿主整份写 `extensions` 会抹掉其他插件的命名空间（丢失呈时有时无，需抓真实请求定语义）
+通过判据见 STEPS 末尾 `out.ok`。
 
 L0-1 纪律：不写实例文件系统（隐容器经官方端点、探针即删）；`__cb_e2e` 为专用测试角色。
 依赖：Dev Luker 8003 在跑 + 8417 静态源在跑（.claude/launch.json 的 chatfilesys-mock-host）。
@@ -70,7 +70,7 @@ STEPS = """async (extSrc) => {
         log('family seeded');
 
         const seamLog = [];
-        const handle = seamMod.installSeam(adapter, { log: (m) => seamLog.push(String(m).slice(0, 160)) });
+        const handle = seamMod.installSeam(adapter, { log: (m) => seamLog.push(String(m)) });
 
         // ①b 打开测试角色（宿主 chats/get 被 seam 拦截 → 渲染库内楼层）
         //     真机事实：首次 selectCharacterById 常因初始化竞态早退 → 重试直到 characterId 落位
@@ -83,9 +83,10 @@ STEPS = """async (extSrc) => {
         if (String(c.characterId) !== String(idx)) { log('selectCharacterById never landed: characterId=' + c.characterId); out.ok = false; return out; }
         log('character landed: ' + c.characterId + ' chatLen=' + (c.chat || []).length);
 
-        const post = (path, body) => fetch('/api/chats/' + path, {
+        const postRaw = (path, body) => fetch('/api/chats/' + path, {
             method: 'POST', headers: { 'Content-Type': 'application/json', ...H() }, body: JSON.stringify(body),
-        }).then(r => r.json());
+        });
+        const post = (path, body) => postRaw(path, body).then(r => r.json());
 
         const base = { avatar_url: target.avatar, file_name: target.chat };
 
@@ -132,6 +133,7 @@ STEPS = """async (extSrc) => {
         log('after host send: rows=' + out.__rows1 + ' ns=' + out.__nsAfterHost + ' vars=' + out.__topAfterHost);
 
         // ⑤ 第三方插件写入**宿主知道的那条消息**（真实形态：改宿主内存里的消息 + 让宿主保存）
+        //    真机事实（probe_patch_ops.py）：宿主差分会发**字段级** op `add /0/extra/第三方~1键`
         const c2 = window.SillyTavern.getContext();
         const probeExtra = { from: 'other-plugin', n: 42, deep: { arr: [7, 8] } };
         c2.chat[0].extra = { ...(c2.chat[0].extra || {}), [PROBE_NS]: probeExtra };
@@ -140,6 +142,26 @@ STEPS = """async (extSrc) => {
         const arr2 = await fetch('/api/chats/get', { method: 'POST', headers: { 'Content-Type': 'application/json', ...H() }, body: JSON.stringify(base) }).then(r => r.json());
         out.__extraAfterPlugin = JSON.stringify(arr2[1]?.extra?.[PROBE_NS]) === JSON.stringify(probeExtra);
         log('after plugin row write: extra kept=' + out.__extraAfterPlugin);
+
+        // ⑤b T0b 直证：字段级补丁 add / remove 必须落库（旧实现窄正则整条跳过）
+        const rDeep = await postRaw('patch', { ...base, operations: [
+            { op: 'add', path: '/0/extra/e2e_deep', value: { lvl: [1, { x: 2 }] } },
+        ] });
+        const arrDeep = await fetch('/api/chats/get', { method: 'POST', headers: { 'Content-Type': 'application/json', ...H() }, body: JSON.stringify(base) }).then(r => r.json());
+        out.__deepAdd = JSON.stringify(arrDeep[1]?.extra?.e2e_deep) === JSON.stringify({ lvl: [1, { x: 2 }] });
+        log('T0b 字段级 add: status=' + rDeep.status + ' landed=' + out.__deepAdd);
+
+        await postRaw('patch', { ...base, operations: [{ op: 'remove', path: '/0/extra/e2e_deep' }] });
+        const arrDeep2 = await fetch('/api/chats/get', { method: 'POST', headers: { 'Content-Type': 'application/json', ...H() }, body: JSON.stringify(base) }).then(r => r.json());
+        out.__deepRemove = arrDeep2[1]?.extra?.e2e_deep === undefined;
+        log('T0b 字段级 remove: removed=' + out.__deepRemove);
+
+        // ⑤c T0b 边界：test 不通过 → 409（宿主按冲突重放，不得静默写）
+        const rTest = await postRaw('patch', { ...base, operations: [
+            { op: 'test', path: '/0/mes', value: '绝不可能匹配的内容' },
+        ] });
+        out.__testConflict = rTest.status === 409;
+        log('T0b test 不通过 → status=' + rTest.status + '（期望 409）');
 
         // ⑥ 宿主再写一次（再发一条）→ 上一步写入的自定义字段必须**仍然在**
         ta.value = '保真探针：第二条宿主驱动消息';
@@ -153,10 +175,20 @@ STEPS = """async (extSrc) => {
         out.__rows = arr3.length - 1;
         log('after 2nd host write: rows=' + out.__rows + ' extra survives=' + out.__extraSurvives + ' ns survives=' + out.__nsSurvives);
 
+        // ⑥b T0c 直证：命名空间**跟着 append 进来**（真机事实：append 请求体带整份 chat_metadata）
+        const lateNs = { late: true, k: 7 };
+        c2.chatMetadata.extensions = { ...(c2.chatMetadata.extensions || {}), 'third-party/e2e_late': lateNs };
+        await c2.addMessages({ name: 'System', mes: 'T0c-append 携带命名空间', is_system: true }, { silent: true });
+        await new Promise(r => setTimeout(r, 2500));
+        const arr4 = await fetch('/api/chats/get', { method: 'POST', headers: { 'Content-Type': 'application/json', ...H() }, body: JSON.stringify(base) }).then(r => r.json());
+        out.__nsViaAppend = JSON.stringify(arr4[0]?.chat_metadata?.extensions?.['third-party/e2e_late']) === JSON.stringify(lateNs);
+        log('T0c append 携带命名空间: landed=' + out.__nsViaAppend);
+
         // ⑦ 宿主渲染复核（DOM 消息数）
         out.__domMes = document.querySelectorAll('#chat .mes').length;
         out.__seamLogN = seamLog.length;
-        log('DOM mes count = ' + out.__domMes + ' seam log (' + out.__seamLogN + '): ' + seamLog.slice(0, 3).join(' | '));
+        seamLog.forEach((m, i) => log('seam[' + i + '] ' + m));
+        log('DOM mes count = ' + out.__domMes + ' / seam log ' + out.__seamLogN);
 
         // ⑧ 清场
         await adapter.deleteFamily({ familyId }).catch(() => {});
@@ -164,21 +196,13 @@ STEPS = """async (extSrc) => {
         disposeAdapter();
         log('cleaned + disposed');
 
-        // ── 已知未修（不计入通过判据，但每次打印为证据）────────────────────────────
-        // T0b：消息**字段级**补丁 `/N/field`（如 /0/mes、/0/extra）在三档 applyOps 里被静默忽略
-        //      → 宿主「编辑消息 / 改消息字段」在纯库模式下不落库。
-        // T0c：宿主整份写（或其补丁整体替换 `/extensions`）会抹掉其他插件的命名空间
-        //      → 命名空间丢失呈「时有时无」，需抓真实请求体再定合并语义。
-        // 另有一条**非缺陷**：宿主全量保存会用其内存里的行覆盖库内它不知道的行（宿主是行的事实源，符合预期）。
-        log('KNOWN-OPEN(T0b) 字段级补丁：afterSaveChat=' + out.__extraAfterPlugin + ' after2ndHostWrite=' + out.__extraSurvives);
-        log('KNOWN-OPEN(T0c) 命名空间存活：after1st=' + out.__nsAfterHost + '/' + out.__topAfterHost + ' after2nd=' + out.__nsSurvives);
-
-        // ── 通过判据：只含**已证实**的契约 ──────────────────────────────────────────
-        // ① 聊天头经接缝整份往返（外来命名空间 / main_chat / 宿主不拥有的顶层键）
-        // ② 追加的消息行逐字段一致（含 extra 自定义键 / swipes / swipe_info）
-        // ③ 宿主能把库内楼层渲染出来
+        // ── 通过判据：① 聊天头经接缝整份往返 ② 追加行逐字段一致 ③ 宿主能渲染库内楼层
+        //            ④（本轮 T0b）字段级补丁落库、test 不通过给 409 ⑤（本轮 T0c）命名空间经各写路径都不丢
         out.ok = out.__mainChat === 'root_chat'
             && out.__nsOk === true && out.__topOk === true && out.__rowOk === true
+            && out.__extraAfterPlugin === true && out.__extraSurvives === true && out.__nsSurvives === true
+            && out.__deepAdd === true && out.__deepRemove === true && out.__testConflict === true
+            && out.__nsViaAppend === true
             && out.__domMes >= 2;
         return out;
     } catch (e) {
@@ -206,7 +230,7 @@ def main():
         browser.close()
 
     if result.get("ok"):
-        print("\nFIDELITY PASS: 聊天头整份保住（外来命名空间/main_chat/变量）+ 消息行逐字段一致 + 宿主写入后仍不丢")
+        print("\nFIDELITY PASS: 聊天头整份保住 + 消息行逐字段一致 + T0b 字段级补丁落库 + T0c 命名空间各写路径不丢")
     else:
         print("\nFIDELITY FAIL")
         sys.exit(1)

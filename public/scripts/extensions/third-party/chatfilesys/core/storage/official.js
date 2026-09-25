@@ -9,6 +9,8 @@
  * 正确性兜底档：整文档读写、无分片查询（性能弱于档1 属预期，M3 基准量化）。
  */
 
+import { planBodyPatch, activePathOf, applyRowWrites, pathFloors } from '../patch-rows.js';
+
 const PREFIX = '__cfsys__';
 const TRASH_PREFIX = '__cfsys__trash__';
 const INDEX_NAME = '__cfsys__index.jsonl'; // 固定名索引容器：chatKey→familyId 持久登记（重启重联）
@@ -169,27 +171,17 @@ export async function createOfficialAdapter(ctx) {
         return { family, floorRows };
     }
 
-    /** 容器内楼层重排（RFC6902 数组语义在 body 数组上直接执行） */
-    function applyOpsToRows(rows, ops) {
-        const arr = [...rows];
-        for (const op of ops || []) {
-            const m = /^\/?(?:chat\/)?(\d+)$/.exec(String(op.path || ''));
-            if (!m) continue;
-            const idx = Number(m[1]);
-            if (op.op === 'remove') arr.splice(idx, 1);
-            else if (op.op === 'add' && op.value != null) {
-                arr.splice(idx, 0, {
-                    floorNo: idx + 1, variantId: `g${idx + 1}`, seq: 0,
-                    content: JSON.stringify(op.value), contentHash: null,
-                    sendDate: op.value?.send_date ?? null,
-                });
-            } else if (op.op === 'replace' && op.value != null) {
-                if (arr[idx]) {
-                    arr[idx] = { ...arr[idx], content: JSON.stringify(op.value), sendDate: op.value?.send_date ?? null };
-                }
-            }
-        }
-        return arr.map((r, i) => ({ ...r, floorNo: i + 1 })); // 行序即楼层号，重排后统一重编号
+    /** 模型写进容器 meta：本体 + 结构视图（branches/branchPaths 由模型派生，保持读路径一致） */
+    function applyModelToMeta(meta, model) {
+        meta.model = model;
+        meta.branches = (model.branches || []).map((b) => ({
+            id: b.id, name: b.name, is_default: Boolean(b.is_default),
+            fork_floor: b.fork_base ?? 0, parent_branch_id: null,
+        }));
+        const branchPaths = {};
+        for (const b of model.branches || []) branchPaths[b.id] = b.path || {};
+        meta.branchPaths = branchPaths;
+        return meta;
     }
 
     await warmupFromIndex();
@@ -281,18 +273,31 @@ export async function createOfficialAdapter(ctx) {
             return { ok: true, integrity: meta.integrity };
         },
 
-        async applyOps({ familyId, ops, expectedIntegrity }) {
+        /**
+         * 消息补丁（T0b）：投影 → 应用 → 按键写回，详见 `core/patch-rows.js`。
+         * model / hostMetadata 与行同一次写（宿主 patch 请求体里带的是整份 chat_metadata，
+         * 其中的走法模型与外来命名空间都必须一起落地，T0c）。
+         */
+        async applyOps({ familyId, ops, expectedIntegrity, model, hostMetadata }) {
             const raw = await loadFamilyRaw({ familyId });
             if (!raw) return { ok: false, reason: 'family-not-found' };
             if (expectedIntegrity != null && expectedIntegrity !== raw.family.integrity) {
                 return { ok: false, conflict: true };
             }
-            const rows = applyOpsToRows(raw.floorRows, ops);
+            const plan = planBodyPatch({
+                rows: raw.floorRows,
+                path: activePathOf(raw.family.model),
+                ops,
+                model: model || raw.family.model,
+            });
+            if (!plan.ok) return { ok: false, reason: plan.reason, detail: plan.detail };
+            const rows = applyRowWrites(raw.floorRows, plan.rows, plan.deletes);
             const meta = { ...raw.family, integrity: raw.family.integrity + 1 };
-            meta.branches = raw.family.branches; meta.branchPaths = raw.family.branchPaths;
+            if (hostMetadata !== undefined) meta.hostMetadata = hostMetadata;
+            applyModelToMeta(meta, plan.model || raw.family.model);
             await writeContainer(hiddenName(familyId), meta, rows);
             remember(assembleFamily(meta, rows));
-            return { ok: true, integrity: meta.integrity };
+            return { ok: true, integrity: meta.integrity, totalMessages: pathFloors(plan.path).length };
         },
 
         async saveModel({ familyId, model, hostMetadata, expectedIntegrity, keepCurrent }) {
@@ -305,15 +310,8 @@ export async function createOfficialAdapter(ctx) {
             // T0/R0：聊天头保留面落库（undefined = 本次不动它）
             if (hostMetadata !== undefined) meta.hostMetadata = hostMetadata;
             if (!keepCurrent && model) {
-                // 模型本体持久化 + 结构视图同步（branches/branchPaths 由模型派生，保持读路径一致）
-                meta.model = model;
-                meta.branches = (model.branches || []).map((b) => ({
-                    id: b.id, name: b.name, is_default: Boolean(b.is_default),
-                    fork_floor: b.fork_base ?? 0, parent_branch_id: null,
-                }));
-                const branchPaths = {};
-                for (const b of model.branches || []) branchPaths[b.id] = b.path || {};
-                meta.branchPaths = branchPaths;
+                // 模型本体持久化 + 结构视图同步
+                applyModelToMeta(meta, model);
             }
             await writeContainer(hiddenName(familyId), meta, raw.floorRows);
             remember(assembleFamily(meta, raw.floorRows));
