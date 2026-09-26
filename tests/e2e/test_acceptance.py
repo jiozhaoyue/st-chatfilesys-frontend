@@ -30,8 +30,8 @@ def scenario(r):
                           st["domMes"] == 5 and st["branches"] is not None, f"{st['chatLen']}/{st['domMes']}"))
 
     # ---------- 2 任意楼层分叉零复制 ----------
-    # R5：插件不再提供「新建走法」按钮（生产入口 = 宿主原生「创建分支 / 创建检查点」）；
-    # 测试需要精确楼层 → 数据层建走法后走 UI 切换（等价于已删除的「分叉并切换」）
+    # R5：插件不再提供「新建分支」按钮（生产入口 = 宿主原生「创建分支 / 创建检查点」）；
+    # 测试需要精确楼层 → 数据层建分支后走 UI 切换（等价于已删除的「分叉并切换」）
     nb = r.create_branch(3, name="分叉·F3")
     r.settle(800)
     r.ensure_active(nb)
@@ -88,8 +88,8 @@ def scenario(r):
     }}""") or {}
     results.append(report("验收4:切换最小写入（官方 API 移除批+追加批，无全量回退）", n_patch <= 2 and not has_full_save,
                           f"writes={writes} 耗时={switch_ms:.0f}ms"))
-    # 高亮的判据 = 结构树里 active 节点的 data-branch 等于当前走法 id（不拿节点文本当判据：
-    # 自动名走法（主分支 / 分支N / 分叉·FN）在 nodeLabel 里**只显示序号**，文本里不含原名）
+    # 高亮的判据 = 结构树里 active 节点的 data-branch 等于当前分支 id（不拿节点文本当判据：
+    # 自动名分支（主分支 / 分支N / 分叉·FN）在 nodeLabel 里**只显示序号**，文本里不含原名）
     results.append(report("验收4:结构树高亮正确", active_el.get("branch") == nb and bool(active_el.get("label")),
                           f"active={active_el} 期望={nb}"))
 
@@ -195,9 +195,9 @@ def scenario(r):
     # 版本按钮的出现条件 = **该层 swipe 组数 > 1**（R5/不变式 5）。
     # 2026-09-26 修正：这条断言原来写的是「该层仍是单组 → 不得出现版本按钮」，但**期望值本身错了**——
     # 本层的组数不是 1：验收5 在 vanilla 期间往 b1 续了第 6 层（U-vanilla-F6），而 b_main 的第 6 层
-    # 是另一份内容（U-U-main-F6），两条走法在第 6 层各占一个组 → 第 6 层**就是分叉点**。
+    # 是另一份内容（U-U-main-F6），两条分支在第 6 层各占一个组 → 第 6 层**就是分叉点**。
     # 真机取证（2026-09-26，本用例实跑时打印）：`swipeGroupsAt(model,6)` = ['g8','g9']，
-    # b_main.path[6]='g8' / b1.path[6]='g9'，两条走法都 6 层。故正确期望 = 出现版本按钮（1 个）。
+    # b_main.path[6]='g8' / b1.path[6]='g9'，两条分支都 6 层。故正确期望 = 出现版本按钮（1 个）。
     sw = r.js("""() => {
         const ctx = SillyTavern.getContext();
         const line = ctx.chat[5];
@@ -209,7 +209,7 @@ def scenario(r):
                           sw.get("swipes") == 2 and sw.get("swipeId") == 1
                           and sw.get("mes") == "swipe变体B" and sw.get("verBtns") == 1, str(sw)))
 
-    # 删除（全局重编号：位置 F6 同时离开两个走法）
+    # 删除（全局重编号：位置 F6 同时离开两个分支）
     # R5：删消息入口 = 宿主原生按钮，插件的删层动作已删除；测试按数据层同一条路径重放
     r.delete_floor(6)
     r.wait_state(lambda s: s["chatLen"] == 5, timeout=20000, desc="验收7 删层")

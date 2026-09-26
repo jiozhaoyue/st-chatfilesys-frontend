@@ -361,13 +361,13 @@ class Runner:
         return self
 
     def pick_branch(self, branch_id):
-        """在「当前聊天」页签的走法选择器里选中一条走法（= 管理按钮的作用对象）。
+        """在「当前聊天」页签的分支选择器里选中一条分支（= 管理按钮的作用对象）。
 
-        R5（2026-09-25）后「改名 / 删除走法 / AI 总结」三个按钮共用一个
+        R5（2026-09-25）后「改名 / 删除分支 / AI 总结」三个按钮共用一个
         `[data-role="branch-picker"]` 选择器，按钮上的 `data-branch` 跟随选择器的选中值
-        （`ui/popup.js#syncBranchRefs`）——所以不能直接按 `data-branch` 找特定走法的按钮，
-        必须先在选择器里选中目标走法。选择器只用于「选管理对象」，不负责切换走法
-        （切换走法是结构树上 `data-action="switch"` 的节点）。
+        （`ui/popup.js#syncBranchRefs`）——所以不能直接按 `data-branch` 找特定分支的按钮，
+        必须先在选择器里选中目标分支。选择器只用于「选管理对象」，不负责切换分支
+        （切换分支是结构树上 `data-action="switch"` 的节点）。
         """
         self.ensure_popup()
         n = self.js("""([sel, id]) => {
@@ -380,13 +380,13 @@ class Runner:
         }""", [f'{PANEL} [data-role="branch-picker"]', branch_id])
         self.pg.wait_for_timeout(150)
         if not n:
-            raise AssertionError(f"走法选择器里没有 {branch_id}（是否弹窗未打开/走法已删？）")
+            raise AssertionError(f"分支选择器里没有 {branch_id}（是否弹窗未打开/分支已删？）")
         return self
 
-    # ---------- 结构操作（R5 后插件不再提供「新建走法 / 删层」按钮，测试走数据层） ----------
+    # ---------- 结构操作（R5 后插件不再提供「新建分支 / 删层」按钮，测试走数据层） ----------
 
     def create_branch(self, floor, name=None, activate=False):
-        """建走法（数据层直建），返回新走法 id。
+        """建分支（数据层直建），返回新分支 id。
 
         R5（2026-09-25）后**生产路径的新建入口 = 宿主原生「创建分支 / 创建检查点」**
         （纯库/双写走 T1 接管，增强模式走原生书签收编）；插件不再提供任何新建按钮。

@@ -1,8 +1,8 @@
 /**
  * T4 单测：面板辅助纯函数（N5/N13/N15）
- * - 走法标签默认自动序号 / 自定义名附后
+ * - 分支标签默认自动序号 / 自定义名附后
  * - 摘要截断
- * - 拼出走法消息行（活跃走法在 body、非活跃走法在 groups 折叠区）
+ * - 拼出分支消息行（活跃分支在 body、非活跃分支在 groups 折叠区）
  * - 树布局方向（向下 / 向右）
  * - **该层 swipe 组列表 / 版本按钮计数**（R5 2026-09-25：版本按钮的唯一数据源）
  */
@@ -15,7 +15,7 @@ import { branchIdForKey } from '../../public/scripts/extensions/third-party/chat
 
 /* ---------------- 标签（N5/N13：默认自动序号） ---------------- */
 
-test('ui：走法标签默认自动序号，自定义名附在序号后', () => {
+test('ui：分支标签默认自动序号，自定义名附在序号后', () => {
     assert.equal(nodeLabel({ name: '主分支' }, 0), '#1');
     assert.equal(nodeLabel({ name: '分支2' }, 1), '#2');       // 插件自动命名 → 只显示序号
     assert.equal(nodeLabel({ name: '分叉·F3' }, 2), '#3');
@@ -35,7 +35,7 @@ test('ui：摘要截断到 24 字；空摘要不显示', () => {
     assert.ok(cut.endsWith('…'));
 });
 
-/* ---------------- 走法消息行拼接（摘要输入） ---------------- */
+/* ---------------- 分支消息行拼接（摘要输入） ---------------- */
 
 function model() {
     return {
@@ -49,13 +49,13 @@ function model() {
 }
 const CHAT = [{ mes: '一' }, { mes: '二' }];
 
-test('ui：拼走法行——活跃走法取 body，非活跃走法取 groups 折叠区', () => {
+test('ui：拼分支行——活跃分支取 body，非活跃分支取 groups 折叠区', () => {
     const m = model();
     assert.deepEqual(assembleBranchLines(m, CHAT, m.branches[0]), [{ mes: '一' }, { mes: '二' }]);
     assert.deepEqual(assembleBranchLines(m, CHAT, m.branches[1]), [{ mes: '一' }, { mes: '支线二' }]);
 });
 
-test('ui：拼走法行——多变体组取组内 active；缺口不外溢', () => {
+test('ui：拼分支行——多变体组取组内 active；缺口不外溢', () => {
     const m = model();
     m.groups.g7 = { id: 'g7', floor: 2, owner: 'b1', active: 1, variants: [{ mes: 'v0' }, { mes: 'v1' }] };
     assert.deepEqual(assembleBranchLines(m, CHAT, m.branches[1]), [{ mes: '一' }, { mes: 'v1' }]);
@@ -92,7 +92,7 @@ test('ui：树布局向下/向右——深度轴与兄弟轴互换', () => {
 
 /* ---------------- 该层 swipe 组（R5：版本按钮的唯一数据源） ---------------- */
 
-/** 两层走法 + 二层两组的家族（b_main 走 g1/g2，b1 走 g1/g7 → 第 2 层是分叉点） */
+/** 两层分支 + 二层两组的家族（b_main 走 g1/g2，b1 走 g1/g7 → 第 2 层是分叉点） */
 function forkModel() {
     return {
         active_branch: 'b_main',
@@ -104,13 +104,13 @@ function forkModel() {
     };
 }
 
-test('ui：swipeGroupsAt——组序 = 走法声明顺序，当前组标注 isActive', () => {
+test('ui：swipeGroupsAt——组序 = 分支声明顺序，当前组标注 isActive', () => {
     const m = forkModel();
     const g = swipeGroupsAt(m, 2, [{ mes: '一二' }, { mes: '主线二' }]);
     assert.equal(g.length, 2, '第 2 层两个组');
     assert.deepEqual(g.map((x) => x.gid), ['g2', 'g7']);
     assert.deepEqual(g.map((x) => x.isActive), [true, false]);
-    // 共享组的归属：两条走法都列在 g1 上
+    // 共享组的归属：两条分支都列在 g1 上
     const g1 = swipeGroupsAt(m, 1, [{ mes: '一' }]);
     assert.equal(g1.length, 1);
     assert.deepEqual(g1[0].branchIds, ['b_main', 'b1']);
@@ -145,7 +145,7 @@ test('ui：versionButtonLabel——组数 ≤ 1 → 空串（该消息上零插�
     assert.equal(versionButtonLabel(null, 2, []), '');
 });
 
-test('ui：versionButtonLabel——切到第二条走法后当前组序号随之变化', () => {
+test('ui：versionButtonLabel——切到第二条分支后当前组序号随之变化', () => {
     const m = forkModel();
     m.active_branch = 'b1';
     // b1 为活跃时 g7 进 body（当前组），g2 折叠

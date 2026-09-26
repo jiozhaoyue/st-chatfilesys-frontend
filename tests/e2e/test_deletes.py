@@ -21,7 +21,7 @@ def build_family(r, floors):
     st = r.state()
     assert st["chatLen"] == floors, f"造楼失败: {st['chatLen']} != {floors}"
     # F3 分叉（b1 激活，body 折叠到 3 层）
-    # R5：插件不再提供「新建走法」按钮（生产入口 = 宿主原生「创建分支 / 创建检查点」）
+    # R5：插件不再提供「新建分支」按钮（生产入口 = 宿主原生「创建分支 / 创建检查点」）
     nb = r.create_branch(3, name="分叉·F3")
     r.settle(800)
     r.ensure_active(nb)
@@ -94,15 +94,15 @@ def scenario_delete_branch(r):
     build_family(r, 5)
     back_to_main(r)
 
-    # 默认分支不可删：R5 后「删除走法」只有一个按钮，作用对象 = 走法选择器选中的那条
-    #（旧 UI 是每条走法各带一个按钮、默认走法不渲染 → 那条断言随旧实现一并废除）
+    # 默认分支不可删：R5 后「删除分支」只有一个按钮，作用对象 = 分支选择器选中的那条
+    #（旧 UI 是每条分支各带一个按钮、默认分支不渲染 → 那条断言随旧实现一并废除）
     r.pick_branch("b_main")
     r.click_action("delete-branch", branch="b_main")
     r.popup_ok()
     err_default = r.toastr_error()
     r.settle(800)
     st_default = r.state()
-    results.append(report("删分支:默认分支点删除被拒（toastr 错误 + 走法数不变）",
+    results.append(report("删分支:默认分支点删除被拒（toastr 错误 + 分支数不变）",
                           bool(err_default) and "默认分支" in str(err_default) and len(st_default["branches"]) == 2,
                           f"toast={err_default} branches={len(st_default['branches'])}"))
 
@@ -129,7 +129,7 @@ def scenario_delete_branch_guard(r):
     build_family(r, 5)  # 分叉后 b1 即活跃
     st0 = r.state()
 
-    r.pick_branch("b1")   # R5：管理按钮的作用对象 = 走法选择器选中的那条
+    r.pick_branch("b1")   # R5：管理按钮的作用对象 = 分支选择器选中的那条
     r.click_action("delete-branch", branch="b1")
     r.popup_ok()
     err = r.toastr_error()

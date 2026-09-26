@@ -35,7 +35,7 @@ export function isPureLike(mode) {
     return normMode(mode) === 'pure' || normMode(mode) === 'mirror';
 }
 
-/** 是否双写（额外把当前走法落成标准聊天文件） */
+/** 是否双写（额外把当前分支落成标准聊天文件） */
 export function isMirror(mode) {
     return normMode(mode) === 'mirror';
 }

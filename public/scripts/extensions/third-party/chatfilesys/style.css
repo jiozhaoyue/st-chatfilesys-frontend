@@ -113,7 +113,7 @@
     background: rgba(88, 166, 255, .08);
 }
 
-/* ---------- SVG 结构树（只显结构：序号 / 走法名 + 层数） ---------- */
+/* ---------- SVG 结构树（只显结构：序号 / 分支名 + 层数） ---------- */
 
 .chatfilesys-popup .chatfilesys-tree-host {
     margin-bottom: 8px;

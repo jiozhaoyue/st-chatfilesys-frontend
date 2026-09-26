@@ -83,7 +83,7 @@ def main():
                 r.settle(650)
             r.wait_state(lambda s: s["chatLen"] == 5, desc="造楼")
 
-            # 第 3 层后分叉 → 两条走法；再让新走法续一层 → F4 成为多组层（版本按钮出现处）
+            # 第 3 层后分叉 → 两条分支；再让新分支续一层 → F4 成为多组层（版本按钮出现处）
             nb = r.create_branch(3, name="分叉·F3")
             r.settle(800)
             try:
@@ -92,7 +92,7 @@ def main():
                 r.settle(900)
                 r.ensure_active("b_main")
             except Exception as e:
-                print("  [warn] 走法切换失败（不影响截图）:", e)
+                print("  [warn] 分支切换失败（不影响截图）:", e)
             r.close_popup()
             r.settle(600)
 

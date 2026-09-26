@@ -6,7 +6,7 @@
   ② **自动落盘**：经接缝写一次（append）→ 1.5 秒防抖到点 → 磁盘上出现标准聊天文件
      - 文件可被原生读回（`/api/chats/get`）
      - header **不带**本插件模型（`extensions.chatfilesys` 不存在）——否则会被误认成增强模式文件
-     - 正文 = 库里当前走法的投影（逐行一致）
+     - 正文 = 库里当前分支的投影（逐行一致）
   ③ **库为准**：直接改库（不经接缝）→ 文件暂时落后（`state.pending` 由接缝写触发；此处直改库不标脏）
      → 「与库同步一次」（`exportByChatKey`）→ 文件与库重新一致
   ④ **反向不采纳**：手工把磁盘文件改成别的内容 → 经接缝读 `chats/get` 必须仍是**库**内容
@@ -119,7 +119,7 @@ STEPS = """async (extSrc) => {
             + ' last=' + JSON.stringify(out.__fileLastMes) + ' writeCount=' + mirror.state.writeCount
             + ' error=' + mirror.state.lastError);
 
-        // 文件正文 == 库里当前走法的投影（逐行）
+        // 文件正文 == 库里当前分支的投影（逐行）
         const libArr = await seamGet(target.chat);
         out.__fileEqualsLib = JSON.stringify(fileArr.slice(1)) === JSON.stringify(libArr.slice(1));
         log('file == library projection: ' + out.__fileEqualsLib);

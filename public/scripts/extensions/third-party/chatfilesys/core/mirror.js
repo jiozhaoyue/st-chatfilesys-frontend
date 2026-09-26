@@ -36,7 +36,7 @@ export function buildMirrorSave(family, floors) {
     const meta = { ...(family?.hostMetadata && typeof family.hostMetadata === 'object' ? family.hostMetadata : {}) };
     if (family?.integrity != null) meta.integrity = family.integrity;
     const header = { user_name: 'unused', character_name: 'unused', chat_metadata: meta };
-    // 主文件 = 主键所在走法的投影（根聊天）；原生分支/检查点键各有各的绑定，不落文件
+    // 主文件 = 主键所在分支的投影（根聊天）；原生分支/检查点键各有各的绑定，不落文件
     const branchId = branchIdForKey(family, family.chatKey);
     const branch = family?.model?.branches?.find((b) => b.id === branchId);
     const rows = projectionOf(branch?.path, floors);
@@ -102,7 +102,7 @@ export function createMirror(deps) {
     }
 
     /**
-     * 把某个家族当前走法落成标准聊天文件（单家族；失败只记状态不抛）。
+     * 把某个家族当前分支落成标准聊天文件（单家族；失败只记状态不抛）。
      * @returns {{ok: boolean, reason?: string}}
      */
     async function exportFamily(familyId) {

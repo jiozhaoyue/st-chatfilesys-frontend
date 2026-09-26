@@ -67,10 +67,10 @@ test('mirror：落盘体是标准聊天文件——header 带宿主字段、**�
     assert.equal(meta.integrity, 'c-9');
     assert.equal('chatfilesys' in meta.extensions, false, '副本不得带本插件模型（否则会被误认成增强模式）');
     assert.equal(meta.main_chat, undefined, '键级 main_chat 不落到主文件');
-    assert.deepEqual(body.chat.slice(1), [{ mes: '一' }, { mes: '二' }], '正文 = 主键所在走法的投影');
+    assert.deepEqual(body.chat.slice(1), [{ mes: '一' }, { mes: '二' }], '正文 = 主键所在分支的投影');
 });
 
-test('mirror：主键走法变短时正文跟着变短（副本永远等于当前走法）', () => {
+test('mirror：主键分支变短时正文跟着变短（副本永远等于当前分支）', () => {
     const fam = family();
     fam.model.branches.find((b) => b.id === 'b_main').path = { 1: 'g1' };
     const body = buildMirrorSave(fam, floors);

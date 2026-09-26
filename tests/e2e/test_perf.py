@@ -65,7 +65,7 @@ def main():
             print(f"register 100 floors: {reg_ms:.0f}ms")
 
             # F50 中段分叉（折叠 50 层尾部）
-            # R5：插件不再提供「新建走法」按钮（生产入口 = 宿主原生「创建分支 / 创建检查点」）
+            # R5：插件不再提供「新建分支」按钮（生产入口 = 宿主原生「创建分支 / 创建检查点」）
             r.pg.on("request", on_req)
             t0 = time.time()
             nb = r.create_branch(50, name="分叉·F50")

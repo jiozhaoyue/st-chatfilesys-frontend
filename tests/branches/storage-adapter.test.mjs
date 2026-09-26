@@ -330,7 +330,7 @@ test('档2：saveModel 携带 hostMetadata → 容器元数据往返不丢（T0/
 
 /* ---------------- applyOps（T0b）：三档共用 patch-rows 语义 ---------------- */
 
-/** 档1/档2 共用的两走法家族种子（主分支 3 层；支线 b1 共享 1 层 + 私有 g7@g2） */
+/** 档1/档2 共用的两分支家族种子（主分支 3 层；支线 b1 共享 1 层 + 私有 g7@g2） */
 function seedTwoBranches(db) {
     db.families.push({
         id: 'f1', chat_key: 'av1::chat1', character_id: 'c1', name: 'chat1', integrity: 1, created_at: 1, updated_at: 1,
@@ -384,7 +384,7 @@ test('档1：applyOps 字段级补丁落库 + 聊天头与行同次写（T0b/T0c
     assert.deepEqual(JSON.parse(floors[0].content).extra, { 'third-party/probe': { n: 42 } });
 });
 
-test('档1：applyOps 删层 → 行按键删除 + 走法前移（非活跃走法旧键行一并重写）', async () => {
+test('档1：applyOps 删层 → 行按键删除 + 分支前移（非活跃分支旧键行一并重写）', async () => {
     const { client, db } = mockSqlClient();
     seedTwoBranches(db);
     const adapter = await createAuthorityAdapter({ authorityClient: client });
@@ -401,12 +401,12 @@ test('档1：applyOps 删层 → 行按键删除 + 走法前移（非活跃走�
     assert.deepEqual(f.model.branches.find((b) => b.id === 'b1').path, { 1: 'g7' });
 });
 
-test('档1：applyOps 传 branchId → 按该走法投影（改的是它的变体行，不是活跃走法的）', async () => {
+test('档1：applyOps 传 branchId → 按该分支投影（改的是它的变体行，不是活跃分支的）', async () => {
     const { client, db } = mockSqlClient();
     seedTwoBranches(db); // b_main={1:g1,2:g2,3:g3}；b1={1:g1,2:g7}（g7 = 支线二，折叠组）
     const adapter = await createAuthorityAdapter({ authorityClient: client });
     // 以支线 b1（path={1:g1,2:g7}）为投影基准：1 号元素 = 2#g7；
-    // 活跃走法 b_main（path={1:g1,2:g2,3:g3}）的 1 号元素 = 2#g2 —— 投影基准不同，落点就不同
+    // 活跃分支 b_main（path={1:g1,2:g2,3:g3}）的 1 号元素 = 2#g2 —— 投影基准不同，落点就不同
     const r = await adapter.applyOps({
         familyId: 'f1',
         branchId: 'b1',
@@ -420,7 +420,7 @@ test('档1：applyOps 传 branchId → 按该走法投影（改的是它的变�
         return JSON.parse(row.content);
     };
     assert.equal(rowAt(2, 'g7').mes, '支线改过', '改的是支线自己的变体行');
-    assert.equal(rowAt(2, 'g2').mes, '二', '活跃走法的行不受影响');
+    assert.equal(rowAt(2, 'g2').mes, '二', '活跃分支的行不受影响');
 });
 
 test('档1：applyOps test 不通过 → {ok:false, reason:test-failed} 且不写', async () => {

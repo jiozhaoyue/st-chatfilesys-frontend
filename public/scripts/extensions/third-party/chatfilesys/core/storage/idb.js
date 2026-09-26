@@ -64,7 +64,7 @@ function assembleFamily(meta) {
         name: meta.name, integrity: meta.integrity ?? 1,
         // T0/R0：聊天头保留面（宿主与其他插件写入的内容），读时由 seam 整份回显
         hostMetadata: meta.hostMetadata ?? null,
-        // T1：聊天键 → 走法绑定（原生分支/检查点键各自代表一条走法）
+        // T1：聊天键 → 分支绑定（原生分支/检查点键各自代表一条分支）
         keyBindings: meta.keyBindings ?? {},
         branches, branchPaths, model,
     };

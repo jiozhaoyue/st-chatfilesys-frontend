@@ -91,7 +91,7 @@ function parentFamily() {
 }
 const PARENT_CONTENTS = [P({ mes: '一' }), P({ mes: '二' }), P({ mes: '三' })];
 
-test('takeover：分支——建走法（零复制、共享前缀）+ 键绑定两条（父键与新键）', () => {
+test('takeover：分支——建分支（零复制、共享前缀）+ 键绑定两条（父键与新键）', () => {
     const plan = planTakeover({
         kind: 'branch',
         rows: [{ mes: '一' }, { mes: '二' }],
@@ -109,17 +109,17 @@ test('takeover：分支——建走法（零复制、共享前缀）+ 键绑定�
     assert.equal(added.name, '我的聊天 - Branch #1');
     assert.equal(added.fork_base, 2);
     assert.deepEqual(added.path, { 1: 'g1', 2: 'g2' }); // 共享前缀、零复制
-    assert.equal(plan.model.groups.g1, undefined, '不得把父走法的组搬进 groups');
+    assert.equal(plan.model.groups.g1, undefined, '不得把父分支的组搬进 groups');
     // 关键取舍：接管不改 active_branch（否则父键投影会只剩截断前缀）
     assert.equal(plan.model.active_branch, 'b_main');
-    // 只给新键建绑定：父键继续按 active_branch 解析（UI 的「切换走法」才不会被死绑定挡住）
+    // 只给新键建绑定：父键继续按 active_branch 解析（UI 的「切换分支」才不会被死绑定挡住）
     assert.deepEqual(plan.keyBindings, {
         'av::main - branch #1': { branchId: plan.branchId, mainChat: 'chat1' },
     });
     assert.equal(plan.keyBindings['av::main'], undefined);
 });
 
-test('takeover：检查点——同样建走法，但带旗标标记且不切换（父键仍指向原走法）', () => {
+test('takeover：检查点——同样建分支，但带旗标标记且不切换（父键仍指向原分支）', () => {
     const plan = planTakeover({
         kind: 'checkpoint',
         rows: [{ mes: '一' }],
@@ -142,7 +142,7 @@ test('takeover：检查点——同样建走法，但带旗标标记且不切换
         { branchId: plan.branchId, mainChat: 'chat1', isCheckpoint: true, markerFloor: 1 });
 });
 
-test('takeover：从「支线键」分叉时以该键所在走法为源（不误用 active_branch）', () => {
+test('takeover：从「支线键」分叉时以该键所在分支为源（不误用 active_branch）', () => {
     const fam = parentFamily();
     fam.keyBindings = { 'av::b1key': { branchId: 'b1' } };
     const plan = planTakeover({
@@ -189,7 +189,7 @@ test('takeover：planTakeover 不改动传入的父模型（纯函数）', () =>
     assert.equal(JSON.stringify(fam.model), snapshot);
 });
 
-test('takeover：branchIdForKey——键绑定优先，无绑定回落活跃走法', () => {
+test('takeover：branchIdForKey——键绑定优先，无绑定回落活跃分支', () => {
     const fam = parentFamily();
     assert.equal(branchIdForKey(fam, 'av::main'), 'b_main'); // 无绑定 → active_branch
     fam.keyBindings = { 'av::main': { branchId: 'b1' } };

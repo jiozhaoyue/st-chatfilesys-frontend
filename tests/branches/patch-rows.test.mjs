@@ -20,7 +20,7 @@ function mkRows(entries) {
     }));
 }
 
-/** 模型：[[走法 id, path], …] + 活跃走法 */
+/** 模型：[[分支 id, path], …] + 活跃分支 */
 function mkModel(branches, active, groups = {}) {
     return {
         active_branch: active,
@@ -93,7 +93,7 @@ test('patch-rows：整行 test + replace（宿主编辑消息 / swipe 的真机�
     assert.deepEqual(JSON.parse(row.content), after);
 });
 
-test('patch-rows：删除楼层 → 全局删层（所有走法前移、被删行进 deletes、折叠组楼层前移）', () => {
+test('patch-rows：删除楼层 → 全局删层（所有分支前移、被删行进 deletes、折叠组楼层前移）', () => {
     const rows = mkRows([
         [1, 'g1', line('一')],
         [2, 'g2', line('二')],
@@ -144,7 +144,7 @@ test('patch-rows：追加采用入向模型已登记的变体号（本扩展 syn
     assert.deepEqual(r.path, { 1: 'g1', 2: 'g2', 3: 'g3', 4: 'g9' });
 });
 
-test('patch-rows：走法切换（删尾段 + 加目标走法行）→ 重投影，其他走法原样保留', () => {
+test('patch-rows：分支切换（删尾段 + 加目标分支行）→ 重投影，其他分支原样保留', () => {
     // 主分支 1..3；支线 b1 与主分支共享 1..2，第 3 层是自己的 g4
     const rows = mkRows([
         [1, 'g1', line('一')],
@@ -161,13 +161,13 @@ test('patch-rows：走法切换（删尾段 + 加目标走法行）→ 重投影
         ops: [{ op: 'remove', path: '/2' }, { op: 'add', path: '/2', value: line('支三') }],
     });
     assert.equal(r.ok, true);
-    assert.deepEqual(r.path, { 1: 'g1', 2: 'g2', 3: 'g4' }); // 采用目标走法的变体
-    assert.deepEqual(r.model.branches.find((b) => b.id === 'b_main').path, { 1: 'g1', 2: 'g2', 3: 'g3' }); // 旧走法不动
-    assert.deepEqual(r.deletes, []); // g3 行保留（非活跃走法仍引用）
+    assert.deepEqual(r.path, { 1: 'g1', 2: 'g2', 3: 'g4' }); // 采用目标分支的变体
+    assert.deepEqual(r.model.branches.find((b) => b.id === 'b_main').path, { 1: 'g1', 2: 'g2', 3: 'g3' }); // 旧分支不动
+    assert.deepEqual(r.deletes, []); // g3 行保留（非活跃分支仍引用）
     assert.equal(r.rows.find((x) => x.variantId === 'g4').floorNo, 3);
 });
 
-test('patch-rows：切到更短走法（纯 remove）→ 重投影而非全局删层', () => {
+test('patch-rows：切到更短分支（纯 remove）→ 重投影而非全局删层', () => {
     const rows = mkRows([
         [1, 'g1', line('一')],
         [2, 'g2', line('二')],

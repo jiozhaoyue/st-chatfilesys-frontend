@@ -6,11 +6,11 @@
   ② 打开角色（宿主 chats/get 被接缝拦截 → 渲染库内楼层）
   ③ **原生「创建分支」**：点消息上的宿主按钮（`Branch: Start alternate story path`）
      - 磁盘**零新 jsonl**（`/api/chats/search` 前后文件列表一致）
-     - 库内多出一条走法（fork_base = 点击层数、path = 父走法前缀，零复制）
+     - 库内多出一条分支（fork_base = 点击层数、path = 父分支前缀，零复制）
      - 键绑定登记新键 + mainChat（AC11 的驱动源）
      - 宿主切过去后看到的是**截断快照**（DOM 楼层数 = 该层数）
   ④ **原生「创建检查点」**：点旗格按钮（`Checkpoint: Create story checkpoint`），弹窗输入**自定义名**
-     - 磁盘零新 jsonl；库内多出一条走法且带 `is_checkpoint` / `marker_floor`
+     - 磁盘零新 jsonl；库内多出一条分支且带 `is_checkpoint` / `marker_floor`
      - **不切换**（宿主仍留在原聊天）
   ⑤ **导航**：点消息上的旗标 → 打开检查点聊天 → 看到「到该层为止」的快照（Q2=A）
      - `chat_metadata.main_chat` 按键回显（检查点键有、根键没有）

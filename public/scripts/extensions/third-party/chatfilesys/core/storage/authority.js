@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS branch_paths (
                 migrations: [{ id: '003_host_metadata', statement: 'ALTER TABLE families ADD COLUMN host_metadata TEXT;' }],
             });
         } catch { /* 列已存在 */ }
-        // 004：键绑定列（T1：原生分支/检查点键 → 走法；JSON 文本）
+        // 004：键绑定列（T1：原生分支/检查点键 → 分支；JSON 文本）
         // 版本号列形态说明：integrity 原为 INTEGER，N19 后写字符串。SQLite 动态类型按值存，
         // 非数字串（c-…）原样存为 TEXT，故不做列类型重建；早期数字行由 normIntegrity 归一后比较。
         try {
@@ -174,7 +174,7 @@ CREATE TABLE IF NOT EXISTS branch_paths (
         // T0/R0：聊天头保留面（宿主与其他插件写入的内容），读时由 seam 整份回显
         let hostMetadata = null;
         try { hostMetadata = f.host_metadata ? JSON.parse(f.host_metadata) : null; } catch { hostMetadata = null; }
-        // T1：聊天键 → 走法绑定
+        // T1：聊天键 → 分支绑定
         let keyBindings = {};
         try { keyBindings = f.key_bindings ? JSON.parse(f.key_bindings) : {}; } catch { keyBindings = {}; }
         return {

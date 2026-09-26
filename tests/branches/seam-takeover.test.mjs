@@ -78,7 +78,7 @@ function nativeSaveBody({ fileName, mainChat, rows }) {
 
 const ROWS = [{ name: '我', is_user: true, mes: '一' }, { name: 'AI', is_user: false, mes: '二' }];
 
-test('seam/接管：原生分支 → 库内新走法 + 键绑定，且不落磁盘、不写楼层', async () => {
+test('seam/接管：原生分支 → 库内新分支 + 键绑定，且不落磁盘、不写楼层', async () => {
     const adapter = mockAdapter();
     const { seam, original, nativeCalls } = setup(adapter);
     try {
@@ -94,7 +94,7 @@ test('seam/接管：原生分支 → 库内新走法 + 键绑定，且不落磁�
         assert.equal(adapter.calls.saveFloors, 0, '快照行本就在库内（零复制），不写楼层');
         const args = adapter.lastSaveModelArgs;
         const added = args.model.branches.find((b) => b.name === 'chat1 - Branch #1');
-        assert.ok(added, '应新增一条走法');
+        assert.ok(added, '应新增一条分支');
         assert.deepEqual(added.path, { 1: 'g1', 2: 'g2' });
         assert.equal(args.model.active_branch, 'b_main', '接管不改 active_branch（父键投影不能被截断）');
         // 只给新键建绑定（main_chat 按键存，供「返回父聊天」用）
@@ -132,7 +132,7 @@ test('seam/接管：原生检查点（用户自定义名）→ 带旗标、不�
     }
 });
 
-test('seam/接管：内容不是父走法前缀 → 不接管，透传原生（保守闸门）', async () => {
+test('seam/接管：内容不是父分支前缀 → 不接管，透传原生（保守闸门）', async () => {
     const adapter = mockAdapter();
     const { seam, original, nativeCalls } = setup(adapter);
     try {
@@ -199,7 +199,7 @@ test('seam/键绑定：读投影按键决定——检查点键看到截断快照
     }
 });
 
-test('seam/键绑定：在某个键上切换走法 → 该键绑定跟随重指向', async () => {
+test('seam/键绑定：在某个键上切换分支 → 该键绑定跟随重指向', async () => {
     const adapter = mockAdapter({ keyBindings: { 'av1::chat1': { branchId: 'b_main' } } });
     const { seam, original } = setup(adapter);
     try {
@@ -217,7 +217,7 @@ test('seam/键绑定：在某个键上切换走法 → 该键绑定跟随重指�
     }
 });
 
-test('seam/键绑定：append 在新键上 → 楼层续接该键所在走法（不是 active_branch）', async () => {
+test('seam/键绑定：append 在新键上 → 楼层续接该键所在分支（不是 active_branch）', async () => {
     const adapter = mockAdapter({ keyBindings: { 'av1::打斗之前': { branchId: 'b_cp' } } });
     const { seam, original } = setup(adapter);
     try {
@@ -300,7 +300,7 @@ test('seam/接管：绑定键的写不得把 main_chat 混进家族级（根键�
     }
 });
 
-test('seam/键绑定：patch 的投影基准 = 本次键所在走法（否则分支聊天里改消息会写错行）', async () => {
+test('seam/键绑定：patch 的投影基准 = 本次键所在分支（否则分支聊天里改消息会写错行）', async () => {
     const adapter = mockAdapter({ keyBindings: { 'av1::打斗之前': { branchId: 'b_cp' } } });
     const { seam, original } = setup(adapter);
     try {
@@ -311,8 +311,8 @@ test('seam/键绑定：patch 的投影基准 = 本次键所在走法（否则分
                 operations: [{ op: 'test', path: '/0', value: { mes: '一' } }, { op: 'replace', path: '/0', value: { mes: '改过' } }],
             }),
         });
-        assert.equal(adapter.lastSaveModelArgs.branchId, 'b_cp', '投影基准必须是该键所在走法');
-        // 根键（无绑定）→ 走活跃走法
+        assert.equal(adapter.lastSaveModelArgs.branchId, 'b_cp', '投影基准必须是该键所在分支');
+        // 根键（无绑定）→ 走活跃分支
         await globalThis.fetch('/api/chats/patch', {
             method: 'POST',
             body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1', integrity: 'c-5', operations: [{ op: 'remove', path: '/1' }] }),
@@ -324,7 +324,7 @@ test('seam/键绑定：patch 的投影基准 = 本次键所在走法（否则分
     }
 });
 
-test('seam/键绑定：绑定键上的走法切换不动家族 active_branch（根键投影不被带跑）', async () => {
+test('seam/键绑定：绑定键上的分支切换不动家族 active_branch（根键投影不被带跑）', async () => {
     const adapter = mockAdapter({ keyBindings: { 'av1::打斗之前': { branchId: 'b_cp' } } });
     const { seam, original } = setup(adapter);
     const incoming = {
@@ -346,7 +346,7 @@ test('seam/键绑定：绑定键上的走法切换不动家族 active_branch（�
             }),
         });
         const args = adapter.lastSaveModelArgs;
-        assert.equal(args.model.active_branch, 'b_main', '家族活跃走法不得被绑定键上的切换带跑');
+        assert.equal(args.model.active_branch, 'b_main', '家族活跃分支不得被绑定键上的切换带跑');
         // W6：投影基准与结构收敛目标是**两件事**——ops 的下标是对着「切换前本键的 body」算的，
         // 故 `branchId` = 本键当前所在分支；`targetBranchId` = 入向声明的目标分支（结构按它收敛）。
         assert.equal(args.branchId, 'b_cp', '投影基准 = 本键当前所在分支（切换前那条）');
@@ -364,7 +364,7 @@ test('seam/键绑定：绑定键上的走法切换不动家族 active_branch（�
             }),
         });
         assert.equal(adapter.lastSaveModelArgs.model.active_branch, 'b_new');
-        assert.equal(adapter.lastSaveModelArgs.branchId, 'b_main', '根键的 body = 家族活跃走法的投影（切换前）');
+        assert.equal(adapter.lastSaveModelArgs.branchId, 'b_main', '根键的 body = 家族活跃分支的投影（切换前）');
         assert.equal(adapter.lastSaveModelArgs.targetBranchId, 'b_new');
     } finally {
         seam.dispose();

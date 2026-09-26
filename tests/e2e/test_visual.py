@@ -77,7 +77,7 @@ def main():
             open_inner_drawer(r)
             shot(r, "03_main_5floors.png")
 
-            # 分叉 → 版本按钮 + 双走法（R5：插件不提供新建按钮，数据层建走法）
+            # 分叉 → 版本按钮 + 双分支（R5：插件不提供新建按钮，数据层建分支）
             nb = r.create_branch(3, name="分叉·F3")
             r.settle(800)
             r.ensure_active("b_main")
@@ -94,7 +94,7 @@ def main():
             r.settle(800)
 
             # 导出按钮 + 自动导出行(已在面板里),再来一张重命名弹窗
-            #（R5：改名按钮的作用对象 = 走法选择器选中的那条 → 先选再点）
+            #（R5：改名按钮的作用对象 = 分支选择器选中的那条 → 先选再点）
             r.pick_branch(nb)
             r.click_action("rename", branch=nb)
             r.settle(600)

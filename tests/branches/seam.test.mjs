@@ -207,15 +207,15 @@ test('seam：append → saveFloors 参数正确（floorNo 续接活跃分支 max
 });
 
 /**
- * W3/T1 回归（2026-09-26）：新楼层的变体号**不得**用「g<楼层号>」——同一楼层上别的走法
- * 可能已经占用了那个名字（根走法第 3 层就是 g3），复用会把别人的行 upsert 覆盖掉
+ * W3/T1 回归（2026-09-26）：新楼层的变体号**不得**用「g<楼层号>」——同一楼层上别的分支
+ * 可能已经占用了那个名字（根分支第 3 层就是 g3），复用会把别人的行 upsert 覆盖掉
  * （真机旅程：打开原生创建的分支键发一条消息 → 根聊天第 3 条消息被这条新消息顶掉）。
- * 正确规则 = 优先沿用本次走法已声明的变体，未声明才分配 g<max+1>（与内存模型同源）。
+ * 正确规则 = 优先沿用本次分支已声明的变体，未声明才分配 g<max+1>（与内存模型同源）。
  */
-test('seam：在绑定键上 append → 新楼层的变体号不复用别的走法在同层的号', async () => {
+test('seam：在绑定键上 append → 新楼层的变体号不复用别的分支在同层的号', async () => {
     const original = globalThis.fetch;
     const adapter = mockAdapter();
-    // 根走法 3 层（g1/g2/g3）；原生分支键 b1 分叉于第 2 层（共享 g1/g2）
+    // 根分支 3 层（g1/g2/g3）；原生分支键 b1 分叉于第 2 层（共享 g1/g2）
     adapter.family.keyBindings = { 'av1::chat1 - branch #1': { branchId: 'b1', mainChat: 'chat1' } };
     adapter.family.model = {
         active_branch: 'b_main',
@@ -238,8 +238,8 @@ test('seam：在绑定键上 append → 新楼层的变体号不复用别的走�
         });
         assert.equal((await res.json()).appended, 1);
         assert.equal(captured.floors.length, 1);
-        assert.equal(captured.floors[0].floorNo, 3, '续接本键所在走法的 maxFloor=2');
-        assert.equal(captured.floors[0].variantId, 'g4', '旧写法给 g3 —— 那是根走法第 3 层的行，会被覆盖');
+        assert.equal(captured.floors[0].floorNo, 3, '续接本键所在分支的 maxFloor=2');
+        assert.equal(captured.floors[0].variantId, 'g4', '旧写法给 g3 —— 那是根分支第 3 层的行，会被覆盖');
         assert.notEqual(captured.floors[0].variantId, adapter.family.model.branches[0].path[3]);
     } finally {
         seam.dispose();
@@ -247,7 +247,7 @@ test('seam：在绑定键上 append → 新楼层的变体号不复用别的走�
     }
 });
 
-test('seam：全量保存（宿主 patch 失败后的回退路径）新楼层也不撞别的走法', async () => {
+test('seam：全量保存（宿主 patch 失败后的回退路径）新楼层也不撞别的分支', async () => {
     const original = globalThis.fetch;
     const adapter = mockAdapter();
     adapter.family.keyBindings = { 'av1::chat1 - branch #1': { branchId: 'b1', mainChat: 'chat1' } };
@@ -272,7 +272,7 @@ test('seam：全量保存（宿主 patch 失败后的回退路径）新楼层也
         });
         assert.deepEqual(captured.floors.map((f) => [f.floorNo, f.variantId]),
             [[1, 'g1'], [2, 'g2'], [3, 'g4']],
-            '已声明的楼层沿用该走法的变体号；新楼层分配 g<max+1>（g3 是根走法第 3 层的行）');
+            '已声明的楼层沿用该分支的变体号；新楼层分配 g<max+1>（g3 是根分支第 3 层的行）');
     } finally {
         seam.dispose();
         globalThis.fetch = original;
@@ -336,7 +336,7 @@ test('seam：patch 请求体带的聊天头并入落库（T0c：宿主 patch 常
     }
 });
 
-test('seam：patch 只在「走法切换」时让入向模型决定结构（旧副本不盖库内结构）', async () => {
+test('seam：patch 只在「分支切换」时让入向模型决定结构（旧副本不盖库内结构）', async () => {
     const original = globalThis.fetch;
     const adapter = mockAdapter();
     const seen = [];
@@ -348,7 +348,7 @@ test('seam：patch 只在「走法切换」时让入向模型决定结构（旧�
         groups: {},
     });
     try {
-        // ① 入向模型与库内同走法（普通消息写）→ 不采用入向模型（可能是旧副本）
+        // ① 入向模型与库内同分支（普通消息写）→ 不采用入向模型（可能是旧副本）
         await globalThis.fetch('/api/chats/patch', {
             method: 'POST',
             body: JSON.stringify({
@@ -358,7 +358,7 @@ test('seam：patch 只在「走法切换」时让入向模型决定结构（旧�
             }),
         });
         assert.equal(seen[0], undefined);
-        // ② 入向模型换了活跃走法 → 采用（重投影需要目标走法）
+        // ② 入向模型换了活跃分支 → 采用（重投影需要目标分支）
         await globalThis.fetch('/api/chats/patch', {
             method: 'POST',
             body: JSON.stringify({

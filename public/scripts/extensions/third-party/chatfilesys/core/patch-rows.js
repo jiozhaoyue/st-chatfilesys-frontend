@@ -9,16 +9,16 @@
  * 旧实现（三档各写一份窄正则 `^\/?(?:chat\/)?(\d+)$`）只认整行 `/N`，
  * **字段级 `/N/field` 直接跳过** → 插件写进消息里的自定义内容在纯库模式下静默丢失。
  *
- * 关键不对齐：ops 打在**按活跃走法投影出来的 body 数组**上（宿主看到的那一份），
+ * 关键不对齐：ops 打在**按活跃分支投影出来的 body 数组**上（宿主看到的那一份），
  * 而库内是**含非活跃变体的行表**（`floorNo × variantId`）——两者索引对不齐。
  * 本模块负责一次完整往返：`投影 → 应用 → 按键写回`。
  *
  * 语义（对齐宿主服务端 `src/endpoints/chats.js` 的 `/patch`）：
  * - ops 全程作用在**消息数组**上（元素级 `/N` 与字段级 `/N/…` 混排），失败即整批不写
  * - `test` 不通过 → `test-failed`（seam 映射为 409，宿主走它自己的冲突重放）
- * - 楼层消失 = **全局删层**（与 `deleteFloorEverywhere` 同语义：所有走法失去该层、后续前移）
- * - 中间插入新楼层 = 模型无法表达（其他走法在该位置无内容）→ 拒绝，宿主会自行回退全量保存
- * - 走法切换 = **重投影**：ops 结果与目标走法逐位对齐时不做任何结构删除（其他走法原样保留）
+ * - 楼层消失 = **全局删层**（与 `deleteFloorEverywhere` 同语义：所有分支失去该层、后续前移）
+ * - 中间插入新楼层 = 模型无法表达（其他分支在该位置无内容）→ 拒绝，宿主会自行回退全量保存
+ * - 分支切换 = **重投影**：ops 结果与目标分支逐位对齐时不做任何结构删除（其他分支原样保留）
  *
  * 纯函数：无 DOM、无网络、无适配器依赖（行/模型由调用方送进来，结果由调用方落库）。
  */
@@ -36,15 +36,15 @@ function parseRowContent(row) {
     }
 }
 
-/** 走法 path（{floorNo: variantId}）→ 升序楼层号数组 */
+/** 分支 path（{floorNo: variantId}）→ 升序楼层号数组 */
 export function pathFloors(path) {
     return Object.keys(path || {}).map(Number).filter((n) => Number.isInteger(n) && n > 0).sort((a, b) => a - b);
 }
 
 /**
- * 模型 → 指定走法的 path（宿主那份 body 的投影基准；无模型返回 {}）。
- * T1：默认取活跃走法；原生分支/检查点键要传**该键所在走法**（`branchId`），
- * 否则在分支聊天里改消息会按父走法的下标投影 → 写错行。
+ * 模型 → 指定分支的 path（宿主那份 body 的投影基准；无模型返回 {}）。
+ * T1：默认取活跃分支；原生分支/检查点键要传**该键所在分支**（`branchId`），
+ * 否则在分支聊天里改消息会按父分支的下标投影 → 写错行。
  */
 export function activePathOf(model, branchId) {
     const id = branchId ?? model?.active_branch;
@@ -53,10 +53,10 @@ export function activePathOf(model, branchId) {
 }
 
 /**
- * 按走法 path 从行表投影出**有序消息行**（宿主 body 的那一份）。
+ * 按分支 path 从行表投影出**有序消息行**（宿主 body 的那一份）。
  * 读路径（seam）与双写落盘（mirror）共用同一份投影，保证「库里看到的」与「文件里写下的」
  * 永远是同一序列。
- * @param {object} path 走法 path（{floorNo: variantId}）
+ * @param {object} path 分支 path（{floorNo: variantId}）
  * @param {Array<{floorNo:number, variantId:string, content:string}>} rows 家族全部行
  * @returns {Array<object>} 解析后的消息行（缺行/不可解析的行跳过——库不自洽时宁缺不崩）
  */
@@ -93,24 +93,24 @@ function elementIndex(token, len) {
 }
 
 /**
- * 应用一批消息补丁到「活跃走法投影」上，并按键写回行表。
+ * 应用一批消息补丁到「活跃分支投影」上，并按键写回行表。
  *
- * **两个走法要分清（W6 修复，2026-09-26）**：
+ * **两个分支要分清（W6 修复，2026-09-26）**：
  *   · `branchId` = **投影基准**：ops 的下标是对着它的 body 算的。原生分支/检查点键各有各的
- *     body，必须按**该键所在走法**投影；切分支时 ops 是对着**切换前**的 body 算的。
+ *     body，必须按**该键所在分支**投影；切分支时 ops 是对着**切换前**的 body 算的。
  *   · `targetBranchId` = **结构收敛目标**：补丁应用完之后 body 应当等于它的投影；被改写的
- *     path 也是它。切分支时 = 目标走法；不切换时两条相同。
+ *     path 也是它。切分支时 = 目标分支；不切换时两条相同。
  * 把两者合成一个参数会坏两件事：拿目标当投影基准 → 下标对不上（真机实录
  * `projection-incomplete｜楼层 1 的变体 g1 在库中无行`、`test-failed｜/3`）；拿基准当收敛目标 →
- * 切分支被误判成「删层」、目标走法的 path 不更新。
+ * 切分支被误判成「删层」、目标分支的 path 不更新。
  *
  * @param {object} args
  * @param {Array<{floorNo:number, variantId:string, content:string, sendDate?:any}>} args.rows 家族全部行
- * @param {object} args.path 投影基准走法的 path（{floorNo: variantId}）——宿主那份 body 的投影基准
+ * @param {object} args.path 投影基准分支的 path（{floorNo: variantId}）——宿主那份 body 的投影基准
  * @param {Array<{op:string, path:string, value?:any, from?:string}>} args.ops 宿主 ops
- * @param {string} [args.branchId] 投影基准走法；未传 = 入向模型的 active_branch
- * @param {string} [args.targetBranchId] 结构收敛目标走法；未传 = 投影基准走法
- * @param {object|null} [args.model] 入向模型（含目标走法 path；用于「换变体/追加」的变体身份判定）
+ * @param {string} [args.branchId] 投影基准分支；未传 = 入向模型的 active_branch
+ * @param {string} [args.targetBranchId] 结构收敛目标分支；未传 = 投影基准分支
+ * @param {object|null} [args.model] 入向模型（含目标分支 path；用于「换变体/追加」的变体身份判定）
  * @param {Function} [args.allocateGid] 新变体号分配器（入参 = 已占用 gid 集合）
  * @returns {{ok:true, rows:Array, deletes:Array<{floorNo:number,variantId:string}>, path:object, model:object|null, stats:object}
  *          | {ok:false, reason:string, detail?:string}}
@@ -122,7 +122,7 @@ export function planBodyPatch({ rows, path, ops, model = null, branchId = null, 
     const rowAt = new Map();
     for (const r of allRows) rowAt.set(`${r.floorNo}#${r.variantId}`, r);
 
-    /* ── 1. 投影：活跃走法 path → 有序元素（每个元素带变体身份） ── */
+    /* ── 1. 投影：活跃分支 path → 有序元素（每个元素带变体身份） ── */
     const baseFloors = pathFloors(path);
     const items = []; // [{ gid, line }]，下标 i ↔ 楼层 i+1
     for (const f of baseFloors) {
@@ -211,7 +211,7 @@ export function planBodyPatch({ rows, path, ops, model = null, branchId = null, 
         }
     }
 
-    /* ── 3. 变体身份判定：插入/换变体的位置优先沿用目标走法声明的变体 ── */
+    /* ── 3. 变体身份判定：插入/换变体的位置优先沿用目标分支声明的变体 ── */
     const targetPath = model?.branches?.find((b) => b.id === convergeId)?.path || null;
     const candAt = (floor) => (targetPath ? targetPath[floor] : undefined);
     const rowContentMatches = (floor, gid, line) => {
@@ -237,11 +237,11 @@ export function planBodyPatch({ rows, path, ops, model = null, branchId = null, 
         const oldGid = origins[i] === null ? null : path[origins[i] + 1];
         const cand = candAt(floor);
         if (oldGid === null) {
-            // 新插入位置：目标走法已声明该层变体 → 沿用（走法切换 / 追加登记）
+            // 新插入位置：目标分支已声明该层变体 → 沿用（分支切换 / 追加登记）
             if (cand && rowContentMatches(floor, cand, items[i].line) !== 'differs') items[i].gid = cand;
             else items[i].gid = nextGid();
         } else if (cand && cand !== oldGid && rowContentMatches(floor, cand, items[i].line) === 'match') {
-            // 同一位置换了变体（重投影以 replace 形态表达时）→ 采用目标走法的变体
+            // 同一位置换了变体（重投影以 replace 形态表达时）→ 采用目标分支的变体
             items[i].gid = cand;
         } else {
             items[i].gid = oldGid;
@@ -262,14 +262,14 @@ export function planBodyPatch({ rows, path, ops, model = null, branchId = null, 
     const switching = Boolean(basisId) && convergeId !== basisId;
 
     if (!sameAsTarget && !switching && newLen < oldLen) {
-        // 全局删层：所有走法失去被删楼层、后续楼层前移（与 deleteFloorEverywhere 同语义）
+        // 全局删层：所有分支失去被删楼层、后续楼层前移（与 deleteFloorEverywhere 同语义）
         const keptOld = new Set(origins.filter((o) => o !== null));
         const gone = new Set(baseFloors.filter((_, i) => !keptOld.has(i)));
         const remap = (p) => {
             const np = {};
             for (let i = 0; i < origins.length; i++) {
                 const o = origins[i];
-                if (o === null) continue; // 该新位置由收敛目标独占（切分支），其他走法不占位
+                if (o === null) continue; // 该新位置由收敛目标独占（切分支），其他分支不占位
                 const gid = p[o + 1];
                 if (gid !== undefined) np[i + 1] = gid;
             }
@@ -294,12 +294,12 @@ export function planBodyPatch({ rows, path, ops, model = null, branchId = null, 
             nextModel.branches = (nextModel.branches || []).map((b) => (b.id === convergeId ? { ...b, path: nextPathForBranch } : b));
         }
     } else if (nextModel) {
-        // 重投影 / 同长编辑 / 切分支：只把收敛目标走法的 path 收敛到解析结果（其他走法原样保留）
+        // 重投影 / 同长编辑 / 切分支：只把收敛目标分支的 path 收敛到解析结果（其他分支原样保留）
         nextModel.branches = (nextModel.branches || []).map((b) => (b.id === convergeId ? { ...b, path: nextPathForBranch } : b));
     }
 
-    /* ── 5. 行表写回：被引用的行 upsert，已无任何走法在「该楼层」引用的旧行删除 ── */
-    // 行 (F, G) 存活判据 = 某走法的 path 把楼层 F 指向 G。变体换层后旧键行必须删掉
+    /* ── 5. 行表写回：被引用的行 upsert，已无任何分支在「该楼层」引用的旧行删除 ── */
+    // 行 (F, G) 存活判据 = 某分支的 path 把楼层 F 指向 G。变体换层后旧键行必须删掉
     // （只按「变体是否还被引用」判断会留下 (旧楼层, 同一变体) 的孤儿行）。
     const liveKeys = new Set();
     const refSource = nextModel?.branches?.length ? nextModel.branches.map((b) => b.path || {}) : [nextPathForBranch];
@@ -319,8 +319,8 @@ export function planBodyPatch({ rows, path, ops, model = null, branchId = null, 
             sendDate: it.line?.send_date ?? null,
         };
     });
-    // 全局删层会改变**其他走法**的楼层号：这些行必须按新键重写，否则会被下面的存活判据删掉
-    // （只按活跃投影 upsert 的写法会让非活跃走法的 path 指向不存在的行）。
+    // 全局删层会改变**其他分支**的楼层号：这些行必须按新键重写，否则会被下面的存活判据删掉
+    // （只按活跃投影 upsert 的写法会让非活跃分支的 path 指向不存在的行）。
     const covered = new Set(upserts.map((u) => `${u.floorNo}#${u.variantId}`));
     const byVariant = new Map();
     for (const r of allRows) if (!byVariant.has(r.variantId)) byVariant.set(r.variantId, r);

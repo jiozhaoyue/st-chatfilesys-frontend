@@ -3,9 +3,9 @@
  *
  * 数据流（零核心修改、零拦截，2.4 起写路径全走官方消息 API）：
  * - 模型 = chat_metadata.extensions.chatfilesys（随聊天文件走）
- * - body = ctx.chat（活跃走法的楼层线性序列）
- * - 结构操作（改名/删除走法）→ 纯 metadata → ctx.saveMetadata()
- * - 切换/走法投影 → planSwitch 生成 RFC6902 ops → chat-writer 映射为官方消息 API 批量调用
+ * - body = ctx.chat（活跃分支的楼层线性序列）
+ * - 结构操作（改名/删除分支）→ 纯 metadata → ctx.saveMetadata()
+ * - 切换/分支投影 → planSwitch 生成 RFC6902 ops → chat-writer 映射为官方消息 API 批量调用
  * - 追加楼层（原生 append 流）→ MESSAGE_SENT/RECEIVED → registerAppendedGroup → saveMetadataDebounced
  * - 重绘：clearChat + printMessages（失败回退 reloadCurrentChat）
  *
@@ -319,7 +319,7 @@ function renderAll() {
     scheduleUiRefresh();
 }
 
-/** 走法切换后的聊天区重绘；失败回退官方整载 */
+/** 分支切换后的聊天区重绘；失败回退官方整载 */
 async function renderChat() {
     try {
         await clearChat();
@@ -371,7 +371,7 @@ async function enableBranches() {
     if (getModel()) return;
     const where = pureDbMode()
         ? '此聊天将成为一个聊天家族，内容存进数据库（磁盘上不再有该聊天的 jsonl）。'
-        : '此聊天将成为一个聊天家族：当前消息序列成为「主走法」，之后可零复制分叉。'
+        : '此聊天将成为一个聊天家族：当前消息序列成为「主分支」，之后可零复制分叉。'
             + '数据仍存于本聊天文件内（chat_metadata.extensions），原生环境完全兼容。';
     const ok = await popupConfirm(`启用？${where}`);
     if (!ok) return;
@@ -563,13 +563,13 @@ async function renameBranchFlow(branchId) {
     }
 }
 
-/* ---------------- 走法删除：清掉该走法的绑定键（不变式 2） ---------------- */
+/* ---------------- 分支删除：清掉该分支的绑定键（不变式 2） ---------------- */
 
 /**
- * 删除走法后清掉它的绑定键（design.md §5.6 不变式 2：`keyBindings[chatKey].branchId` 必须存在）。
+ * 删除分支后清掉它的绑定键（design.md §5.6 不变式 2：`keyBindings[chatKey].branchId` 必须存在）。
  *
- * 纯库/双写下原生创建的走法各自带一个键；走法删了而键还在就是**悬挂绑定**——宿主打开那个键时
- * 会按失效的 branchId 解析（落到别的走法上），映射断裂。故删除走法必须同步解绑。
+ * 纯库/双写下原生创建的分支各自带一个键；分支删了而键还在就是**悬挂绑定**——宿主打开那个键时
+ * 会按失效的 branchId 解析（落到别的分支上），映射断裂。故删除分支必须同步解绑。
  *
  * 只动库、不碰宿主文件：纯库/双写下该键在宿主侧**本就没有文件**（T1 接管不落盘；双写只落主键），
  * 所以没有文件可删——也**不能**把删除请求打到接缝上（接缝的 `chats/delete` 删的是整个家族）。
@@ -601,17 +601,17 @@ async function deleteBranchFlow(branchId) {
     const model = getModel();
     const b = getBranch(model, branchId);
     if (!b) return;
-    if (!(await popupConfirm(`删除走法「${b.name}」？其私有组（仅它引用的楼层）将一并回收，共享楼层不受影响。`))) return;
+    if (!(await popupConfirm(`删除分支「${b.name}」？其私有组（仅它引用的楼层）将一并回收，共享楼层不受影响。`))) return;
     try {
         deleteBranch(model, branchId);
         setModel(model);
         await ctx().saveMetadata();
-        // 不变式 2：绑定键随走法一起消失（失败只记日志，删除已生效不回退）
+        // 不变式 2：绑定键随分支一起消失（失败只记日志，删除已生效不回退）
         const un = await unbindKeysOfBranch(branchId);
-        if (un.ok) console.log(`[${MODULE_NAME}] 走法 ${branchId} 的绑定键已清掉`);
-        else if (un.reason !== 'no-binding') console.warn(`[${MODULE_NAME}] 走法 ${branchId} 解绑失败（可能留下悬挂绑定）:`, un.reason);
+        if (un.ok) console.log(`[${MODULE_NAME}] 分支 ${branchId} 的绑定键已清掉`);
+        else if (un.reason !== 'no-binding') console.warn(`[${MODULE_NAME}] 分支 ${branchId} 解绑失败（可能留下悬挂绑定）:`, un.reason);
         renderAll();
-        toastr.success(`走法「${b.name}」已删除`);
+        toastr.success(`分支「${b.name}」已删除`);
     } catch (e) {
         toastr.error(`删除失败: ${e.message}`);
     }
@@ -826,7 +826,7 @@ async function fetchChatFile(fileName) {
 }
 
 /**
- * 收编原生书签复制文件：校验 = 活跃走法前缀（分叉截断）→ 转楼层走法（零复制）
+ * 收编原生书签复制文件：校验 = 活跃分支前缀（分叉截断）→ 转楼层分支（零复制）
  * → 清理原生 extra.branches 引用 → 删复制文件。默认不收编（取消 = 原样保留）。
  *
  * **纯库/双写模式下一律不进入本流程**（两道闸，见下）：原生分支/检查点由接缝接管（T1），
@@ -864,13 +864,13 @@ async function adoptNativeBranchFlow(payload) {
         && copiedLines.every((l, i) => JSON.stringify(l) === JSON.stringify(body[i]));
     if (!preOk) {
         // 决策 #8：仅收编「= 分叉截断前缀」的复制文件；swipe 变体等不一致场景原样保留
-        toastr.info(`原生书签「${branchName}」与当前走法前缀不一致，已原样保留。`, '聊天文件系统');
+        toastr.info(`原生书签「${branchName}」与当前分支前缀不一致，已原样保留。`, '聊天文件系统');
         return;
     }
 
     const r = await callGenericPopup(
         `检测到原生书签「${branchName}」（截断于第 ${mesId + 1} 层）。\n\n`
-        + '收编：转为楼层走法（共享前缀零复制）并删除复制文件。\n'
+        + '收编：转为楼层分支（共享前缀零复制）并删除复制文件。\n'
         + '保留：不收编，复制文件独立存在。',
         POPUP_TYPE.CONFIRM, '', { okButton: '收编', cancelButton: '保留' },
     );
@@ -906,7 +906,7 @@ async function adoptNativeBranchFlow(payload) {
     }
 
     renderAll();
-    toastr.success(`已收编「${branchName}」为楼层走法（共享前缀，零复制）。`, '聊天文件系统');
+    toastr.success(`已收编「${branchName}」为楼层分支（共享前缀，零复制）。`, '聊天文件系统');
 
     // 原生 createBranch 在 emit(CHAT_BRANCH_CREATED) 之后同步 push 引用（bookmarks.js），
     // 实测 push 晚于本监听器的 setTimeout(0)——轮询等它出现后再清一次并落盘，
@@ -933,7 +933,7 @@ async function adoptNativeBranchFlow(payload) {
 
 /**
  * 导出某个聊天为纯标准 JSONL（剥离分支元数据）。
- * 纯库模式下 `/api/chats/get` 经接缝读库（当前走法投影）；增强模式下读原生文件。
+ * 纯库模式下 `/api/chats/get` 经接缝读库（当前分支投影）；增强模式下读原生文件。
  * @param {string} fileName 聊天文件名（不带 .jsonl）；缺省 = 当前聊天
  * @param {{quiet?: boolean, downloadName?: string}} [opts]
  * @returns {Promise<boolean>}
@@ -958,7 +958,7 @@ async function exportChatFile(fileName = null, { quiet = false, downloadName = n
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = downloadName || `${name}${active ? ` - 走法「${active.name}」` : ''}.jsonl`;
+    a.download = downloadName || `${name}${active ? ` - 分支「${active.name}」` : ''}.jsonl`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -1047,7 +1047,7 @@ function schedulePromptImport(delay = 600) {
  * 新聊天自动建家族（PRD 决策 #6）；已有聊天保持原生，启用由用户显式触发。
  *
  * T1 守卫（AC3）：原生「创建分支 / 创建检查点」产生的键**不得**建成独立家族——
- *  - 该键已在库内绑定（接缝接管已登记）→ 跳过建档（它属于父家族的一条走法）
+ *  - 该键已在库内绑定（接缝接管已登记）→ 跳过建档（它属于父家族的一条分支）
  *  - 键名形如分支/检查点 → 跳过建档，交给接缝写路径的接管判定
  *    （接管判定不通过时该键就是一个原生 jsonl 文件，由导入旅程收编，不在这里建档）
  */
@@ -1588,8 +1588,8 @@ function toggleTreeDirection() {
 }
 
 /**
- * AI 总结某条走法（N13：**手动触发**；生成链路不可用即报错降级，按钮本就不渲染）。
- * 摘要写进 model.branches[i].summary（随模型持久化），不是走法名。
+ * AI 总结某条分支（N13：**手动触发**；生成链路不可用即报错降级，按钮本就不渲染）。
+ * 摘要写进 model.branches[i].summary（随模型持久化），不是分支名。
  */
 async function summarizeBranch(branchId) {
     const model = getModel();
@@ -1597,7 +1597,7 @@ async function summarizeBranch(branchId) {
     if (!b) return;
     if (!canSummarize()) { toastr.warning('当前宿主没有可用的生成链路，AI 总结不可用。', '聊天文件系统'); return; }
     const lines = assembleBranchLines(model, ctx().chat || [], b, currentBranchId);
-    if (!lines.length) { toastr.warning('这条走法没有可总结的内容。', '聊天文件系统'); return; }
+    if (!lines.length) { toastr.warning('这条分支没有可总结的内容。', '聊天文件系统'); return; }
     const text = lines.map((l) => `${l.name || (l.is_user ? '用户' : 'AI')}: ${String(l.mes || '').slice(0, 200)}`).join('\n').slice(0, 4000);
     toastr.info('正在生成摘要…', '聊天文件系统', { timeOut: 1500 });
     try {
@@ -1701,7 +1701,7 @@ function bindPopupEvents(rootEl) {
             toastr.error(`操作失败: ${e.message}`);
         }
     });
-    // 设置项（原设置页控件搬进弹窗「设置」页签；走法选择器的 data-branch 同步在 popup.js 内）
+    // 设置项（原设置页控件搬进弹窗「设置」页签；分支选择器的 data-branch 同步在 popup.js 内）
     rootEl.addEventListener('change', async (evt) => {
         const el = evt.target;
         if (el?.dataset?.role === 'auto-export') {
@@ -1719,7 +1719,7 @@ function bindPopupEvents(rootEl) {
 /**
  * 模式切换（design.md §1 的安全动作表）：
  * - off → 库：提示先走导入旅程（未导入的聊天保持原生、不被接管）
- * - 库 → off：**先把当前走法落成标准聊天文件**，成功才切；失败中止（否则切完内容就没有来源了）
+ * - 库 → off：**先把当前分支落成标准聊天文件**，成功才切；失败中止（否则切完内容就没有来源了）
  * - pure → mirror：立即落一次文件；mirror → pure：停止落文件、磁盘文件保留为快照
  * @returns {Promise<boolean>} 是否完成切换
  */

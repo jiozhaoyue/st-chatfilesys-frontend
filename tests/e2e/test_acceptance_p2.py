@@ -3,10 +3,10 @@
 对应用户 2026-09-25 裁定的界面契约（prd.md R5 / AC7 / AC20）与仍然成立的旧验收项：
   AC1  扩展设置抽屉**零插件注入**（settings.html 已删除；设置项搬进弹窗「设置」页签）
   AC2  入口可达：输入框上方工具图标排里的插件按钮 + Alt+B；弹窗四页签完整；`/cb` 已删除
-  AC3  SVG 结构树：节点 = 走法（序号/走法名 + 层数）+ 边标注分叉楼层 + 点击节点切换
-  AC4  走法管理（改名 / 删除走法）在「当前聊天」页签可用
+  AC3  SVG 结构树：节点 = 分支（序号/分支名 + 层数）+ 边标注分叉楼层 + 点击节点切换
+  AC4  分支管理（改名 / 删除分支）在「当前聊天」页签可用
   AC5  该层 swipe 组数 > 1 时该消息出现**版本按钮**，点击打开「该层版本」弹窗
-  AC6  切换走法（全量重绘）后版本按钮自愈
+  AC6  切换分支（全量重绘）后版本按钮自愈
   AC7  写路径零弃用 API（运行时源码断言）
   AC8  元数据键 extensions.chatfilesys（无 legacy branches）
   AC10 能力检测生效（弹窗类 + RENDERED 事件）
@@ -72,14 +72,14 @@ def main():
             results.append(report("AC2 弹窗四页签 = 当前聊天/角色卡的聊天/设置/回收站",
                                   set(tabs) == {'当前聊天', '角色卡的聊天', '设置', '回收站'}, str(tabs)))
 
-            # ---------- 造楼层 + 走法（F3 分叉） ----------
+            # ---------- 造楼层 + 分支（F3 分叉） ----------
             for cmd in ["/send U-F2", f"/sendas name={TEST_CHAR} A-F3", "/send U-F4", f"/sendas name={TEST_CHAR} A-F5"]:
                 r.cmd(cmd)
                 r.settle(700)
             st = r.wait_state(lambda s: s["chatLen"] == 5, desc="造 5 层")
             new_b = r.create_branch(3, name="验收·F3")
             r.settle(800)
-            r.wait_state(lambda s: len(s["branches"]) == 2, desc="建走法")
+            r.wait_state(lambda s: len(s["branches"]) == 2, desc="建分支")
 
             # ---------- AC3 SVG 结构树 ----------
             r.ensure_popup()
@@ -98,7 +98,7 @@ def main():
             ok3 = (ac3 and ac3['hasSvg'] and len(ac3['nodes']) == 2
                    and any('⎇F3' in e for e in ac3['edges'])
                    and all(n['meta'] and '层' in n['meta'] for n in ac3['nodes']))
-            results.append(report("AC3 SVG 结构树：节点=走法+边标注分叉楼层+层数", bool(ok3), str(ac3)))
+            results.append(report("AC3 SVG 结构树：节点=分支+边标注分叉楼层+层数", bool(ok3), str(ac3)))
             # 点击节点切换
             r.js(f"""() => {{
                 const n = [...document.querySelectorAll('{PANEL} .chatfilesys-tnode')]
@@ -111,7 +111,7 @@ def main():
             results.append(report("AC3 点击节点切换+active 高亮", st["activeId"] == new_b and ac3_active == new_b,
                                   f"active={st['activeId']} node={ac3_active}"))
 
-            # 新走法延展一层（制造与 b_main 在 F4 的分叉 → F4 两个 swipe 组）
+            # 新分支延展一层（制造与 b_main 在 F4 的分叉 → F4 两个 swipe 组）
             r.cmd("/send U-b1-F4")
             r.settle(900)
             r.ensure_active("b_main")
@@ -119,39 +119,39 @@ def main():
             r.close_popup()
             r.settle(600)
 
-            # ---------- AC4 走法管理：改名 ----------
-            # 管理按钮的作用对象 = 走法选择器选中的那条（R5 后三按钮共用一个选择器；
+            # ---------- AC4 分支管理：改名 ----------
+            # 管理按钮的作用对象 = 分支选择器选中的那条（R5 后三按钮共用一个选择器；
             # 按钮的 data-branch 跟随选择值 → 必须先 pick，不能直接按 data-branch 找按钮）
             r.pick_branch(new_b)
             r.click_action("rename", branch=new_b)
             r.popup_input("验收改名")
             r.settle(1200)
             renamed = next((x for x in r.state()["branches"] if x["id"] == new_b), None)
-            results.append(report("AC4 走法管理：改名生效", bool(renamed and renamed["name"] == "验收改名"),
+            results.append(report("AC4 分支管理：改名生效", bool(renamed and renamed["name"] == "验收改名"),
                                   str(renamed)))
-            # 删除走法（先切回默认走法；默认走法不可删 → 由 core 守卫拒绝）
+            # 删除分支（先切回默认分支；默认分支不可删 → 由 core 守卫拒绝）
             r.pick_branch(new_b)
             r.click_action("delete-branch", branch=new_b)
             r.popup_ok()
             r.settle(1500)
             st = r.state()
             ok4b = len(st["branches"]) == 1 and all(x["id"] != new_b for x in st["branches"])
-            results.append(report("AC4 走法管理：删除走法（其私有组一并回收）", ok4b,
+            results.append(report("AC4 分支管理：删除分支（其私有组一并回收）", ok4b,
                                   f"branches={[x['id'] for x in st['branches']]}"))
-            # 默认走法不可删：选中默认走法点删除 → core 守卫拒绝（toastr 错误 + 走法数不变）
+            # 默认分支不可删：选中默认分支点删除 → core 守卫拒绝（toastr 错误 + 分支数不变）
             r.pick_branch("b_main")
             r.click_action("delete-branch", branch="b_main")
             r.popup_ok()
             err_default = r.toastr_error()
             r.settle(800)
             n_after = len(r.state()["branches"])
-            results.append(report("AC4 走法管理：默认走法不可删（守卫拒绝）",
+            results.append(report("AC4 分支管理：默认分支不可删（守卫拒绝）",
                                   bool(err_default) and "默认分支" in str(err_default) and n_after == 1,
                                   f"toast={err_default} branches={n_after}"))
             r.close_popup()
             r.settle(600)
 
-            # 复原一个分叉（供 AC5/AC6 用）：F3 建走法 → 切过去续一层 → 切回 → F4 两组
+            # 复原一个分叉（供 AC5/AC6 用）：F3 建分支 → 切过去续一层 → 切回 → F4 两组
             nb2 = r.create_branch(3, name="版本样本")
             r.settle(800)
             r.ensure_active(nb2)
@@ -186,7 +186,7 @@ def main():
             ok5a = (ac5['withBtn'] == expect and len(expect) >= 1 and ac5['total'] > len(expect))
             results.append(report("AC5 版本按钮仅多分叉层出现（与 swipeGroupsAt 一致）", bool(ok5a),
                                   f"按钮层={ac5['withBtn']} 组数={grp}"))
-            # 期望值**独立**给出（不抄实现）：F3 建走法 + 该走法延展一层 → 只有第 4 层是多组（分叉点）
+            # 期望值**独立**给出（不抄实现）：F3 建分支 + 该分支延展一层 → 只有第 4 层是多组（分叉点）
             results.append(report("AC5 多组楼层 = 第 4 层（独立期望值，非抄 swipeGroupsAt）",
                                   expect == [4], f"多组层={expect}"))
             # 点击版本按钮 → 该层版本弹窗列出该层全部组
@@ -208,13 +208,13 @@ def main():
                 .find(d => d.querySelector('.chatfilesys-versions'))?.close(); }""")
             r.settle(600)
 
-            # ---------- AC6 切换走法后版本按钮自愈 ----------
+            # ---------- AC6 切换分支后版本按钮自愈 ----------
             r.ensure_active(nb2)
             r.settle(1200)
             healed = r.js("""() => document.querySelectorAll('#chat .chatfilesys-ver-btn').length""")
             r.ensure_active("b_main")
             r.settle(1200)
-            results.append(report("AC6 切换走法（全量重绘）后版本按钮自愈", healed >= 1, f"count={healed}"))
+            results.append(report("AC6 切换分支（全量重绘）后版本按钮自愈", healed >= 1, f"count={healed}"))
             r.settle(600)
 
             # ---------- AC7 写路径零弃用 API（运行时拉取模块源码断言） ----------

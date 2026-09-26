@@ -20,7 +20,7 @@
 import { setDefaultBranch } from './branches.js';
 
 /**
- * 某条走法的全部绑定键（T1 接管下通常 0 或 1 个）。
+ * 某条分支的全部绑定键（T1 接管下通常 0 或 1 个）。
  * @param {object|null} keyBindings `{ [chatKey]: { branchId, mainChat?, isCheckpoint?, markerFloor? } }`
  * @param {string} branchId
  * @returns {Array<[string, object]>} [chatKey, binding] 列表（保持原键序）

@@ -99,7 +99,7 @@ function composeChatMetadata(family, chatKey) {
 /**
  * 入向模型是否代表一次「分支切换」。
  * 只有切换才让入向模型决定结构：宿主内存里的模型副本可能是旧版（它不知道本插件刚登记的
- * 追加楼层/新走法），让旧副本盖掉库内结构会丢东西。非切换场景一律以库内模型为准。
+ * 追加楼层/新分支），让旧副本盖掉库内结构会丢东西。非切换场景一律以库内模型为准。
  * @param {{model?: object}} family 库内家族
  * @param {object|null} incoming 入向模型（chat_metadata.extensions.chatfilesys）
  */
@@ -109,7 +109,7 @@ function modelSwitchesBranch(family, incoming) {
     return incoming.active_branch !== storedActive;
 }
 
-/** 本次请求（某个聊天键）实际读写的那条走法 */
+/** 本次请求（某个聊天键）实际读写的那条分支 */
 function branchFor(family, chatKey) {
     const id = branchIdForKey(family, chatKey);
     return family?.model?.branches?.find((b) => b.id === id) || null;
@@ -118,12 +118,12 @@ function branchFor(family, chatKey) {
 /**
  * 追加/全量写时**新楼层**的变体身份分配器（T1/W3 修正，2026-09-26）。
  *
- * 规则与 `core/patch-rows.js#planBodyPatch` 第 3 步一致：**优先沿用本次走法已声明的变体**
+ * 规则与 `core/patch-rows.js#planBodyPatch` 第 3 步一致：**优先沿用本次分支已声明的变体**
  * （`branch.path[floor]`，读回才认得这行），未声明才分配新号。
  *
  * 为什么不能再用「g<楼层号>」（旧写法 `activePath[f] || 'g'+f`）：同一个楼层号上，
- * **别的走法**可能已经占用了那个名字——根走法的第 3 层就是 `g3`；在分叉于第 2 层的
- * 原生分支键上发一条消息时，新楼层 3 会拿到 `g3` 并把根走法那一行 **upsert 覆盖掉**
+ * **别的分支**可能已经占用了那个名字——根分支的第 3 层就是 `g3`；在分叉于第 2 层的
+ * 原生分支键上发一条消息时，新楼层 3 会拿到 `g3` 并把根分支那一行 **upsert 覆盖掉**
  * （根聊天第 3 条消息变成分支里的新消息）。而且模型侧的 `core/branches.js#nextGroupId`
  * 分配的是 `g<max+1>`，两边不一致时刚写的楼层还会从投影里消失（行在库里、读不回来）。
  *
@@ -150,13 +150,13 @@ function makeNewVariantId(model) {
 }
 
 /**
- * 键绑定跟随走法切换（T1）。
+ * 键绑定跟随分支切换（T1）。
  *
- * 原生分支/检查点键各自绑定一条走法；而 UI 的「切换走法」是在**当前键**上把
+ * 原生分支/检查点键各自绑定一条分支；而 UI 的「切换分支」是在**当前键**上把
  * `model.active_branch` 改掉后落库的。若不同步改该键的绑定，读路径仍按键绑定解析，
- * 用户会看到「切了但内容没变」。故：某键上发生切换 → 该键重新指向新走法。
+ * 用户会看到「切了但内容没变」。故：某键上发生切换 → 该键重新指向新分支。
  * 无绑定的键（根键）返回 null：它本来就靠 `active_branch` 解析，不需要绑定。
- * @param {{active_branch?: string}|null} nextModel 含目标走法的形态
+ * @param {{active_branch?: string}|null} nextModel 含目标分支的形态
  * @returns {object|null} 需要落库的新 keyBindings（无需改则 null）
  */
 function followKeyBinding(family, chatKey, nextModel) {
@@ -184,7 +184,7 @@ function followKeyBinding(family, chatKey, nextModel) {
  * 于是按批次定性：
  *   · 批次含**非自管路径的 remove**（= 旧副本差分）→ 删除一律不可信：`remove` 全部丢弃，
  *     自管路径的 add/replace 照常（宿主可能确实带了更新的模型，交给行表一致性兜底）
- *   · 否则（干净批次，例如本插件 `deleteFloor` 走法重编号）→ 原样应用，含自管路径的 remove
+ *   · 否则（干净批次，例如本插件 `deleteFloor` 分支重编号）→ 原样应用，含自管路径的 remove
  * 另外两条与批次无关的固定规则：
  *   · 指向 `/integrity` 的 op 一律丢弃（版本号真源在库，宿主那份只是镜像）
  *   · `replace`/`add` 到 `/extensions` 整对象 → 降级为**逐命名空间合并**（不整体替换别人）
@@ -225,15 +225,15 @@ function filterMetaOps(ops, composedCurrent) {
 }
 
 /**
- * 把新写入的楼层并入**本次请求所在走法的 path**（T0 实测暴露的必要条件）。
+ * 把新写入的楼层并入**本次请求所在分支的 path**（T0 实测暴露的必要条件）。
  *
- * 读路径按「该走法 path 引用的行」做投影过滤——若写入时只落行、不落 path，
- * 这些行就会被当成「其他走法的折叠行」而**读不回来**（消息写进库却像丢了）。
+ * 读路径按「该分支 path 引用的行」做投影过滤——若写入时只落行、不落 path，
+ * 这些行就会被当成「其他分支的折叠行」而**读不回来**（消息写进库却像丢了）。
  * 因此任何追加/全量写都要同步扩展 path。
  *
  * @param {import('./storage/adapter.js').StorageAdapterAPI} adapter
  * @param {{model?: object}} family
- * @param {object} branch 目标走法（按键绑定解析出的那条）
+ * @param {object} branch 目标分支（按键绑定解析出的那条）
  * @param {Array<{floorNo: number, variantId: string}>} floors
  * @param {Function} log
  */
@@ -248,7 +248,7 @@ async function ensurePathCovers(adapter, family, branch, floors, log) {
     }
     if (!changed) return;
     const r = await adapter.saveModel({ familyId: family.familyId, model: family.model, expectedIntegrity: null, keepCurrent: false });
-    if (r && r.ok === false) log('[chatfilesys-seam] 走法路径扩展落库失败（读回可能缺行）:', r.reason);
+    if (r && r.ok === false) log('[chatfilesys-seam] 分支路径扩展落库失败（读回可能缺行）:', r.reason);
 }
 
 /**
@@ -274,9 +274,9 @@ export function installSeam(adapter, opts = {}) {
      *
      * 判定链（三重，任一不满足即透传，宁可不接管）：
      *   ① 父线索：请求头 `chat_metadata.main_chat`（宿主创建分支/检查点时写入）→ 父键能命中家族
-     *   ② 内容闸门：正文行序列必须是父走法当前投影的**逐行前缀**
+     *   ② 内容闸门：正文行序列必须是父分支当前投影的**逐行前缀**
      *   ③ 类型：分支名宿主自动生成不可改 → 命中 ` - Branch #<n>` 即分支，其余即检查点
-     * 全部通过 → 在父家族内建一条走法 + 键绑定，落库后回成功（**磁盘不产生复制文件**）。
+     * 全部通过 → 在父家族内建一条分支 + 键绑定，落库后回成功（**磁盘不产生复制文件**）。
      * @returns {Response|null} null = 未接管，调用方透传原生路径（行为与改造前一致）
      */
     async function tryTakeoverNewKey({ chatKey, fileName, avatarUrl, rows, incomingMeta }) {
@@ -318,19 +318,19 @@ export function installSeam(adapter, opts = {}) {
             log('[chatfilesys-seam] 原生分支/检查点接管落库失败，透传原生路径:', r?.reason);
             return null;
         }
-        log(`[chatfilesys-seam] 已接管原生${plan.kind === 'branch' ? '分支' : '检查点'}「${fileName}」→ 库内走法 ${plan.branchId}（第 ${plan.forkFloor} 层分叉，磁盘不落文件）`);
+        log(`[chatfilesys-seam] 已接管原生${plan.kind === 'branch' ? '分支' : '检查点'}「${fileName}」→ 库内分支 ${plan.branchId}（第 ${plan.forkFloor} 层分叉，磁盘不落文件）`);
         return jsonResponse({ ok: true, integrity: normIntegrity(r.integrity) });
     }
 
-    /** 读路径：chats/get → 库分片读 → 本次键所在走法投影 → [header, ...rows] */
+    /** 读路径：chats/get → 库分片读 → 本次键所在分支投影 → [header, ...rows] */
     async function handleGet(body) {
         const chatKey = normalizeChatKey(body?.avatar_url, body?.file_name);
         const family = await adapter.loadFamily({ chatKey });
         if (!family) return null; // 未接管：透传原生路径
-        // T1：投影走法按键绑定解析（原生分支/检查点键各自代表一条走法；无绑定回落活跃走法）
+        // T1：投影分支按键绑定解析（原生分支/检查点键各自代表一条分支；无绑定回落活跃分支）
         const branch = branchFor(family, chatKey) || family.model?.branches?.[0];
         const { floors } = await adapter.loadFloors({ familyId: family.familyId, from: 0, limit: pageSize });
-        // 投影过滤：body = 该走法 path 引用的行（导入合并/分叉产生的非本走法变体行不进 body）
+        // 投影过滤：body = 该分支 path 引用的行（导入合并/分叉产生的非本分支变体行不进 body）
         const rows = projectionOf(branch?.path, floors);
         const header = {
             user_name: 'unused',
@@ -355,7 +355,7 @@ export function installSeam(adapter, opts = {}) {
 
         const family = await adapter.loadFamily({ chatKey });
         if (!family) {
-            // T1：原生「创建分支/创建检查点」= 宿主往一个新键全量写 → 在此拦下改为库内走法
+            // T1：原生「创建分支/创建检查点」= 宿主往一个新键全量写 → 在此拦下改为库内分支
             return await tryTakeoverNewKey({
                 chatKey, fileName: body?.file_name, avatarUrl: body?.avatar_url, rows, incomingMeta,
             });
@@ -382,7 +382,7 @@ export function installSeam(adapter, opts = {}) {
             if (hostChanged) family.hostMetadata = mergedHost;
             if (nextBindings) family.keyBindings = nextBindings;
         }
-        // 全量保存 = body 数组逐行 upsert（floorNo = 行序 +1；变体身份取自本次键所在走法的 path，
+        // 全量保存 = body 数组逐行 upsert（floorNo = 行序 +1；变体身份取自本次键所在分支的 path，
         // 未声明的楼层才分配新号——见 makeNewVariantId 的说明）
         const branch = branchFor(family, chatKey);
         const newVariantId = makeNewVariantId(family.model);
@@ -447,7 +447,7 @@ export function installSeam(adapter, opts = {}) {
      * - 宿主编辑消息 / swipe → `test /N` + `replace /N`（整行）
      * - 第三方插件改内存字段后保存 → `add /0/extra/第三方~1键`（**字段级**，深路径）
      * - 删消息 → `test /N` + `remove /N`
-     * - 请求体**同时带整份 chat_metadata**（宿主内存副本）→ 其中的走法切换与其他插件命名空间
+     * - 请求体**同时带整份 chat_metadata**（宿主内存副本）→ 其中的分支切换与其他插件命名空间
      *   必须与消息写入一起落地，否则「挂在这条写上的元数据变化」静默丢失（T0c 的时有时无）。
      *
      * ops 打在「按**投影基准分支**投影出来的 body 数组」上，库存的是含非活跃变体的行表——

@@ -10,7 +10,7 @@
  *                  branchPaths: { branchId: { floorNo: variantId } },
  *                  model }  // model = store-bridge 桥接出的现有 chatfilesys 模型形态
  *       - keyBindings（T1）：`{ [chatKey]: { branchId, isCheckpoint?, markerFloor? } }`——
- *         原生「创建分支/检查点」键各自代表家族里的一条走法；`loadFamily({chatKey})` 命中
+ *         原生「创建分支/检查点」键各自代表家族里的一条分支；`loadFamily({chatKey})` 命中
  *         主键之外的**绑定键**时也要返回其所属家族（三档索引容器同步扩展）。
  *   createFamily({ family }) -> { ok, familyId, integrity }（导入旅程建档；familyId 冲突返回 {ok:false}）
  *   bindChatKey({ familyId, chatKey }) -> { ok }（official 档重启后重联：chatKey→familyId 登记进容器 meta）

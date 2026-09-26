@@ -174,7 +174,7 @@ def main():
             r.wait_state(lambda s: s["chatLen"] == 5, desc="造 5 层")
             new_b = r.create_branch(3, name="分叉·F3")
             r.settle(800)
-            r.ensure_active(new_b)                     # 切到新走法 → F4 起折叠
+            r.ensure_active(new_b)                     # 切到新分支 → F4 起折叠
             r.cmd("/send U-b1-F4")                     # b1 延展一层 → 与 b_main 在 F4 分叉
             r.settle(900)
             r.ensure_active("b_main")                  # 切回 → F4 两个组
@@ -250,7 +250,7 @@ def main():
                                       meta: n.querySelector('.chatfilesys-tnode-meta')?.textContent || '' }));
             }""") or []
             ok3c = len(tree) >= 1 and all(('层' in t["meta"]) for t in tree) and all(('U-' not in t["name"] and 'A-' not in t["name"] and 'U-' not in t["meta"]) for t in tree)
-            results.append(report("③ 结构树只显结构（#序号/走法名 + 层数，不含消息内容）", ok3c, str(tree)))
+            results.append(report("③ 结构树只显结构（#序号/分支名 + 层数，不含消息内容）", ok3c, str(tree)))
             r.close_popup()
             r.settle(600)
 
