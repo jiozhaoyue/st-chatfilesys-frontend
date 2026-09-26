@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { createStorageAdapter } from '../../public/scripts/extensions/third-party/chatfilesys/core/storage/adapter.js';
 import { createAuthorityAdapter } from '../../public/scripts/extensions/third-party/chatfilesys/core/storage/authority.js';
 import { createOfficialAdapter } from '../../public/scripts/extensions/third-party/chatfilesys/core/storage/official.js';
+import { installSeam } from '../../public/scripts/extensions/third-party/chatfilesys/core/seam.js';
 
 /* ---------------- 档1 Authority：mock sql client ---------------- */
 
@@ -573,4 +574,226 @@ test('档3 idb：upsert/读回一致（内存 stub）', async () => {
     // 最小 indexedDB stub：node:test 环境验证 idb.js 的逻辑分支（真实浏览器另由 e2e 覆盖）
     // node 环境无 indexedDB → createIdbAdapter 抛错 → 验证降级选档为兜底档缺失时抛错路径
     await assert.rejects(() => import('../../public/scripts/extensions/third-party/chatfilesys/core/storage/idb.js').then((m) => m.createIdbAdapter({})), /indexedDB|无 indexedDB/);
+});
+
+/* ---------------- chats/delete 的按键分流（W2，2026-09-26）：三档同一语义 ---------------- */
+
+/**
+ * 真机形态的家族：主键（根聊天）+ 一个绑定键（原生创建分支得到的那个聊天项）。
+ * 绑定键 → b1，根键无绑定、靠家族活跃分支 `b_main` 解析（与 T1 接管后的库内形态一致）。
+ */
+const W2_ROOT = 'char.png::主聊天';
+const W2_BOUND = 'char.png::主聊天 - branch #1';
+
+function w2Model() {
+    return {
+        active_branch: 'b_main',
+        branches: [
+            { id: 'b_main', name: '主分支', is_default: true, fork_base: 0, path: { 1: 'g1', 2: 'g2' } },
+            { id: 'b1', name: W2_BOUND, is_default: false, fork_base: 1, path: { 1: 'g1' } },
+        ],
+        groups: {},
+    };
+}
+
+const W2_BINDINGS = { [W2_BOUND]: { branchId: 'b1', mainChat: '主聊天' } };
+
+/** 接缝上的删除请求（宿主/其他插件删聊天时发的形态：chatfile 带 .jsonl） */
+const w2DeleteReq = (chatfile) => ({
+    method: 'POST',
+    body: JSON.stringify({ avatar_url: 'char.png', chatfile }),
+});
+
+/**
+ * W2 断言（三档共用）：删绑定键 → 只解绑 + 少一条分支，家族与楼层都在；删主键 → 删家族。
+ * @param {object} adapter 该档适配器
+ * @param {string} label 档位名（报错信息用）
+ */
+async function assertW2DeleteSemantics(adapter, label) {
+    const original = globalThis.fetch;
+    const seam = installSeam(adapter);
+    try {
+        assert.equal((await adapter.loadFamily({ chatKey: W2_BOUND }))?.familyId, 'f1', `${label}：绑定键必须能命中家族`);
+        await globalThis.fetch('/api/chats/delete', w2DeleteReq('主聊天 - branch #1.jsonl'));
+
+        const f = await adapter.loadFamily({ familyId: 'f1' });
+        assert.ok(f, `${label}：删绑定键绝不能删家族`);
+        assert.deepEqual(f.model.branches.map((b) => b.id), ['b_main'], `${label}：只少该键绑定的那条分支`);
+        assert.deepEqual(f.keyBindings, {}, `${label}：该键解绑（不变式 2：不留悬挂绑定）`);
+        assert.equal(await adapter.loadFamily({ chatKey: W2_BOUND }), null, `${label}：解绑后该键不再命中`);
+        const { floors } = await adapter.loadFloors({ familyId: 'f1' });
+        assert.equal(floors.length, 2, `${label}：楼层行不得被牵连`);
+
+        await globalThis.fetch('/api/chats/delete', w2DeleteReq('主聊天.jsonl'));
+        assert.equal(await adapter.loadFamily({ familyId: 'f1' }), null, `${label}：删主键才删家族`);
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+}
+
+test('档1 Authority：删绑定键只解绑，删主键才删家族（W2）', async () => {
+    const { client, db } = mockSqlClient();
+    db.families.push({
+        id: 'f1', chat_key: W2_ROOT, character_id: 'c1', name: '主聊天', integrity: 'c-1',
+        created_at: 1, updated_at: 1, model: JSON.stringify(w2Model()),
+        key_bindings: JSON.stringify(W2_BINDINGS),
+    });
+    db.branches.push({ family_id: 'f1', branch_id: 'b_main', parent_branch_id: null, name: '主分支', fork_floor: 0, is_default: 1 });
+    db.branches.push({ family_id: 'f1', branch_id: 'b1', parent_branch_id: null, name: W2_BOUND, fork_floor: 1, is_default: 0 });
+    db.branch_paths.push({ family_id: 'f1', branch_id: 'b_main', floor_no: 1, variant_id: 'g1' });
+    db.branch_paths.push({ family_id: 'f1', branch_id: 'b_main', floor_no: 2, variant_id: 'g2' });
+    db.branch_paths.push({ family_id: 'f1', branch_id: 'b1', floor_no: 1, variant_id: 'g1' });
+    db.floors.push({ family_id: 'f1', floor_no: 1, variant_id: 'g1', seq: 0, content: '{"mes":"a"}', content_hash: null, send_date: 1 });
+    db.floors.push({ family_id: 'f1', floor_no: 2, variant_id: 'g2', seq: 0, content: '{"mes":"b"}', content_hash: null, send_date: 2 });
+
+    const adapter = await createAuthorityAdapter({ authorityClient: client });
+    await assertW2DeleteSemantics(adapter, '档1');
+});
+
+test('档2 official：删绑定键只解绑，删主键才删家族（W2）', async () => {
+    const containers = new Map();
+    const doFetch = async (url, init) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        if (url.includes('chats/get')) return { ok: true, json: async () => containers.get(body.file_name) || [] };
+        if (url.includes('chats/save')) { containers.set(body.file_name, body.chat); return { ok: true, json: async () => ({ ok: true }) }; }
+        if (url.includes('chats/delete')) { containers.delete(body.chatfile); return { ok: true, json: async () => ({ ok: true }) }; }
+        return { ok: true, json: async () => ({}) };
+    };
+    const meta = {
+        familyId: 'f1', chatKey: W2_ROOT, characterId: 'c1', name: '主聊天', integrity: 'c-1',
+        model: w2Model(), keyBindings: W2_BINDINGS,
+        branches: w2Model().branches.map((b) => ({ id: b.id, name: b.name, is_default: b.is_default, fork_floor: b.fork_base })),
+        branchPaths: { b_main: { 1: 'g1', 2: 'g2' }, b1: { 1: 'g1' } },
+    };
+    containers.set('__cfsys__f1.jsonl', [
+        { user_name: 'unused', chat_metadata: { extensions: { cfsys_family: meta } } },
+        JSON.stringify({ floorNo: 1, variantId: 'g1', seq: 0, content: '{"mes":"a"}', contentHash: null, sendDate: 1 }),
+        JSON.stringify({ floorNo: 2, variantId: 'g2', seq: 0, content: '{"mes":"b"}', contentHash: null, sendDate: 2 }),
+    ]);
+
+    const adapter = await createOfficialAdapter({ fetch: doFetch });
+    // 档2 没有枚举端点：绑定键要先经一次写登记进会话缓存 + 持久索引（真机里这就是接管那一步）
+    const reg = await adapter.saveModel({ familyId: 'f1', model: null, keyBindings: W2_BINDINGS, expectedIntegrity: null, keepCurrent: true });
+    assert.equal(reg.ok, true);
+    await assertW2DeleteSemantics(adapter, '档2');
+    // 解绑后持久索引里不得再留着旧键（否则重启后旧键复活 = 映射断裂）
+    const idxRows = (containers.get('__cfsys__index.jsonl') || []).slice(1)
+        .map((row) => JSON.parse(JSON.parse(row).content).chatKey);
+    assert.equal(idxRows.includes(W2_BOUND), false, '档2：解绑的键必须从持久索引里清掉');
+});
+
+/**
+ * 最小 IndexedDB stub：只实现 `idb.js` 用到的面（open / onupgradeneeded / transaction /
+ * store 的 get / getAll / put / delete / close），够在 node:test 里跑通档3 的逻辑分支。
+ */
+function mockIndexedDB() {
+    const stores = new Map(); // name → { keyPath, rows: Map<序列化键, 值> }
+    const keyOf = (keyPath, value) => JSON.stringify(Array.isArray(keyPath) ? keyPath.map((k) => value[k]) : value[keyPath]);
+    const settle = (req, result) => {
+        Promise.resolve().then(() => { req.result = result; req.onsuccess?.(); });
+        return req;
+    };
+    const db = {
+        objectStoreNames: { contains: (n) => stores.has(n) },
+        createObjectStore(name, { keyPath }) { stores.set(name, { keyPath, rows: new Map() }); return {}; },
+        transaction(name) {
+            const st = stores.get(name);
+            return {
+                objectStore: () => ({
+                    get: (key) => settle({}, st.rows.get(JSON.stringify(key)) ?? undefined),
+                    getAll: () => settle({}, [...st.rows.values()]),
+                    put: (value) => { st.rows.set(keyOf(st.keyPath, value), value); return settle({}, undefined); },
+                    delete: (key) => { st.rows.delete(JSON.stringify(key)); return settle({}, undefined); },
+                }),
+            };
+        },
+        close() {},
+    };
+    return {
+        open: () => {
+            const req = { result: db };
+            Promise.resolve().then(() => { req.onupgradeneeded?.(); req.onsuccess?.(); });
+            return req;
+        },
+    };
+}
+
+test('档3 IndexedDB：删绑定键只解绑，删主键才删家族（W2）', async () => {
+    const prev = globalThis.indexedDB;
+    globalThis.indexedDB = mockIndexedDB();
+    try {
+        const { createIdbAdapter } = await import('../../public/scripts/extensions/third-party/chatfilesys/core/storage/idb.js');
+        const adapter = await createIdbAdapter({});
+        const model = w2Model();
+        const created = await adapter.createFamily({
+            family: {
+                familyId: 'f1', chatKey: W2_ROOT, characterId: 'c1', name: '主聊天', integrity: 'c-1',
+                keyBindings: W2_BINDINGS,
+                branches: model.branches.map((b) => ({ id: b.id, name: b.name, is_default: b.is_default, fork_floor: b.fork_base })),
+                branchPaths: { b_main: { 1: 'g1', 2: 'g2' }, b1: { 1: 'g1' } },
+            },
+        });
+        assert.equal(created.ok, true);
+        await adapter.saveFloors({
+            familyId: 'f1', expectedIntegrity: null,
+            floors: [
+                { floorNo: 1, variantId: 'g1', seq: 0, content: '{"mes":"a"}', contentHash: null, sendDate: 1 },
+                { floorNo: 2, variantId: 'g2', seq: 0, content: '{"mes":"b"}', contentHash: null, sendDate: 2 },
+            ],
+        });
+        // 档3 建档不落 model 本体 → 读路径按 branches/branchPaths 派生（`b_main` 为默认 → 活跃）
+        await assertW2DeleteSemantics(adapter, '档3');
+        adapter.dispose();
+    } finally {
+        if (prev === undefined) delete globalThis.indexedDB;
+        else globalThis.indexedDB = prev;
+    }
+});
+
+/* ---------------- N5：档2 listFamilies 按角色过滤（2026-09-26） ---------------- */
+
+test('档2：listFamilies 按 characterId 过滤（不再串出别的角色的家族）', async () => {
+    const containers = new Map();
+    const doFetch = async (url, init) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        if (url.includes('chats/get')) return { ok: true, json: async () => containers.get(body.file_name) || [] };
+        if (url.includes('chats/save')) { containers.set(body.file_name, body.chat); return { ok: true, json: async () => ({ ok: true }) }; }
+        return { ok: true, json: async () => ({}) };
+    };
+    const adapter = await createOfficialAdapter({ fetch: doFetch });
+    const mk = (familyId, chatKey, characterId, name) => ({
+        familyId, chatKey, characterId, name, integrity: 'c-1',
+        branches: [{ id: 'b_main', name: '主分支', is_default: true, fork_floor: 0 }],
+        branchPaths: { b_main: { 1: 'g1' } },
+    });
+    await adapter.createFamily({ family: mk('f1', 'av1::c1的聊天', 'c1', 'c1的聊天') });
+    await adapter.createFamily({ family: mk('f2', 'av2::c2的聊天', 'c2', 'c2的聊天') });
+
+    // 签名与过滤语义对齐档1/档3（idb.js：`!characterId || f.characterId === characterId`）
+    assert.deepEqual((await adapter.listFamilies({ characterId: 'c1' })).map((f) => f.familyId), ['f1']);
+    assert.deepEqual((await adapter.listFamilies({ characterId: 'c2' })).map((f) => f.familyId), ['f2']);
+    // 不传角色 = 不过滤（沿用原语义）
+    assert.deepEqual((await adapter.listFamilies()).map((f) => f.familyId).sort(), ['f1', 'f2']);
+});
+
+test('档2：listFamilies 会把启动重联的占位补读成真家族（否则传角色时被整段滤空）', async () => {
+    const containers = new Map();
+    const doFetch = async (url, init) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        if (url.includes('chats/get')) return { ok: true, json: async () => containers.get(body.file_name) || [] };
+        if (url.includes('chats/save')) { containers.set(body.file_name, body.chat); return { ok: true, json: async () => ({ ok: true }) }; }
+        return { ok: true, json: async () => ({}) };
+    };
+    const first = await createOfficialAdapter({ fetch: doFetch });
+    await first.createFamily({
+        family: {
+            familyId: 'f1', chatKey: 'av1::c1的聊天', characterId: 'c1', name: 'c1的聊天', integrity: 'c-1',
+            branches: [{ id: 'b_main', name: '主分支', is_default: true, fork_floor: 0 }],
+            branchPaths: { b_main: { 1: 'g1' } },
+        },
+    });
+    const second = await createOfficialAdapter({ fetch: doFetch });
+    // 重启后会话缓存只剩持久索引里的指针占位（没有角色）→ 传角色前必须先补读容器
+    assert.deepEqual((await second.listFamilies({ characterId: 'c1' })).map((f) => f.name), ['c1的聊天']);
 });

@@ -31,19 +31,17 @@ def main():
 
         print("BOOTED:", booted)
 
-        # 探测扩展加载状态
+        # 探测扩展加载状态（R5：入口 = 工具图标排里的插件按钮；设置抽屉零注入）
         info = pg.evaluate("""() => {
-            const drawer = document.querySelector('#chatfilesys-settings');
-            const content = document.querySelector('#chatfilesys-settings .chatfilesys-content');
+            const entry = document.getElementById('chatfilesys-entry');
             return {
                 hasExtensionsSettings: !!document.querySelector('#extensions_settings'),
-                hasDrawer: !!drawer,
-                drawerHTMLLen: drawer ? drawer.innerHTML.length : -1,
-                hasContent: !!content,
-                contentLen: content ? content.innerHTML.length : -1,
-                contentSnippet: content ? content.innerHTML.slice(0, 400) : null,
+                legacyDrawer: !!document.querySelector('#chatfilesys-settings'),
+                hasEntryButton: !!entry,
+                entryInSendForm: entry ? entry.parentElement?.id === 'leftSendForm' : false,
                 extPanelCount: document.querySelectorAll('#extensions_settings .inline-drawer').length,
                 chatMesCount: document.querySelectorAll('#chat .mes').length,
+                verBtnCount: document.querySelectorAll('#chat .chatfilesys-ver-btn').length,
             };
         }""")
         for k, v in info.items():

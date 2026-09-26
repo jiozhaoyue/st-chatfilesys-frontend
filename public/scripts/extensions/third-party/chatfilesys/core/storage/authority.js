@@ -324,8 +324,9 @@ CREATE TABLE IF NOT EXISTS branch_paths (
         /**
          * 消息补丁（T0b）：投影 → 应用 → 按键写回（详见 `core/patch-rows.js`）。
          * 结构与档2/档3 共用同一个纯函数，差异只在持久化手法（SQL 按 key 删 + upsert）。
+         * W6：`branchId`（投影基准）与 `targetBranchId`（切分支时的结构收敛目标）分开传。
          */
-        async applyOps({ familyId, ops, expectedIntegrity, model, hostMetadata, keyBindings, branchId }) {
+        async applyOps({ familyId, ops, expectedIntegrity, model, hostMetadata, keyBindings, branchId, targetBranchId }) {
             await ensureMigrated();
             const conflict = await checkIntegrity(familyId, expectedIntegrity);
             if (conflict) return { ok: false, conflict: true };
@@ -342,6 +343,7 @@ CREATE TABLE IF NOT EXISTS branch_paths (
                 ops,
                 model: model || current.model,
                 branchId,
+                targetBranchId,
             });
             if (!plan.ok) return { ok: false, reason: plan.reason, detail: plan.detail };
             for (const d of plan.deletes) {

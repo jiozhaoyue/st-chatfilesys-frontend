@@ -225,3 +225,98 @@ test('patch-rows：空 ops → 原样返回（不产生写入）', () => {
     assert.deepEqual(r.rows.map((x) => `${x.floorNo}#${x.variantId}`), ['1#g1', '2#g2', '3#g3']);
     assert.deepEqual(r.path, ctx.path);
 });
+
+/* ---------------- W6（2026-09-26）：投影基准与结构收敛目标分开 ---------------- */
+
+test('patch-rows：切分支的 ops 是对着**切换前**的 body 算的（W6 真机实录）', () => {
+    // 真机实录（tests/e2e/probe_switch_patch.py，Dev 8003）：主分支 4 层 → 切到只到第 2 层的分支，
+    // 宿主发来 `test /3` + `remove /3` + `test /2` + `remove /2`——下标是对着**旧 body（4 层）**的。
+    // 旧实现把「目标分支」当投影基准 → 目标只有 2 层 → `test /3` 越界 → 接缝拒绝 `test-failed｜/3`。
+    const rows = mkRows([
+        [1, 'g1', line('一')],
+        [2, 'g2', line('二')],
+        [3, 'g3', line('三')],
+        [4, 'g4', line('四')],
+    ]);
+    const model = mkModel([
+        ['b_main', { 1: 'g1', 2: 'g2', 3: 'g3', 4: 'g4' }],
+        ['b1', { 1: 'g1', 2: 'g2' }],
+    ], 'b1');
+    const r = planBodyPatch({
+        rows, path: model.branches[0].path, model, // 投影基准 = 切换前那条（b_main）
+        branchId: 'b_main', targetBranchId: 'b1',
+        ops: [
+            { op: 'test', path: '/3', value: line('四') },
+            { op: 'remove', path: '/3' },
+            { op: 'test', path: '/2', value: line('三') },
+            { op: 'remove', path: '/2' },
+        ],
+    });
+    assert.equal(r.ok, true, '（旧实现在这里返回 test-failed）');
+    assert.deepEqual(r.path, { 1: 'g1', 2: 'g2' });
+    assert.deepEqual(r.model.branches.find((b) => b.id === 'b_main').path,
+        { 1: 'g1', 2: 'g2', 3: 'g3', 4: 'g4' }, '来源分支的历史不得被目标分支的长度截断');
+    assert.deepEqual(r.deletes, [], '切分支不删任何行（来源分支仍引用它们）');
+});
+
+test('patch-rows：目标分支声明的变体还没有行时，也不把补丁判成投影不全（W6 根因）', () => {
+    // 旧实现按目标分支投影：目标 path 的 g9 尚无行 → `projection-incomplete` 直接拒绝。
+    // 正确语义 = 按**本次键所在的**分支投影（那才是宿主 body 的来源），目标分支只决定收敛结果。
+    const rows = mkRows([
+        [1, 'g1', line('一')],
+        [2, 'g2', line('二')],
+        [3, 'g3', line('三')],
+    ]);
+    const model = mkModel([
+        ['b_main', { 1: 'g1', 2: 'g2', 3: 'g3' }],
+        ['b2', { 1: 'g1', 2: 'g9' }], // g9 只在模型里声明，库里还没有这一行
+    ], 'b2');
+    const r = planBodyPatch({
+        rows, path: model.branches[0].path, model,
+        branchId: 'b_main', targetBranchId: 'b2',
+        ops: [{ op: 'remove', path: '/2' }],
+    });
+    assert.equal(r.ok, true, '（旧实现在这里返回 projection-incomplete）');
+    assert.deepEqual(r.path, { 1: 'g1', 2: 'g2' });
+    assert.deepEqual(r.model.branches.find((b) => b.id === 'b2').path, { 1: 'g1', 2: 'g2' }, '收敛到实际投影');
+    assert.deepEqual(r.model.branches.find((b) => b.id === 'b_main').path,
+        { 1: 'g1', 2: 'g2', 3: 'g3' }, '来源分支原样保留');
+    assert.deepEqual(r.deletes, [], 'b_main 仍引用第 3 层 → 该行保留（不能因为目标分支短就回收）');
+});
+
+test('patch-rows：切到更长的分支（尾段 add）→ 沿用目标分支声明的变体，来源分支原样保留', () => {
+    const rows = mkRows([
+        [1, 'g1', line('一')],
+        [2, 'g2', line('二')],
+        [3, 'g3', line('三')],
+        [4, 'g4', line('四')],
+    ]);
+    const model = mkModel([
+        ['b_main', { 1: 'g1', 2: 'g2', 3: 'g3', 4: 'g4' }],
+        ['b1', { 1: 'g1', 2: 'g2' }],
+    ], 'b_main');
+    const r = planBodyPatch({
+        rows, path: model.branches.find((b) => b.id === 'b1').path, model, // 投影基准 = 切换前的 b1
+        branchId: 'b1', targetBranchId: 'b_main',
+        ops: [
+            { op: 'add', path: '/2', value: line('三') },
+            { op: 'add', path: '/3', value: line('四') },
+        ],
+    });
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.path, { 1: 'g1', 2: 'g2', 3: 'g3', 4: 'g4' }, '沿用目标分支已声明的变体号');
+    assert.deepEqual(r.model.branches.find((b) => b.id === 'b1').path, { 1: 'g1', 2: 'g2' },
+        '来源分支（切换前那条）不得被加长');
+    assert.deepEqual(r.deletes, []);
+});
+
+test('patch-rows：不传 targetBranchId → 收敛目标 = 投影基准（既有语义不变）', () => {
+    const ctx = linear();
+    const r = plan(ctx, [{ op: 'remove', path: '/1' }]);
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.path, { 1: 'g1', 2: 'g3' }, '第 2 层被删 → 第 3 层前移（其变体号不动）');
+    assert.deepEqual(r.model.branches.find((b) => b.id === 'b_main').path, { 1: 'g1', 2: 'g3' });
+    assert.deepEqual(r.deletes.map((d) => `${d.floorNo}#${d.variantId}`).sort(), ['2#g2', '3#g3'].sort(),
+        '被删层的行 (2,g2) 与换层后的旧键 (3,g3) 一并回收（新键是 (2,g3)）');
+});
+

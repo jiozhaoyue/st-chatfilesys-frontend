@@ -18,13 +18,15 @@
  *   deleteFamily({ familyId }) -> { ok }
  *   loadFloors({ familyId, from, limit }) -> { floors:[{floorNo,variantId,seq,content,contentHash,sendDate}], hasMore }
  *   saveFloors({ familyId, floors, expectedIntegrity }) -> { ok, integrity } | { ok:false, conflict:true }
- *   applyOps({ familyId, ops, model?, branchId?, hostMetadata?, keyBindings?, expectedIntegrity }) -> { ok, integrity, totalMessages }
+ *   applyOps({ familyId, ops, model?, branchId?, targetBranchId?, hostMetadata?, keyBindings?, expectedIntegrity }) -> { ok, integrity, totalMessages }
  *     | { ok:false, conflict:true } | { ok:false, reason, detail }
- *     - 消息补丁（T0b）：ops 是挂在**按活跃走法投影出来的 body 数组**上的 RFC6902（可含 `/N/字段` 深路径），
+ *     - 消息补丁（T0b）：ops 是挂在**按投影基准分支投影出来的 body 数组**上的 RFC6902（可含 `/N/字段` 深路径），
  *       语义（投影 → 应用 → 按键写回 / 全局删层 / 重投影）统一由 `core/patch-rows.js` 实现，三档只是落库手法不同。
- *     - model：**只有走法切换时**由 seam 传入（目标走法决定重投影结构）；未传表示以库内模型为准。
- *     - branchId（T1）：投影基准走法（ops 的下标是对着它的 body 算的）。未传 = 活跃走法；
- *       原生分支/检查点键必须传该键所在走法，否则在分支聊天里改消息会写错行。
+ *     - model：**只有切分支时**由 seam 传入（目标分支决定重投影结构）；未传表示以库内模型为准。
+ *     - branchId（T1）：**投影基准分支**（ops 的下标是对着它的 body 算的）。未传 = 活跃分支；
+ *       原生分支/检查点键必须传该键所在分支，否则在分支聊天里改消息会写错行。
+ *     - targetBranchId（W6）：**结构收敛目标分支**（补丁之后 body 应等于它的投影，被改写的 path 也是它）。
+ *       切分支时 = 目标分支，而 branchId 仍是**切换前**那条（ops 是对着旧 body 算的）；不切换时两者相同。
  *     - hostMetadata / keyBindings：undefined = 不动它（同 saveModel）。
  *     - 失败语义：`test-failed`（库内容与宿主假设不符）→ seam 映射 409；其余 reason → 400（宿主自行回退全量保存）。
  *   saveModel({ familyId, model, hostMetadata, keyBindings, expectedIntegrity, keepCurrent }) -> { ok, integrity } | { ok:false, conflict:true }

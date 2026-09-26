@@ -51,8 +51,16 @@ export async function createOfficialAdapter(ctx) {
     // T1：除主键外还登记**键绑定**（原生分支/检查点键 → 同一家族），否则那些键读不回库
     const knownByKey = new Map();
 
+    /**
+     * 家族键 → 家族 登记（T1：主键之外的绑定键也要登记）。
+     *
+     * W2 修复（2026-09-26）：登记前**先清掉该家族的旧键**——「删除绑定键」只解绑不删家族，
+     * 若旧键留在表里，`loadFamily({chatKey: 旧键})` 仍会命中，且 `persistIndex` 会把它写回持久索引
+     * （重启后旧键又活过来；宿主将来重用该文件名时会被误认成同一家族）＝映射断裂。
+     */
     function remember(family) {
         if (!family) return;
+        for (const [k, f] of knownByKey) if (f.familyId === family.familyId) knownByKey.delete(k);
         const keys = [family.chatKey, ...Object.keys(family.keyBindings || {})];
         for (const k of keys) if (k) knownByKey.set(k, family);
     }
@@ -100,8 +108,10 @@ export async function createOfficialAdapter(ctx) {
             const idx = await readIndex();
             for (const [chatKey, familyId] of Object.entries(idx)) {
                 if (!knownByKey.has(chatKey)) {
-                    // 只登记身份占位（chatKey→familyId 指针），容器内容首次使用时读
-                    knownByKey.set(chatKey, { familyId, chatKey });
+                    // 只登记身份占位（chatKey→familyId 指针 + placeholder 标记），容器内容首次使用时读。
+                    // 标记的用处：`listFamilies` 传 characterId 时需要真家族（占位没有角色）→ 按需补读，
+                    // 否则重启后「角色卡的聊天」页签的库内一侧会被整段滤空（N5，2026-09-26）。
+                    knownByKey.set(chatKey, { familyId, chatKey, placeholder: true });
                 }
             }
         } catch (e) {
@@ -198,11 +208,31 @@ export async function createOfficialAdapter(ctx) {
     await warmupFromIndex();
 
     return {
-        async listFamilies() {
-            // 档2 无列表端点：返回会话已知家族（导入旅程显式登记过的）
-            const out = [];
-            for (const f of knownByKey.values()) out.push({ familyId: f.familyId, name: f.name, updatedAt: null });
-            return out;
+        /**
+         * 档2 无列表端点：返回会话已知家族（导入旅程显式登记过的）。
+         *
+         * N5（2026-09-26）：**按 characterId 过滤**——签名与过滤语义对齐档1/档3
+         * （`authority.js` 的 `WHERE character_id = ?`、`idb.js` 的 `!characterId || f.characterId === characterId`）。
+         * 不收角色会把别的角色的家族列进「角色卡的聊天」页签（点「结构树」必空）。
+         *
+         * 启动重联留下的占位（`warmupFromIndex`）没有 characterId，传了角色就会连带被滤掉
+         * → 重启后页签的库内一侧全消失。故先按需补读一次容器，把占位换成真家族
+         * （读不到 = 悬挂索引，直接丢掉）。
+         */
+        async listFamilies({ characterId } = {}) {
+            for (const f of [...knownByKey.values()]) {
+                if (!f.placeholder) continue;
+                const raw = await loadFamilyRaw({ familyId: f.familyId }).catch(() => null);
+                if (raw) continue; // 已由 loadFamilyRaw 里的 remember() 换成真家族
+                for (const [k, v] of knownByKey) if (v.familyId === f.familyId) knownByKey.delete(k);
+            }
+            const out = new Map(); // 按 familyId 去重（一个家族的多个键共享同一对象）
+            for (const f of knownByKey.values()) {
+                if (f.placeholder) continue;                                // 补读失败后残留（容器已不在）
+                if (characterId && f.characterId !== characterId) continue;  // 别的角色的家族
+                out.set(f.familyId, { familyId: f.familyId, name: f.name, updatedAt: null });
+            }
+            return [...out.values()];
         },
 
         async loadFamily(args) {
@@ -287,9 +317,12 @@ export async function createOfficialAdapter(ctx) {
         /**
          * 消息补丁（T0b）：投影 → 应用 → 按键写回，详见 `core/patch-rows.js`。
          * model / hostMetadata 与行同一次写（宿主 patch 请求体里带的是整份 chat_metadata，
-         * 其中的走法模型与外来命名空间都必须一起落地，T0c）。
+         * 其中的分支模型与外来命名空间都必须一起落地，T0c）。
+         *
+         * W6：`branchId`（投影基准：ops 下标对着它算）与 `targetBranchId`（结构收敛目标：
+         * 切分支时 = 目标分支）分开传；不切换时后者缺省 = 前者。
          */
-        async applyOps({ familyId, ops, expectedIntegrity, model, hostMetadata, keyBindings, branchId }) {
+        async applyOps({ familyId, ops, expectedIntegrity, model, hostMetadata, keyBindings, branchId, targetBranchId }) {
             const raw = await loadFamilyRaw({ familyId });
             if (!raw) return { ok: false, reason: 'family-not-found' };
             if (integrityConflict(expectedIntegrity, raw.family.integrity)) {
@@ -301,6 +334,7 @@ export async function createOfficialAdapter(ctx) {
                 ops,
                 model: model || raw.family.model,
                 branchId,
+                targetBranchId,
             });
             if (!plan.ok) return { ok: false, reason: plan.reason, detail: plan.detail };
             const rows = applyRowWrites(raw.floorRows, plan.rows, plan.deletes);

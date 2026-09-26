@@ -34,7 +34,13 @@ export async function computeHash(row) {
 
 /**
  * jsonl 行数组 → 带 hash 的楼层行序列。
- * @param {string[]} lines [header, ...消息行字符串]（或纯消息行数组）
+ *
+ * **两种行形态都收**（2026-09-26 真机取事实）：宿主 `/api/chats/get` 回的是**已解析的对象**
+ * （FS/SQLite 引擎都会把每一行 `JSON.parse` 后回），而回收站快照/单测给的是 jsonl **字符串**。
+ * 只认字符串会让导入进库的是**空家族**（0 楼层）——而且测「当前打开的聊天」时会被宿主随后的
+ * 全量保存回填掩盖（`tests/e2e/test_cold_import_header.py` 的冷路径才暴露）。故两种都认。
+ *
+ * @param {Array<string|object>} lines [header, ...消息行]（字符串或已解析对象）
  * @returns {Promise<{rows: Array<{floorNo: number, row: object, hash: string, sendDate, sender}>, stats: {skipped: number}}>}
  */
 export async function prepareRows(lines) {
@@ -42,12 +48,18 @@ export async function prepareRows(lines) {
     let skipped = 0;
     let floorNo = 0;
     for (const line of lines || []) {
-        if (!line || typeof line !== 'string') { skipped++; continue; }
         let obj;
-        try { obj = JSON.parse(line); } catch { skipped++; continue; }
-        if (!obj || typeof obj !== 'object' || !('mes' in obj)) {
+        if (typeof line === 'string') {
+            try { obj = JSON.parse(line); } catch { skipped++; continue; }
+        } else if (line && typeof line === 'object') {
+            obj = line;
+        } else {
+            skipped++;
+            continue;
+        }
+        if (Array.isArray(obj) || !('mes' in obj)) {
             // header 行（含 chat_metadata）与非法消息行跳过
-            if (obj && ('chat_metadata' in obj)) continue;
+            if ('chat_metadata' in obj) continue;
             skipped++;
             continue;
         }

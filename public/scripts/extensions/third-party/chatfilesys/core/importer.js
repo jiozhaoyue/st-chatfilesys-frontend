@@ -12,10 +12,11 @@
  * - 全程失败安全：任一文件失败 → 记入 failed，不阻断其余文件（结果弹窗统一汇报）
  */
 
-import { prepareRows, alignMerge } from './merge.js';
+import { prepareRows, alignMerge, computeHash } from './merge.js';
 import { storeFromModel } from './store-bridge.js';
 import { enableForChat } from './branches.js';
 import { normalizeChatKey } from './seam.js';
+import { hostMetadataOfHeader, mergeHostMetadata, stripKeyOwnedMeta } from './chat-meta.js';
 
 /** 隐容器前缀：这些文件是本插件的库存储，绝不能当存量 jsonl 导入 */
 const HIDDEN_PREFIX = '__cfsys__';
@@ -23,7 +24,11 @@ const HIDDEN_PREFIX = '__cfsys__';
 /**
  * 纯函数：候选聊天列表 → 导入计划。
  * @param {Array<{file_name: string}>} candidates search 端点返回的聊天列表
- * @param {{currentFileName?: string}} opts 排除当前打开的聊天（正在被宿主使用）
+ * @param {{currentFileName?: string, only?: string|string[]|null, includeCurrent?: boolean}} opts
+ *        `currentFileName` = 当前打开的聊天（默认排除：它正被宿主使用，全量导入不该动它）；
+ *        `only` 非空 = 只导入指定的这几个文件名（弹窗「角色卡的聊天 → 转数据库」按行触发）；
+ *        `includeCurrent` = **连当前打开的聊天一起导入**（T8 入库提醒弹窗的「纯库」/「双写」按钮：
+ *        用户要转的就是眼前这个聊天）。只在 `only` 明确点到它时才有意义——默认全量导入仍然排除当前聊天。
  * @returns {{candidates: Array<{fileName: string}>, skipped: {hidden: string[], current: string[]}}}
  */
 export function planImport(candidates, opts = {}) {
@@ -31,11 +36,17 @@ export function planImport(candidates, opts = {}) {
     const current = [];
     const list = [];
     const cur = String(opts.currentFileName || '').replace(/\.jsonl$/i, '');
+    const only = opts.only == null
+        ? null
+        : new Set((Array.isArray(opts.only) ? opts.only : [opts.only])
+            .map((x) => String(x || '').replace(/\.jsonl$/i, ''))
+            .filter(Boolean));
     for (const c of candidates || []) {
         const name = String(c?.file_name || '').replace(/\.jsonl$/i, '');
         if (!name) continue;
         if (name.startsWith(HIDDEN_PREFIX) || name.includes(HIDDEN_PREFIX)) { hidden.push(name); continue; }
-        if (cur && name === cur) { current.push(name); continue; }
+        if (only && !only.has(name)) continue;
+        if (cur && name === cur && !opts.includeCurrent) { current.push(name); continue; }
         list.push({ fileName: name });
     }
     return { candidates: list, skipped: { hidden, current } };
@@ -43,14 +54,22 @@ export function planImport(candidates, opts = {}) {
 
 /**
  * 纯函数：单个 jsonl 文件内容 → 首次建档的 family + 首批楼层行。
+ *
+ * W5（2026-09-26）：`hostMetadata` = 源 jsonl 首行 header 里的**聊天头保留面**
+ * （其他插件写进 chat_metadata 的命名空间、`main_chat` 线索……）。冷导入（导入一个当前
+ * 没打开的聊天）时，宿主内存里的那份 metadata 帮不上忙，源文件就是唯一来源——
+ * 不带上它，别的插件的内容与父线索就永远进不了库。
+ *
  * @param {string[]} lines [header, ...消息行字符串]
  * @param {{familyId, chatKey, characterId, name}} identity
+ * @param {object|null} [hostMetadata] 源 header 的保留面（`hostMetadataOfHeader` 产物）
  * @returns {Promise<{family, floors, stats}>} family = storeFromModel 产物；floors = 楼层行
  */
-export async function buildFamilyFromJsonl(lines, identity) {
+export async function buildFamilyFromJsonl(lines, identity, hostMetadata = null) {
     const { rows, stats } = await prepareRows(lines);
     const model = enableForChat(rows.map((r) => r.row)); // 主分支 = 全部楼层
     const family = storeFromModel(model, identity) // 版本号由 store-bridge 生成（T1/N19 字符串形态）;
+    if (hostMetadata && Object.keys(hostMetadata).length) family.hostMetadata = hostMetadata;
     const floors = rows.map((r) => ({
         floorNo: r.floorNo,
         variantId: `g${r.floorNo}`,
@@ -141,16 +160,20 @@ function nextBranchIdOf(model) {
  *   api: {searchChats: Function, readChatFile: Function, deleteChatFile: Function},
  *   confirm: Function, progress: Function,
  * }} deps
- * @param {{currentFileName?: string, deleteSources: boolean}} opts
+ * @param {{currentFileName?: string, deleteSources: boolean, only?: string|string[]|null,
+ *          includeCurrent?: boolean}} opts
  * @returns {Promise<{totalFiles, importedFiles, totalMerged, failed: Array, families: Array}>}
  */
 export async function runImport(deps, opts = {}) {
     const { adapter, trash, api, confirm, progress = () => {} } = deps;
     const results = { totalFiles: 0, importedFiles: 0, totalMerged: 0, failed: [], families: [] };
 
-    // ① 检测：枚举候选（native fetch，绕开 seam 拦截）
+    // ① 检测：枚举候选（native fetch，绕开 seam 拦截）；opts.only 限定到指定文件；
+    //    opts.includeCurrent = 连当前打开的聊天一起导入（T8 提醒弹窗的「纯库」/「双写」按钮）
     const listing = await api.searchChats();
-    const plan = planImport(listing, { currentFileName: opts.currentFileName });
+    const plan = planImport(listing, {
+        currentFileName: opts.currentFileName, only: opts.only, includeCurrent: opts.includeCurrent,
+    });
     results.totalFiles = plan.candidates.length;
     progress({ phase: 'detected', total: plan.candidates.length, skipped: plan.skipped });
     if (!plan.candidates.length) return results;
@@ -192,6 +215,9 @@ async function importOneFile(deps, { fileName, targetFamilyId, characterId, avat
     // 读取源文件（native：绕开 seam 拦截，读原生 jsonl）
     const data = await api.readChatFile(fileName);
     if (!data) throw new Error('源文件读取失败');
+    // W5：源 jsonl 首行 header 的聊天头**整份保留**（其他插件的命名空间、main_chat 线索……）。
+    // 冷路径（导入一个当前没打开的聊天）里，宿主内存那份 metadata 帮不上忙，源文件是唯一来源。
+    const incomingHost = hostMetadataOfHeader(data.header);
 
     // 合并目标：显式 targetFamilyId（跨聊天合并）→ chatKey 既有 → 新建档
     let existing = null;
@@ -208,7 +234,7 @@ async function importOneFile(deps, { fileName, targetFamilyId, characterId, avat
         const { family, floors } = await buildFamilyFromJsonl(data.lines, {
             familyId: `f_${fileName.replace(/[^\w-]/g, '_')}_${Date.now().toString(36)}`,
             chatKey, characterId: characterId ?? '', name: fileName,
-        });
+        }, incomingHost);
         const cr = await adapter.createFamily({ family });
         if (!cr?.ok) throw new Error(`建档失败: ${cr?.reason}`);
         // 分块写（500/批）
@@ -219,10 +245,17 @@ async function importOneFile(deps, { fileName, targetFamilyId, characterId, avat
     } else {
         // 合并：库内既有行（带 hash） vs 源文件行（limit 用大数不用 Infinity——Authority 档直传 SQL 参数）
         const { floors: existingFloors } = await adapter.loadFloors({ familyId: existing.familyId, from: 0, limit: 1e9 });
-        const existingRows = existingFloors.map((f) => ({
-            hash: f.contentHash,
-            sendDate: f.sendDate,
-            sender: safeParse(f.content)?.name ?? null,
+        // 指纹补齐（2026-09-26 真机实录）：接缝写路径落库的行 `contentHash` 留空（它不做合并判定），
+        // 而 LCP 比的是 hash —— `null ≠ sha256` 会让对齐在**第 1 层**就断，整份内容被当成"分叉"再挂
+        // 一条同内容分支（现象：纯库模式下新建的聊天再走一次导入 → 家族里多出一条重复分支）。
+        // 故库里没存 hash 的行在导入前按内容现算一次，对齐才是按内容对齐。
+        const existingRows = await Promise.all(existingFloors.map(async (f) => {
+            const obj = safeParse(f.content);
+            return {
+                hash: f.contentHash ?? (obj ? await computeHash(obj) : null),
+                sendDate: f.sendDate,
+                sender: obj?.name ?? null,
+            };
         }));
         const { floors: mergeFloors, stats, forkFloor } = await mergeIntoFamily(existingRows, data.lines);
         if (mergeFloors.length) {
@@ -235,6 +268,23 @@ async function importOneFile(deps, { fileName, targetFamilyId, characterId, avat
         }
         mergedCount = stats.merged;
         familyId = existing.familyId;
+    }
+
+    // W5：聊天头（整份）并入——**逐命名空间合并**，不得整包覆盖库内已有内容
+    // （合并语义单点 = `core/chat-meta.js#mergeHostMetadata`，与接缝写路径同一套）
+    // F2（2026-09-26）：并入家族级的只有**属于这个家族**的项——被并入的那个聊天自己的
+    // `main_chat`（父线索）归它自己的键绑定，混进家族级会让主键也冒出「返回父聊天」。
+    // 建档案那一路不剔（`existing` 为空）：那份文件就是新家族的主键，父线索是它自己的。
+    if (Object.keys(incomingHost).length) {
+        const forFamily = existing ? stripKeyOwnedMeta(existing, chatKey, incomingHost) : incomingHost;
+        const mergedHost = mergeHostMetadata(existing?.hostMetadata, forFamily);
+        if (JSON.stringify(mergedHost) !== JSON.stringify(existing?.hostMetadata || {})) {
+            const rHost = await adapter.saveModel({
+                familyId, model: undefined, hostMetadata: mergedHost,
+                expectedIntegrity: null, keepCurrent: true, // 只写聊天头，不动模型
+            });
+            if (rHost && rHost.ok === false) throw new Error(`聊天头落库失败: ${rHost.reason}`);
+        }
     }
 
     // ④ 快照回收站 → 删源（顺序保证：快照成功才删）

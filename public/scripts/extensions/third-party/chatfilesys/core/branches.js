@@ -161,13 +161,24 @@ export function validate(model, bodyLength) {
 /**
  * 原生 append 追加了一行后登记：新增楼层 = bodyLength（body 已含新行）。
  * 组留在 body（不进 groups），只登记 path 引用。
+ *
+ * W3 修正（2026-09-26）：登记目标分支**可显式给出**。原生分支/检查点键上读到的 body 是
+ * **该键所在分支**的投影（`core/takeover.js#branchIdForKey`），而家族活跃分支是另一条
+ * （T1 接管刻意不改它，见 `core/takeover.js` 函数头）：按 `getActive` 登记会落到错的分支上并抛
+ * 「新楼层 ≠ maxFloor+1」，于是该键的新楼层永远进不了模型——而库内 path 已被接缝扩好，
+ * 之后任何一次 metadata 写都会把库里的 path 抹回旧版（消息从视图消失）。
+ *
+ * @param {object} model
+ * @param {number} bodyLength 新楼层号（= body 行数）
+ * @param {string|null} [branchId] 目标分支（缺省 = 家族活跃分支：off 模式与家族级路径的既有行为）
  * @returns {string} 新组 id
  */
-export function registerAppendedGroup(model, bodyLength) {
-    const b = getActive(model);
+export function registerAppendedGroup(model, bodyLength, branchId = null) {
+    const b = branchId ? getBranch(model, branchId) : getActive(model);
+    if (!b) throw new Error(`registerAppendedGroup: 分支 "${branchId}" 不存在`);
     const floor = bodyLength;
     if (floor !== maxFloor(b) + 1) {
-        throw new Error(`registerAppendedGroup: 新楼层 ${floor} ≠ 活跃分支 maxFloor+1（${maxFloor(b) + 1}）`);
+        throw new Error(`registerAppendedGroup: 新楼层 ${floor} ≠ 分支 ${b.id} maxFloor+1（${maxFloor(b) + 1}）`);
     }
     const gid = nextGroupId(model);
     b.path[floor] = gid;
@@ -195,6 +206,48 @@ export function renameBranch(model, id, name) {
     const b = getBranch(model, id);
     if (!b) throw new Error(`renameBranch: 分支 "${id}" 不存在`);
     b.name = String(name);
+    return b;
+}
+
+/* ---------------- 主分支（T9 / R8.3：可更换） ---------------- */
+
+/**
+ * 迁移「主分支」标记到目标分支（校验目标存在）。
+ *
+ * 主分支 = **打开这个聊天时看到的那条分支**（R8.3）。它同时是删除的护城河：
+ * `deleteBranch` 拒绝删除默认分支 → 要删主分支，先用 `setMainBranch` 换主分支。
+ * 本函数只动 `is_default` 这一个字段（单一职责）；「打开看到的内容」由调用方
+ * 连同家族活跃分支/键绑定一起改（见 `setMainBranch`）。
+ *
+ * @param {object} model
+ * @param {string} id 目标分支 id
+ * @returns {object} 目标分支（同一引用）
+ */
+export function setDefaultBranch(model, id) {
+    const b = getBranch(model, id);
+    if (!b) throw new Error(`setDefaultBranch: 分支 "${id}" 不存在`);
+    for (const x of model.branches) x.is_default = x.id === b.id;
+    return b;
+}
+
+/**
+ * 「设为主分支」的完整模型侧动作：迁移 `is_default` + **家族活跃分支跟到同一条**。
+ *
+ * 为什么活跃分支也要跟：`active_branch` 是「库内家族打开时投影哪条分支」的兜底解析
+ * （`core/takeover.js#branchIdForKey` 在键没有绑定、或绑定被删后回落到它）。换了主分支
+ * 却不改它，会出现「点了设为主分支、打开却还是旧分支」，也会让旧主分支因为「仍是活跃分支」
+ * 删不掉（`deleteBranch` 的两条既有校验）。两者一起指到目标，语义才自洽。
+ *
+ * 库内的键绑定（主键 → 主分支）不在本函数里改——那是存储面的事，由 `index.js` 用
+ * `core/key-bindings.js#setBindingBranch` 与模型**同一次写入**落库。
+ *
+ * @param {object} model
+ * @param {string} id
+ * @returns {object} 目标分支
+ */
+export function setMainBranch(model, id) {
+    const b = setDefaultBranch(model, id);
+    model.active_branch = b.id;
     return b;
 }
 

@@ -30,9 +30,12 @@ def scenario(r):
                           st["domMes"] == 5 and st["branches"] is not None, f"{st['chatLen']}/{st['domMes']}"))
 
     # ---------- 2 任意楼层分叉零复制 ----------
-    r.click_action("fork", floor=3)
-    r.popup_ok()
-    r.settle(1500)
+    # R5：插件不再提供「新建走法」按钮（生产入口 = 宿主原生「创建分支 / 创建检查点」）；
+    # 测试需要精确楼层 → 数据层建走法后走 UI 切换（等价于已删除的「分叉并切换」）
+    nb = r.create_branch(3, name="分叉·F3")
+    r.settle(800)
+    r.ensure_active(nb)
+    r.settle(600)
     st = r.wait_state(lambda s: s["activeId"] != "b_main" and s["activeFloors"] == 3, desc="验收2 分叉")
     d = r.disk_state()
     shared = all(st["branches"][0]["path"].get(f) == st["branches"][1]["path"].get(f)
@@ -79,13 +82,16 @@ def scenario(r):
     n_patch = sum(1 for w in writes if w in ("patch", "save", "append"))
     has_full_save = "save" in writes
     active_el = r.js(f"""() => {{
-        const el = document.querySelector('{PANEL} .chatfilesys-branch.active');
-        return el ? el.querySelector('.name')?.textContent?.trim() : null;
-    }}""")
+        const el = document.querySelector('{PANEL} .chatfilesys-tnode.active');
+        return el ? {{ label: el.querySelector('.chatfilesys-tnode-name')?.textContent?.trim() || '',
+                       branch: el.dataset.branch }} : null;
+    }}""") or {}
     results.append(report("验收4:切换最小写入（官方 API 移除批+追加批，无全量回退）", n_patch <= 2 and not has_full_save,
                           f"writes={writes} 耗时={switch_ms:.0f}ms"))
-    results.append(report("验收4:UI 高亮正确", active_el is not None and "b1" in (active_el or "") or (active_el or "").startswith("分叉"),
-                          f"active={active_el}"))
+    # 高亮的判据 = 结构树里 active 节点的 data-branch 等于当前走法 id（不拿节点文本当判据：
+    # 自动名走法（主分支 / 分支N / 分叉·FN）在 nodeLabel 里**只显示序号**，文本里不含原名）
+    results.append(report("验收4:结构树高亮正确", active_el.get("branch") == nb and bool(active_el.get("label")),
+                          f"active={active_el} 期望={nb}"))
 
     # ---------- 5 关插件 vanilla + 重启用自愈 ----------
     r.js("""async (file) => {
@@ -99,8 +105,10 @@ def scenario(r):
     # 验收4 后活跃分支 = b1（5 层），文件 body 即 b1 投影
     r.wait_state(lambda s: s["chatLen"] == 5, timeout=40000, desc="vanilla 打开聊天")
     vanilla = r.js("""() => ({
-        panelGone: !document.querySelector('#chatfilesys-settings') ||
-                   !document.querySelector('#chatfilesys-settings .chatfilesys-settings-status')?.innerHTML,
+        panelGone: !document.getElementById('chatfilesys-entry')
+                   && !document.querySelector('#chatfilesys-settings')
+                   && !document.querySelector('.chatfilesys-popup')
+                   && !document.querySelector('.chatfilesys-ver-btn'),
         domMes: document.querySelectorAll('#chat .mes').length,
         model: SillyTavern.getContext().chatMetadata?.extensions?.chatfilesys ?
                JSON.parse(JSON.stringify(SillyTavern.getContext().chatMetadata.extensions.chatfilesys)) : null,
@@ -162,9 +170,12 @@ def scenario(r):
         return 1;
     }""")
     r.settle(1200)
-    r.popup_switch_tab("楼层")  # 楼层视图住 Tab 里（二期弹窗化），innerText 只含可见 Tab
-    pt = r.panel_text() or ""
-    results.append(report("验收7:编辑后面板同步", "编辑后的F3" in pt, pt[-150:]))
+    # R5 铁律：弹窗内**不得逐层列举楼层**（旧「楼层」页签已废除），故改断言「落盘同步」
+    # —— 编辑后的文本必须真的写进聊天文件，而不是出现在面板里
+    d_edit = r.disk_state()
+    results.append(report("验收7:编辑后落盘同步（原生编辑路径）",
+                          "A:编辑后的F3" in (d_edit.get("bodyTexts") or []),
+                          str(d_edit.get("bodyTexts"))))
 
     # swipe（原生 swipes 数据形态：mes = 当前活跃变体）
     r.js("""async () => {
@@ -180,15 +191,27 @@ def scenario(r):
         return 1;
     }""")
     r.settle(1200)
-    sw = r.js(f"""() => {{
-        const el = [...document.querySelectorAll('{PANEL} .chatfilesys-floor .swipes')];
-        return el.map(x => x.textContent.trim()).join(',');
-    }}""")
-    results.append(report("验收7:swipe 面板显示变体数", "swipe 2/2" in sw, f"sw={sw}"))
+    # 原生 swipe 数据（swipes/swipe_id/mes）必须原样保住；
+    # 版本按钮的出现条件 = **该层 swipe 组数 > 1**（R5/不变式 5）。
+    # 2026-09-26 修正：这条断言原来写的是「该层仍是单组 → 不得出现版本按钮」，但**期望值本身错了**——
+    # 本层的组数不是 1：验收5 在 vanilla 期间往 b1 续了第 6 层（U-vanilla-F6），而 b_main 的第 6 层
+    # 是另一份内容（U-U-main-F6），两条走法在第 6 层各占一个组 → 第 6 层**就是分叉点**。
+    # 真机取证（2026-09-26，本用例实跑时打印）：`swipeGroupsAt(model,6)` = ['g8','g9']，
+    # b_main.path[6]='g8' / b1.path[6]='g9'，两条走法都 6 层。故正确期望 = 出现版本按钮（1 个）。
+    sw = r.js("""() => {
+        const ctx = SillyTavern.getContext();
+        const line = ctx.chat[5];
+        const mes = document.querySelector('#chat .mes[mesid="5"]');
+        return { swipes: (line.swipes || []).length, swipeId: line.swipe_id, mes: line.mes,
+                 verBtns: mes ? mes.querySelectorAll('.chatfilesys-ver-btn').length : -1 };
+    }""")
+    results.append(report("验收7:swipe 原生一致（组内变体保留；该层是分叉点 → 版本按钮按组数出现）",
+                          sw.get("swipes") == 2 and sw.get("swipeId") == 1
+                          and sw.get("mes") == "swipe变体B" and sw.get("verBtns") == 1, str(sw)))
 
-    # 删除（面板路径，全局重编号：位置 F6 同时离开两个分支）
-    r.click_action("delete-floor", floor=6)
-    r.popup_ok()
+    # 删除（全局重编号：位置 F6 同时离开两个走法）
+    # R5：删消息入口 = 宿主原生按钮，插件的删层动作已删除；测试按数据层同一条路径重放
+    r.delete_floor(6)
     r.wait_state(lambda s: s["chatLen"] == 5, timeout=20000, desc="验收7 删层")
     st = r.state()
     bmain = next(b for b in st["branches"] if b["id"] == "b_main")

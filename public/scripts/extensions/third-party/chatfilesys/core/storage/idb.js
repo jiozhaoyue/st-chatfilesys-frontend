@@ -202,8 +202,9 @@ export async function createIdbAdapter(ctx = {}) {
         /**
          * 消息补丁（T0b）：投影 → 应用 → 按键写回（详见 `core/patch-rows.js`）。
          * model / hostMetadata 与行同一次提交（宿主 patch 请求体带整份 chat_metadata，T0c）。
+         * W6：`branchId`（投影基准）与 `targetBranchId`（切分支时的结构收敛目标）分开传。
          */
-        async applyOps({ familyId, ops, expectedIntegrity, model, hostMetadata, keyBindings, branchId }) {
+        async applyOps({ familyId, ops, expectedIntegrity, model, hostMetadata, keyBindings, branchId, targetBranchId }) {
             const meta = await loadMeta(familyId);
             if (!meta) return { ok: false, reason: 'family-not-found' };
             if (integrityConflict(expectedIntegrity, meta.integrity)) {
@@ -216,6 +217,7 @@ export async function createIdbAdapter(ctx = {}) {
                 ops,
                 model: model || current.model,
                 branchId,
+                targetBranchId,
             });
             if (!plan.ok) return { ok: false, reason: plan.reason, detail: plan.detail };
             const rows = applyRowWrites(await floorsOf(familyId), plan.rows, plan.deletes);

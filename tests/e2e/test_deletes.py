@@ -20,10 +20,11 @@ def build_family(r, floors):
         r.settle(800)
     st = r.state()
     assert st["chatLen"] == floors, f"造楼失败: {st['chatLen']} != {floors}"
-    # F3 分叉（b1 自动激活，body 折叠到 3 层）
-    r.click_action("fork", floor=3)
-    r.popup_ok()
-    r.settle(1500)
+    # F3 分叉（b1 激活，body 折叠到 3 层）
+    # R5：插件不再提供「新建走法」按钮（生产入口 = 宿主原生「创建分支 / 创建检查点」）
+    nb = r.create_branch(3, name="分叉·F3")
+    r.settle(800)
+    r.ensure_active(nb)
     st = r.state()
     assert st["activeId"] != "b_main" and st["activeFloors"] == 3, f"分叉未激活: {st['activeId']}/{st['activeFloors']}"
     # b1 续 2 层（私有 g6/g7）
@@ -44,12 +45,15 @@ def back_to_main(r):
 
 
 def scenario_delete_floor(r):
-    """删层：切回主分支后删 F2，验证重编号 + fork_base 平移 + 落盘一致。"""
+    """删层：切回主分支后删 F2，验证重编号 + fork_base 平移 + 落盘一致。
+
+    R5（2026-09-25）：插件的删层动作已删除（删消息的入口 = 宿主原生按钮）。
+    测试按已删除实现的同一条数据层路径重放（`Runner.delete_floor`），继续覆盖库语义。
+    """
     build_family(r, 5)
     back_to_main(r)
 
-    r.click_action("delete-floor", floor=2)
-    r.popup_ok()
+    r.delete_floor(2)
     r.settle(2000)
 
     st = r.state()
@@ -86,14 +90,23 @@ def scenario_delete_floor(r):
 
 
 def scenario_delete_branch(r):
-    """删分支：私有组 GC、共享组保留、默认分支无删除按钮。"""
+    """删分支：私有组 GC、共享组保留、默认分支点删除被守卫拒绝。"""
     build_family(r, 5)
     back_to_main(r)
 
-    # 默认分支不应渲染删除按钮
-    n = r.js(f"""() => document.querySelectorAll('{PANEL_SEL} [data-action="delete-branch"][data-branch="b_main"]').length""")
-    results.append(report("删分支:默认分支无删除按钮", n == 0, f"count={n}"))
+    # 默认分支不可删：R5 后「删除走法」只有一个按钮，作用对象 = 走法选择器选中的那条
+    #（旧 UI 是每条走法各带一个按钮、默认走法不渲染 → 那条断言随旧实现一并废除）
+    r.pick_branch("b_main")
+    r.click_action("delete-branch", branch="b_main")
+    r.popup_ok()
+    err_default = r.toastr_error()
+    r.settle(800)
+    st_default = r.state()
+    results.append(report("删分支:默认分支点删除被拒（toastr 错误 + 走法数不变）",
+                          bool(err_default) and "默认分支" in str(err_default) and len(st_default["branches"]) == 2,
+                          f"toast={err_default} branches={len(st_default['branches'])}"))
 
+    r.pick_branch("b1")
     r.click_action("delete-branch", branch="b1")
     r.popup_ok()
     r.settle(2000)
@@ -116,6 +129,7 @@ def scenario_delete_branch_guard(r):
     build_family(r, 5)  # 分叉后 b1 即活跃
     st0 = r.state()
 
+    r.pick_branch("b1")   # R5：管理按钮的作用对象 = 走法选择器选中的那条
     r.click_action("delete-branch", branch="b1")
     r.popup_ok()
     err = r.toastr_error()
@@ -126,7 +140,6 @@ def scenario_delete_branch_guard(r):
                           f"toast={err} branches={len(st['branches'])}"))
     ok_same = st["activeId"] == st0["activeId"] and st["activeFloors"] == 5
     results.append(report("删分支:拒绝后数据不变", ok_same, f"active={st['activeId']} floors={st['activeFloors']}"))
-    # 默认分支删除的 core 守卫已由单测覆盖（UI 不渲染入口，无浏览器路径）
 
 
 PANEL_SEL = 'dialog[open]:not([closing]) .chatfilesys-popup'

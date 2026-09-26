@@ -347,7 +347,10 @@ test('seam/键绑定：绑定键上的走法切换不动家族 active_branch（�
         });
         const args = adapter.lastSaveModelArgs;
         assert.equal(args.model.active_branch, 'b_main', '家族活跃走法不得被绑定键上的切换带跑');
-        assert.equal(args.branchId, 'b_new', '投影基准仍是切换目标');
+        // W6：投影基准与结构收敛目标是**两件事**——ops 的下标是对着「切换前本键的 body」算的，
+        // 故 `branchId` = 本键当前所在分支；`targetBranchId` = 入向声明的目标分支（结构按它收敛）。
+        assert.equal(args.branchId, 'b_cp', '投影基准 = 本键当前所在分支（切换前那条）');
+        assert.equal(args.targetBranchId, 'b_new', '结构收敛目标 = 入向模型声明的目标分支');
         assert.equal(args.keyBindings['av1::打斗之前'].branchId, 'b_new', '该键绑定跟随');
 
         // 对照：根键（无绑定）上的切换就是家族级切换，照旧改 active_branch
@@ -361,7 +364,8 @@ test('seam/键绑定：绑定键上的走法切换不动家族 active_branch（�
             }),
         });
         assert.equal(adapter.lastSaveModelArgs.model.active_branch, 'b_new');
-        assert.equal(adapter.lastSaveModelArgs.branchId, 'b_new');
+        assert.equal(adapter.lastSaveModelArgs.branchId, 'b_main', '根键的 body = 家族活跃走法的投影（切换前）');
+        assert.equal(adapter.lastSaveModelArgs.targetBranchId, 'b_new');
     } finally {
         seam.dispose();
         globalThis.fetch = original;

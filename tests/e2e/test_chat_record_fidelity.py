@@ -26,6 +26,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from playwright.sync_api import sync_playwright  # noqa: E402
+from harness import reset_instance  # noqa: E402
 
 BASE = "https://127.0.0.1:8003"
 EXT_SRC = "http://127.0.0.1:8417/public/scripts/extensions/third-party/chatfilesys"
@@ -222,6 +223,12 @@ def main():
         page = ctx.new_page()
         page.goto(BASE, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_selector("#send_textarea", state="attached", timeout=60000)
+        # T8 起：打开一个未入库的聊天会弹入库提醒 —— 本用例不测它，先写压制记录
+        # （免得模态窗挡住交互；与 harness.boot 同一做法）。
+        # 本用例是独立风格（不走 Runner.boot）：先把实例复位到**干净起点**（存储模式 / 测试角色 /
+        # 全新聊天 / 压制入库提醒）。否则串行跑时会被前一条用例留下的模式、旧聊天上的家族或
+        # 残留弹窗带偏——三类失败同源，2026-09-26 实测。
+        reset_instance(page)
         page.evaluate("() => { window.__nativeFetch = globalThis.fetch; }")
         print("[dev] 原生 fetch 引用已保存")
 

@@ -65,10 +65,12 @@ def main():
             print(f"register 100 floors: {reg_ms:.0f}ms")
 
             # F50 中段分叉（折叠 50 层尾部）
+            # R5：插件不再提供「新建走法」按钮（生产入口 = 宿主原生「创建分支 / 创建检查点」）
             r.pg.on("request", on_req)
             t0 = time.time()
-            r.click_action("fork", floor=50)
-            r.popup_ok()
+            nb = r.create_branch(50, name="分叉·F50")
+            r.settle(600)
+            r.ensure_active(nb, tries=3, settle_ms=300)
             r.wait_state(lambda s: s["activeId"] != "b_main" and s["activeFloors"] == 50 and s["chatLen"] == 50,
                          timeout=30000, desc="中段分叉")
             fork_ms = (time.time() - t0) * 1000
@@ -91,11 +93,10 @@ def main():
                                   f"均值={avg:.0f}ms 最差={max(times):.0f}ms patch载荷峰值={max_payload}B"))
             print("switch times:", [f"{t:.0f}" for t in times], "payload peak:", max_payload)
 
-            # 删层 F50（全局重编号）
+            # 删层 F50（全局重编号；R5：删消息入口 = 宿主原生按钮，测试按数据层同路径重放）
             patches.clear()
             t0 = time.time()
-            r.click_action("delete-floor", floor=50)
-            r.popup_ok()
+            r.delete_floor(50)
             r.wait_state(lambda s: s["chatLen"] == 99, timeout=30000, desc="删层F50")
             del_ms = (time.time() - t0) * 1000
             results.append(report("百层:删层 F50（全局重编号）", True, f"耗时={del_ms:.0f}ms"))

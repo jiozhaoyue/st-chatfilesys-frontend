@@ -85,12 +85,13 @@ export function layoutTree(model, opts = {}) {
 /**
  * 渲染 SVG 树到容器（含缩放/拖拽；点击节点 = data-action="switch" 委托）。
  * @param {HTMLElement} container
- * @param {{model: object, selectedId?: string}} view
+ * @param {{model: object, direction?: 'down'|'right', currentBranchId?: string}} view
+ *        `currentBranchId` = 本聊天键绑定的分支（W3：节点上的「当前」标记按它算，不是家族活跃分支）
  */
-export function renderTree(container, { model, direction = 'down' }) {
+export function renderTree(container, { model, direction = 'down', currentBranchId = null }) {
     if (!container || !model) return;
     const layout = layoutTree(model, { direction });
-    const active = getActiveBranch(model);
+    const active = getActiveBranch(model, currentBranchId);
     const width = Math.max(...layout.map((n) => n.x)) + NODE_W + 20;
     const height = Math.max(...layout.map((n) => n.y)) + NODE_H + 20;
 
@@ -115,7 +116,7 @@ export function renderTree(container, { model, direction = 'down' }) {
                 transform="translate(${n.x},${n.y})">
             <rect width="${NODE_W}" height="${NODE_H}" rx="8" style="stroke:${branchColor(model, b.id)}"></rect>
             <circle cx="14" cy="${NODE_H / 2}" r="5" fill="${branchColor(model, b.id)}"></circle>
-            <text class="chatfilesys-tnode-name" x="26" y="19">${esc(name)}${b.is_default ? '（默认）' : ''}</text>
+            <text class="chatfilesys-tnode-name" x="26" y="19">${esc(name)}${b.is_default ? '（主分支）' : ''}</text>
             <text class="chatfilesys-tnode-meta" x="26" y="35">${esc(summary || `${branchFloors(b)} 层`)}${isActive ? ' · 当前' : ''}</text>
         </g>`;
     }).join('');
@@ -128,7 +129,7 @@ export function renderTree(container, { model, direction = 'down' }) {
         </div>
         <div class="chatfilesys-tree-hint">
             <button class="menu_button" data-action="tree-direction" title="切换树的方向">${direction === 'right' ? '向右展开 ↓ 切回向下' : '向下展开 ↓ 切到向右'}</button>
-            <span>节点编号 = 走法顺序（自定义名附在编号后）· 滚轮缩放 · 拖拽平移 · 点击节点切换</span>
+            <span>节点编号 = 分支顺序（自定义名附在编号后）· 滚轮缩放 · 拖拽平移 · 点击节点切换</span>
         </div>`;
 
     bindPanZoom(container.querySelector('.chatfilesys-tree-vp'), container.querySelector('.chatfilesys-tree'));

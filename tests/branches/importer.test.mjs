@@ -37,6 +37,51 @@ test('planImport：空列表/无当前', () => {
     assert.equal(plan.candidates.length, 1);
 });
 
+test('planImport：only 限定到指定文件（T4「角色卡的聊天 → 转数据库」按行触发）', () => {
+    const list = [
+        { file_name: 'chat1.jsonl' },
+        { file_name: 'chat2.jsonl' },
+        { file_name: '__cfsys__f1.jsonl' },
+    ];
+    // 单个文件名，带不带 .jsonl 都能命中
+    assert.deepEqual(planImport(list, { only: 'chat2.jsonl' }).candidates.map((c) => c.fileName), ['chat2']);
+    assert.deepEqual(planImport(list, { only: 'chat1' }).candidates.map((c) => c.fileName), ['chat1']);
+    // 数组形式
+    assert.deepEqual(planImport(list, { only: ['chat1', 'chat2'] }).candidates.map((c) => c.fileName), ['chat1', 'chat2']);
+    // only 与 currentFileName 同时给出：命中的当前聊天仍被排除
+    assert.deepEqual(planImport(list, { only: 'chat1', currentFileName: 'chat1' }).candidates, []);
+    // only 指向不存在的文件 / 指向隐容器 → 空
+    assert.deepEqual(planImport(list, { only: 'nope' }).candidates, []);
+    assert.deepEqual(planImport(list, { only: '__cfsys__f1' }).candidates, []);
+    // 未给 only = 原行为（全量候选）
+    assert.deepEqual(planImport(list, {}).candidates.map((c) => c.fileName), ['chat1', 'chat2']);
+});
+
+test('planImport：includeCurrent 才把当前打开的聊天算进候选（T8 提醒弹窗①）', () => {
+    const list = [{ file_name: 'chat1.jsonl' }, { file_name: 'chat2.jsonl' }];
+    // 默认（含 only）：当前聊天仍被排除 —— 用户要转的就是眼前这个聊天，故 T8 必须显式放行
+    assert.deepEqual(planImport(list, { only: 'chat1', currentFileName: 'chat1' }).candidates, []);
+    assert.deepEqual(
+        planImport(list, { only: 'chat1', currentFileName: 'chat1', includeCurrent: true })
+            .candidates.map((c) => c.fileName),
+        ['chat1'],
+    );
+    // 放行后仍不带进别的文件（only 照样限定）+ 仍过滤隐容器
+    const plan = planImport(
+        [...list, { file_name: '__cfsys__f1.jsonl' }],
+        { only: 'chat1', currentFileName: 'chat1', includeCurrent: true },
+    );
+    assert.deepEqual(plan.candidates.map((c) => c.fileName), ['chat1']);
+    assert.deepEqual(plan.skipped.current, []);
+    assert.deepEqual(plan.skipped.hidden, ['__cfsys__f1']);
+    // 带 .jsonl 的当前文件名一样能命中
+    assert.deepEqual(
+        planImport(list, { only: 'chat1.jsonl', currentFileName: 'chat1', includeCurrent: true })
+            .candidates.map((c) => c.fileName),
+        ['chat1'],
+    );
+});
+
 /* ---------------- buildFamilyFromJsonl ---------------- */
 
 test('buildFamilyFromJsonl：建档 family+floors+主分支全楼层', async () => {
@@ -62,6 +107,34 @@ test('buildFamilyFromJsonl：header 行跳过不计楼层', async () => {
     const { floors, stats } = await buildFamilyFromJsonl(lines, { familyId: 'f', chatKey: 'k', characterId: 'c', name: 'n' });
     assert.equal(floors.length, 1);
     assert.equal(stats.skipped, 0); // header 是合法跳过（非损坏）
+});
+
+test('buildFamilyFromJsonl：**对象形态的行也计楼层**（2026-09-26 真机取事实）', async () => {
+    // 宿主 /api/chats/get 的 body 条目是**已解析的对象**（FS/SQLite 引擎都解析每一行）。
+    // 只认字符串的老实现会把整份聊天当非法行跳过 → 导入进库的是空家族（0 楼层），
+    // 而测「当前打开的聊天」时会被宿主随后的全量保存回填掩盖（冷路径才暴露）。
+    const { floors, stats } = await buildFamilyFromJsonl([
+        { user_name: 'u', chat_metadata: { main_chat: 'p' } },
+        { name: '我', is_user: true, mes: 'a', send_date: 1000 },
+        { name: 'AI', is_user: false, mes: 'b', send_date: 1001 },
+    ], { familyId: 'f', chatKey: 'k', characterId: 'c', name: 'n' });
+    assert.equal(floors.length, 2, '对象行必须算楼层');
+    assert.equal(JSON.parse(floors[0].content).mes, 'a');
+    assert.equal(JSON.parse(floors[1].content).mes, 'b');
+    assert.equal(stats.skipped, 0);
+    assert.ok(floors[0].contentHash);
+});
+
+test('buildFamilyFromJsonl：字符串与对象混排也能对齐（边界容错）', async () => {
+    const { floors, stats } = await buildFamilyFromJsonl([
+        JSON.stringify({ user_name: 'u', chat_metadata: {} }),
+        JSON.stringify({ name: '我', is_user: true, mes: 'a' }),
+        { name: 'AI', is_user: false, mes: 'b' },
+        '{坏行',                     // 非法字符串 → 计入 skipped
+        null,                        // 非字符串非对象 → 计入 skipped
+    ], { familyId: 'f', chatKey: 'k', characterId: 'c', name: 'n' });
+    assert.equal(floors.length, 2);
+    assert.equal(stats.skipped, 2);
 });
 
 /* ---------------- mergeIntoFamily + attachMergedFork ---------------- */
@@ -166,9 +239,10 @@ function mockWorld() {
             db.floorsByFamily[familyId].push(...floors);
             return { ok: true, integrity: 2 };
         },
-        async saveModel({ familyId, model }) {
+        async saveModel({ familyId, model, hostMetadata }) {
             const fam = Object.values(db.families).find((f) => f.familyId === familyId);
-            fam.model = model;
+            if (model !== undefined) fam.model = model;
+            if (hostMetadata !== undefined) fam.hostMetadata = hostMetadata;
             return { ok: true, integrity: 3 };
         },
     };
@@ -188,7 +262,12 @@ function mockWorld() {
         },
         async readChatFile(name) {
             const lines = this.files[name];
-            return lines ? { header: lines[0], lines: lines.slice(1), raw: lines.join('\n') } : null;
+            if (!lines) return null;
+            // header 与真实端点同形态：index.js#importApi 拿到的是 `data[0]`（**已解析的对象**）。
+            // 解析失败不影响建档（lines 照样送 prepareRows，被当损坏行跳过）。
+            let header = null;
+            try { header = JSON.parse(lines[0]); } catch { header = null; }
+            return { header, lines: lines.slice(1), raw: lines.join('\n') };
         },
         async deleteChatFile(name) {
             db.deleted.push(name);
@@ -254,4 +333,101 @@ test('runImport：单文件失败不阻断其余', async () => {
     assert.equal(result.importedFiles, 1); // chat2 仍导入
     assert.equal(result.failed.length, 1);
     assert.equal(result.failed[0].fileName, 'chat1');
+});
+
+/* ---------------- W5：源 jsonl 的聊天头必须进库（冷导入不得丢） ---------------- */
+
+/** 给某个 mock 文件的 header 行换上指定 chat_metadata（原生聊天头形态） */
+function withHeader(meta) {
+    return JSON.stringify({ user_name: 'u', character_name: 'c', chat_metadata: meta });
+}
+
+test('runImport：新建档时源 header 的聊天头整份进库（别的插件命名空间 + main_chat）', async () => {
+    const world = mockWorld();
+    world.api.files.chat1[0] = withHeader({
+        main_chat: '父聊天',
+        variables: { hp: 3 },
+        extensions: { 'third-party/x': { flag: 1 } },
+    });
+    await runImport({
+        adapter: world.adapter, trash: world.trash, api: world.api, confirm: async () => true,
+    }, { currentFileName: 'cur', only: 'chat1', deleteSources: false, characterId: 'c1', avatarUrl: 'av1' });
+
+    const fam = Object.values(world.db.families)[0];
+    assert.deepEqual(fam.hostMetadata, {
+        main_chat: '父聊天',
+        variables: { hp: 3 },
+        extensions: { 'third-party/x': { flag: 1 } },
+    }, '冷路径：源文件是唯一来源，宿主内存那份帮不上忙');
+});
+
+test('runImport：源 header 里本插件两项（模型 / 版本号）被剔除，不进保留面', async () => {
+    const world = mockWorld();
+    world.api.files.chat1[0] = withHeader({
+        integrity: 'c-old',
+        other_plugin: 7,
+        extensions: { chatfilesys: { active_branch: 'b_main', branches: [], groups: {} } },
+    });
+    await runImport({
+        adapter: world.adapter, trash: world.trash, api: world.api, confirm: async () => true,
+    }, { currentFileName: 'cur', only: 'chat1', deleteSources: false, characterId: 'c1', avatarUrl: 'av1' });
+
+    const fam = Object.values(world.db.families)[0];
+    assert.equal(fam.hostMetadata.integrity, undefined, '版本号真源在库');
+    assert.equal(fam.hostMetadata.extensions, undefined, '模型真源在库；只剩本插件命名空间 → 不留空壳');
+    assert.equal(fam.hostMetadata.other_plugin, 7, '别人的顶层键留下');
+});
+
+test('runImport：合并进既有家族时逐命名空间合并（库内既有内容不丢）', async () => {
+    const world = mockWorld();
+    world.api.files.chat1[0] = withHeader({ extensions: { a: { v: 1 } }, top_a: 'keep' });
+    world.api.files.chat2[0] = withHeader({ extensions: { b: { v: 2 } }, top_b: 'new' });
+    await runImport({
+        adapter: world.adapter, trash: world.trash, api: world.api, confirm: async () => true,
+    }, { currentFileName: 'cur', deleteSources: false, characterId: 'c1', avatarUrl: 'av1' });
+
+    const fam = Object.values(world.db.families)[0];
+    assert.equal(world.db.families[fam.chatKey].hostMetadata, fam.hostMetadata, '单一家族');
+    assert.deepEqual(fam.hostMetadata.extensions, { a: { v: 1 }, b: { v: 2 } }, '两侧命名空间都在');
+    assert.equal(fam.hostMetadata.top_a, 'keep');
+    assert.equal(fam.hostMetadata.top_b, 'new');
+});
+
+test('runImport：库内行没存 hash 时按内容现算 → 同一份内容不会被再挂一条重复分支', async () => {
+    const world = mockWorld();
+    const deps = { adapter: world.adapter, trash: world.trash, api: world.api, confirm: async () => true };
+    const opts = { currentFileName: 'cur', only: 'chat1', deleteSources: false, characterId: 'c1', avatarUrl: 'av1' };
+    await runImport(deps, opts);
+    const fam0 = Object.values(world.db.families)[0];
+    const floors0 = world.db.floorsByFamily[fam0.familyId];
+    assert.equal(floors0.length, 2);
+    // 模拟**接缝写路径**落库的行：contentHash 留空（`core/seam.js` 不做合并判定，故不存 hash）。
+    // 老实现直接拿 null 当指纹 → LCP 在第 1 层就断 → 整份内容被当成"分叉"再挂一条同内容分支。
+    for (const r of floors0) r.contentHash = null;
+
+    await runImport(deps, opts);   // 再导一次同一份文件
+
+    const fam = Object.values(world.db.families)[0];
+    const branches = fam.model?.branches ?? fam.branches ?? [];
+    assert.equal(branches.length, 1, '幂等：不该多出一条分支');
+    assert.equal(world.db.floorsByFamily[fam.familyId].length, 2, '幂等：不该多出楼层行');
+});
+
+
+/* ---------------- F2：并入既有家族时，被并入聊天的父线索不进家族级（2026-09-26） ---------------- */
+
+test('runImport：并入既有家族时分支文件的 main_chat 不落到家族级（F2）', async () => {
+    const world = mockWorld();
+    // chat1 = 家族主键（自己带父线索：那是它自己的，保留）；chat2 = 被并入的聊天（父线索归它自己）
+    world.api.files.chat1[0] = withHeader({ top_a: 'keep', main_chat: '更早的父' });
+    world.api.files.chat2[0] = withHeader({ main_chat: 'chat1', variables: { hp: 1 } });
+    await runImport({
+        adapter: world.adapter, trash: world.trash, api: world.api, confirm: async () => true,
+    }, { currentFileName: 'cur', deleteSources: false, characterId: 'c1', avatarUrl: 'av1' });
+
+    const fam = Object.values(world.db.families)[0];
+    assert.equal(fam.chatKey, 'av1::chat1', 'chat1 是家族主键');
+    assert.equal(fam.hostMetadata.main_chat, '更早的父', '主键自己的父线索保留');
+    assert.equal(fam.hostMetadata.top_a, 'keep');
+    assert.deepEqual(fam.hostMetadata.variables, { hp: 1 }, '同一次入向的其他内容照常并入');
 });

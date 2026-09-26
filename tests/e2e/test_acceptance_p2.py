@@ -1,23 +1,24 @@
-"""二期验收（PRD 11 条逐条实测，2026-09-06）。
+"""UI 契约验收（R5 2026-09-25 重裁定版，取代原「二期验收」中的已废除条目）。
 
-对应 prd.md「二期验收标准」：
-  1  设置页只有设置项 + 打开按钮            → AC1
-  2  管理弹窗三入口可达 + Tabs 分页完整      → AC2
-  3  SVG 图形树（节点/边/标注/点击切换）     → AC3
-  4  消息旁 ⎇ 一键直分叉 + 分叉点标记        → AC4
-  5  分支徽章显示当前分支名 + 点击开弹窗     → AC5
-  6  核心重渲染后消息旁元素自愈              → AC6
-  7  写路径零弃用 API（全部官方消息 API）    → AC7（运行时源码断言）
-  8  元数据键 extensions.chatfilesys         → AC8（新聊天落盘断言）
-  9  一期验收回归全绿                        → test_acceptance.py（13/13，另跑）
-  10 能力检测生效、弹窗可用                  → AC10（console 能力检测日志 + 弹窗可用）
-  11 全程零控制台报错（chatfilesys 归因）    → AC11
+对应用户 2026-09-25 裁定的界面契约（prd.md R5 / AC7 / AC20）与仍然成立的旧验收项：
+  AC1  扩展设置抽屉**零插件注入**（settings.html 已删除；设置项搬进弹窗「设置」页签）
+  AC2  入口可达：输入框上方工具图标排里的插件按钮 + Alt+B；弹窗四页签完整；`/cb` 已删除
+  AC3  SVG 结构树：节点 = 走法（序号/走法名 + 层数）+ 边标注分叉楼层 + 点击节点切换
+  AC4  走法管理（改名 / 删除走法）在「当前聊天」页签可用
+  AC5  该层 swipe 组数 > 1 时该消息出现**版本按钮**，点击打开「该层版本」弹窗
+  AC6  切换走法（全量重绘）后版本按钮自愈
+  AC7  写路径零弃用 API（运行时源码断言）
+  AC8  元数据键 extensions.chatfilesys（无 legacy branches）
+  AC10 能力检测生效（弹窗类 + RENDERED 事件）
+  AC11 全程零控制台报错（chatfilesys 归因）
+
+已废除并**不再断言**（无包袱铁律）：设置页结构白名单、`/cb` 入口、`分支树/楼层/批量操作/导出` 四页签、
+消息旁 ⎇ 分叉按钮、分叉点 ⎇ 记号、输入框上方分支徽章（点击开面板）。
 """
 import sys
-import time
 import traceback
 from playwright.sync_api import sync_playwright
-from harness import Runner, browser_ctx, report, TEST_CHAR, PANEL
+from harness import Runner, browser_ctx, report, TEST_CHAR, PANEL  # noqa: E402
 
 results = []
 
@@ -36,73 +37,52 @@ def main():
             r.open_test_char()
             r.settle(2500)
 
-            # ---------- AC1 设置页结构 ----------
-            ac1 = r.js("""() => {
-                const root = document.querySelector('#chatfilesys-settings .chatfilesys-settings-content');
-                if (!root) return null;
-                const actions = [...root.querySelectorAll('[data-action]')].map(x => x.dataset.action);
-                return { actions, hasExport: !!root.querySelector('#chatfilesys-auto-export'),
-                         hasStatus: !!root.querySelector('.chatfilesys-settings-status'),
-                         hasModePicker: !!root.querySelector('#chatfilesys-storage-mode'),
-                         popupInSettings: !!root.querySelector('.chatfilesys-popup'),
-                         text: root.innerText };
-            }""")
-            # R5（2026-09-25 铁律）：设置页只有「设置项 + 入口按钮」，**面板本体只在弹窗里**；
-            # 设置级动作白名单 = 打开面板 / 导入存量聊天 / 与库同步一次（T2 新增后两个）
-            allowed = {'open-popup', 'run-import', 'sync-mirror'}
-            ok1 = (ac1 and set(ac1['actions']) <= allowed and 'open-popup' in ac1['actions']
-                   and ac1['hasExport'] and ac1['hasStatus'] and ac1.get('hasModePicker')
-                   and not ac1.get('popupInSettings'))
-            results.append(report("AC1 设置页仅设置项+打开按钮", bool(ok1), str(ac1 and ac1['actions'])))
+            # ---------- AC1 扩展设置抽屉零注入 ----------
+            ac1 = r.js("""() => ({
+                settingsEls: [...document.querySelectorAll(
+                    '#extensions_settings *, #extensions_settings2 *')].filter((el) => {
+                    const cls = [...(el.classList || [])].some((x) => x.startsWith('chatfilesys-'));
+                    return cls || (el.id || '').startsWith('chatfilesys-');
+                }).map((el) => (el.id || '-') + '|' + el.tagName),
+                legacyDrawer: !!document.querySelector('#chatfilesys-settings'),
+                entryBtn: !!document.getElementById('chatfilesys-entry'),
+            })""")
+            ok1 = (ac1['settingsEls'] == [] and not ac1['legacyDrawer'] and ac1['entryBtn'])
+            results.append(report("AC1 扩展设置抽屉零插件元素（旧设置抽屉已删除）", bool(ok1), str(ac1)))
 
-            # ---------- AC2 三入口 ----------
-            # 入口1：/cb（全程被 harness 使用，这里显式验证一次）
-            r.ensure_popup()
-            ok_cb = bool(r.pg.query_selector(PANEL))
+            # ---------- AC2 入口可达 + 四页签 ----------
+            r.open_popup()
+            ok_btn = bool(r.pg.query_selector(PANEL))
+            tabs = r.js(f"""() => [...document.querySelectorAll('{PANEL} .luker-tabs-tab, {PANEL} [data-tabbtn]')]
+                .map(x => x.textContent.trim())""")
             r.close_popup()
-            # 入口2：Alt+B（headless 下浏览器会吞原生 Alt 组合键，用合成 KeyboardEvent
-            # 走同一 document keydown 处理器；真实浏览器原生按键可达）
+            r.settle(500)
             r.js("""() => document.dispatchEvent(new KeyboardEvent('keydown', {
                 altKey: true, code: 'KeyB', key: 'b', bubbles: true }))""")
             r.pg.wait_for_selector(PANEL, timeout=8000)
             ok_altb = bool(r.pg.query_selector(PANEL))
             r.close_popup()
-            # 入口3：设置页按钮
-            r.js("""() => document
-                .querySelector('#chatfilesys-settings [data-action="open-popup"]')
-                .dispatchEvent(new MouseEvent('click', { bubbles: true }))""")
-            r.pg.wait_for_selector(PANEL, timeout=8000)
-            ok_btn = bool(r.pg.query_selector(PANEL))
-            # Tabs 分页完整
-            tabs = r.js(f"""() => {{
-                const root = document.querySelector('{PANEL}');
-                return [...root.querySelectorAll('.luker-tabs-tab, [data-tabbtn]')].map(x => x.textContent.trim());
-            }}""")
-            r.close_popup()
-            results.append(report("AC2 三入口可达（/cb、Alt+B、设置页按钮）", ok_cb and ok_altb and ok_btn,
-                                  f"/cb={ok_cb} Alt+B={ok_altb} 按钮={ok_btn}"))
-            results.append(report("AC2 Tabs 分页完整", set(tabs) == {'分支树', '楼层', '批量操作', '导出'}, str(tabs)))
+            r.settle(500)
+            r.cmd("/cb")
+            r.settle(1000)
+            ok_cb_gone = not r.pg.query_selector(PANEL)
+            results.append(report("AC2 入口 = 工具图标排按钮 + Alt+B；/cb 已删除",
+                                  ok_btn and ok_altb and ok_cb_gone,
+                                  f"按钮={ok_btn} Alt+B={ok_altb} /cb无弹窗={ok_cb_gone}"))
+            results.append(report("AC2 弹窗四页签 = 当前聊天/角色卡的聊天/设置/回收站",
+                                  set(tabs) == {'当前聊天', '角色卡的聊天', '设置', '回收站'}, str(tabs)))
 
-            # ---------- 造楼层 + 分叉（后续用） ----------
-            for t in ["U-F2", "U-F4"]:
-                r.cmd(f"/send {t}")
+            # ---------- 造楼层 + 走法（F3 分叉） ----------
+            for cmd in ["/send U-F2", f"/sendas name={TEST_CHAR} A-F3", "/send U-F4", f"/sendas name={TEST_CHAR} A-F5"]:
+                r.cmd(cmd)
                 r.settle(700)
-            r.cmd(f"/sendas name={TEST_CHAR} A-F3")
-            r.settle(700)
-            r.cmd(f"/sendas name={TEST_CHAR} A-F5")
-            r.settle(700)
             st = r.wait_state(lambda s: s["chatLen"] == 5, desc="造 5 层")
+            new_b = r.create_branch(3, name="验收·F3")
+            r.settle(800)
+            r.wait_state(lambda s: len(s["branches"]) == 2, desc="建走法")
 
-            # 弹窗内 F3 后分叉（命名弹窗）
-            r.click_action("fork", floor=3)
-            r.popup_input("验收·F3")
-            r.wait_state(lambda s: s["activeId"] and len(s["branches"]) == 2, desc="分叉建分支")
-            r.ensure_active("b_main")
-            r.close_popup()
-
-            # ---------- AC3 SVG 图形树 ----------
+            # ---------- AC3 SVG 结构树 ----------
             r.ensure_popup()
-            r.popup_switch_tab("分支树")
             ac3 = r.js(f"""() => {{
                 const root = document.querySelector('{PANEL}');
                 const svg = root.querySelector('svg.chatfilesys-tree');
@@ -118,81 +98,130 @@ def main():
             ok3 = (ac3 and ac3['hasSvg'] and len(ac3['nodes']) == 2
                    and any('⎇F3' in e for e in ac3['edges'])
                    and all(n['meta'] and '层' in n['meta'] for n in ac3['nodes']))
-            results.append(report("AC3 SVG 树：节点=分支+边标注分叉楼层+楼层数", bool(ok3), str(ac3)))
+            results.append(report("AC3 SVG 结构树：节点=走法+边标注分叉楼层+层数", bool(ok3), str(ac3)))
             # 点击节点切换
             r.js(f"""() => {{
                 const n = [...document.querySelectorAll('{PANEL} .chatfilesys-tnode')]
-                    .find(x => x.dataset.branch === 'b1');
+                    .find(x => x.dataset.branch === '{new_b}');
                 n.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true }}));
             }}""")
-            st = r.wait_state(lambda s: s["activeId"] == "b1", desc="AC3 点击节点切换")
-            r.settle(500)  # 弹窗刷新走 150ms 防抖，等 DOM 重绘后再读高亮
+            st = r.wait_state(lambda s: s["activeId"] == new_b, desc="AC3 点击节点切换")
+            r.settle(600)
             ac3_active = r.js(f"""() => document.querySelector('{PANEL} .chatfilesys-tnode.active')?.dataset.branch""")
-            results.append(report("AC3 点击节点切换+active 高亮", st["activeId"] == "b1" and ac3_active == "b1",
+            results.append(report("AC3 点击节点切换+active 高亮", st["activeId"] == new_b and ac3_active == new_b,
                                   f"active={st['activeId']} node={ac3_active}"))
 
-            # b1 延展一层（制造与 main 的分叉差异 → main 视角 F4 起多组）
+            # 新走法延展一层（制造与 b_main 在 F4 的分叉 → F4 两个 swipe 组）
             r.cmd("/send U-b1-F4")
             r.settle(900)
-
-            # ---------- AC4 消息旁：注入 + 标记 + 一键直分叉 ----------
-            # （b1 已延展 U-b1-F4：main 视角 F4 起 b1 的组折叠进 groups → F4 为多组楼层）
             r.ensure_active("b_main")
-            r.settle(600)
-            ac4 = r.js("""() => ({
-                forks: [...document.querySelectorAll('#chat .mes .chatfilesys-mes-fork')].length,
-                marks: [...document.querySelectorAll('#chat .mes .chatfilesys-mes-forkmark')].map(x => x.textContent.trim()),
-                mesCount: document.querySelectorAll('#chat .mes').length,
-            })""")
-            ok4a = ac4['forks'] == ac4['mesCount'] and ac4['mesCount'] >= 5
-            results.append(report("AC4 消息旁 ⎇ 分叉按钮注入（每层）", bool(ok4a), str(ac4)))
-            results.append(report("AC4 分叉点 ⎇ 标记（多组楼层 F4）", len(ac4['marks']) >= 1,
-                                  f"marks={ac4['marks']}"))
-
-            # 一键直分叉：点 F2 的按钮 → 自动建「分支N」+ 自动切换
-            name_before = r.state()["activeId"]
-            branches_before = r.state()["branches"]
-            r.js("""() => {
-                const mes = [...document.querySelectorAll('#chat .mes')][1];  // F2
-                mes.querySelector('.chatfilesys-mes-fork')
-                   .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-            }""")
-            st = r.wait_state(lambda s: len(s["branches"]) == 3 and s["activeId"] not in ("b_main", "b1"),
-                              desc="AC4 一键直分叉")
-            new_b = next(x for x in st["branches"] if x["id"] not in [b["id"] for b in branches_before])
-            ok4b = st["activeId"] == new_b["id"] and new_b["fork"] == 2 and new_b["name"].startswith("分支")
-            results.append(report("AC4 一键直分叉（自动命名+自动切换，F2）", bool(ok4b),
-                                  f"new={new_b} active={st['activeId']}"))
-            r.ensure_active("b_main")
-            r.settle(800)
-
-            # ---------- AC5 分支徽章 ----------
-            ac5 = r.js("""() => {
-                const b = document.getElementById('chatfilesys-badge');
-                return { hidden: b ? b.hidden : null, text: b ? b.textContent.trim() : null };
-            }""")
-            results.append(report("AC5 徽章显示当前分支名", ac5['hidden'] is False and ac5['text'] == '⎇ 主分支',
-                                  str(ac5)))
-            r.js("""() => document.getElementById('chatfilesys-badge').click()""")
-            r.pg.wait_for_selector(PANEL, timeout=8000)
-            ok5b = bool(r.pg.query_selector(PANEL))
+            r.settle(900)
             r.close_popup()
-            results.append(report("AC5 点击徽章打开管理弹窗", ok5b, f"opened={ok5b}"))
+            r.settle(600)
 
-            # ---------- AC6 重渲染后消息旁自愈 ----------
-            r.ensure_active("b1")   # 触发 clearChat+printMessages 全量重绘
-            ac6 = r.js("""() => ({
-                forks: [...document.querySelectorAll('#chat .mes .chatfilesys-mes-fork')].length,
-                mes: document.querySelectorAll('#chat .mes').length,
-            })""")
-            ok6 = ac6['mes'] >= 3 and ac6['forks'] == ac6['mes']
-            results.append(report("AC6 切换重绘后消息旁元素自愈", bool(ok6), str(ac6)))
+            # ---------- AC4 走法管理：改名 ----------
+            # 管理按钮的作用对象 = 走法选择器选中的那条（R5 后三按钮共用一个选择器；
+            # 按钮的 data-branch 跟随选择值 → 必须先 pick，不能直接按 data-branch 找按钮）
+            r.pick_branch(new_b)
+            r.click_action("rename", branch=new_b)
+            r.popup_input("验收改名")
+            r.settle(1200)
+            renamed = next((x for x in r.state()["branches"] if x["id"] == new_b), None)
+            results.append(report("AC4 走法管理：改名生效", bool(renamed and renamed["name"] == "验收改名"),
+                                  str(renamed)))
+            # 删除走法（先切回默认走法；默认走法不可删 → 由 core 守卫拒绝）
+            r.pick_branch(new_b)
+            r.click_action("delete-branch", branch=new_b)
+            r.popup_ok()
+            r.settle(1500)
+            st = r.state()
+            ok4b = len(st["branches"]) == 1 and all(x["id"] != new_b for x in st["branches"])
+            results.append(report("AC4 走法管理：删除走法（其私有组一并回收）", ok4b,
+                                  f"branches={[x['id'] for x in st['branches']]}"))
+            # 默认走法不可删：选中默认走法点删除 → core 守卫拒绝（toastr 错误 + 走法数不变）
+            r.pick_branch("b_main")
+            r.click_action("delete-branch", branch="b_main")
+            r.popup_ok()
+            err_default = r.toastr_error()
+            r.settle(800)
+            n_after = len(r.state()["branches"])
+            results.append(report("AC4 走法管理：默认走法不可删（守卫拒绝）",
+                                  bool(err_default) and "默认分支" in str(err_default) and n_after == 1,
+                                  f"toast={err_default} branches={n_after}"))
+            r.close_popup()
+            r.settle(600)
+
+            # 复原一个分叉（供 AC5/AC6 用）：F3 建走法 → 切过去续一层 → 切回 → F4 两组
+            nb2 = r.create_branch(3, name="版本样本")
+            r.settle(800)
+            r.ensure_active(nb2)
+            r.cmd("/send U-b1-F4")
+            r.settle(900)
             r.ensure_active("b_main")
+            r.settle(900)
+            r.close_popup()
+            r.settle(600)
+
+            # ---------- AC5 版本按钮 + 该层版本弹窗 ----------
+            ac5 = r.js("""() => {
+                const rows = [...document.querySelectorAll('#chat .mes')].map((mes) => {
+                    const tools = mes.querySelector(':scope > .chatfilesys-mes-tools');
+                    const btn = tools?.querySelector('.chatfilesys-ver-btn');
+                    return { floor: Number(mes.getAttribute('mesid')) + 1, has: !!btn,
+                             label: btn ? btn.textContent.trim() : null };
+                });
+                return { rows, total: rows.length, withBtn: rows.filter(x => x.has).map(x => x.floor) };
+            }""")
+            # 组数对照（数据层）
+            grp = r.js("""async () => {
+                const c = SillyTavern.getContext();
+                const mod = await import('/scripts/extensions/third-party/chatfilesys/ui/common.js');
+                const m = c.chatMetadata.extensions.chatfilesys;
+                const maxF = Math.max(0, ...m.branches.flatMap(b => Object.keys(b.path).map(Number)));
+                const out = {};
+                for (let f = 1; f <= maxF; f++) out[f] = mod.swipeGroupsAt(m, f, c.chat || []).length;
+                return out;
+            }""")
+            expect = sorted(int(f) for f, n in (grp or {}).items() if n > 1)
+            ok5a = (ac5['withBtn'] == expect and len(expect) >= 1 and ac5['total'] > len(expect))
+            results.append(report("AC5 版本按钮仅多分叉层出现（与 swipeGroupsAt 一致）", bool(ok5a),
+                                  f"按钮层={ac5['withBtn']} 组数={grp}"))
+            # 期望值**独立**给出（不抄实现）：F3 建走法 + 该走法延展一层 → 只有第 4 层是多组（分叉点）
+            results.append(report("AC5 多组楼层 = 第 4 层（独立期望值，非抄 swipeGroupsAt）",
+                                  expect == [4], f"多组层={expect}"))
+            # 点击版本按钮 → 该层版本弹窗列出该层全部组
+            floor = expect[0]
+            r.js("""(f) => {
+                const mes = document.querySelector(`#chat .mes[mesid="${f - 1}"]`);
+                mes.querySelector('.chatfilesys-ver-btn')
+                   .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            }""", floor)
+            r.pg.wait_for_selector('.chatfilesys-versions', timeout=8000)
+            vp = r.js("""() => {
+                const root = document.querySelector('.chatfilesys-versions');
+                return { groups: root.querySelectorAll('.chatfilesys-ver-group').length,
+                         text: root.innerText.replace(/\\n+/g, ' | ').slice(0, 300) };
+            }""")
+            ok5b = vp['groups'] == (grp or {}).get(str(floor)) and vp['groups'] >= 2
+            results.append(report(f"AC5 版本弹窗列出第 {floor} 层全部 swipe 组", bool(ok5b), str(vp)))
+            r.js("""() => { [...document.querySelectorAll('dialog[open]')]
+                .find(d => d.querySelector('.chatfilesys-versions'))?.close(); }""")
+            r.settle(600)
+
+            # ---------- AC6 切换走法后版本按钮自愈 ----------
+            r.ensure_active(nb2)
+            r.settle(1200)
+            healed = r.js("""() => document.querySelectorAll('#chat .chatfilesys-ver-btn').length""")
+            r.ensure_active("b_main")
+            r.settle(1200)
+            results.append(report("AC6 切换走法（全量重绘）后版本按钮自愈", healed >= 1, f"count={healed}"))
+            r.settle(600)
 
             # ---------- AC7 写路径零弃用 API（运行时拉取模块源码断言） ----------
             ac7 = r.js("""async () => {
                 const files = ['index.js', 'core/branches.js', 'core/projection.js', 'core/chat-writer.js',
-                               'ui/common.js', 'ui/popup.js', 'ui/tree.js', 'ui/marker.js', 'ui/badge.js'];
+                               'core/key-bindings.js', 'ui/common.js', 'ui/popup.js', 'ui/tree.js',
+                               'ui/marker.js', 'ui/versions.js'];
                 const bad = [];
                 const srcs = {};
                 for (const f of files) {
@@ -212,8 +241,7 @@ def main():
             results.append(report("AC7 写路径零弃用 API（源码级断言）",
                                   ac7['bad'] == [] and ac7['usesOfficial'] is True, str(ac7)))
 
-            # ---------- AC8 新聊天元数据键 ----------
-            chat_id = r.state()["chatFile"]
+            # ---------- AC8 元数据键 ----------
             ac8 = r.js("""async () => {
                 const ctx = SillyTavern.getContext();
                 const res = await fetch('/api/chats/get', {
@@ -223,7 +251,7 @@ def main():
                                            avatar_url: ctx.characters[ctx.characterId].avatar }),
                 });
                 const data = await res.json();
-                const ext = data[0]?.chat_metadata?.extensions || {};
+                const ext = (Array.isArray(data) ? data[0] : data)?.chat_metadata?.extensions || {};
                 return { chatfilesys: ext.chatfilesys ? 'present' : 'missing',
                          legacyBranches: ext.branches ? 'LEGACY' : 'none' };
             }""")
@@ -231,10 +259,10 @@ def main():
                                   ac8['chatfilesys'] == 'present' and ac8['legacyBranches'] == 'none', str(ac8)))
 
             # ---------- AC10 能力检测 ----------
+            # （N5 2026-09-26：`CAP.popupClass` 只写不读已删，能力检测只剩 RENDERED 事件这一项）
             cap_log = [txt for (t, txt, src) in r.logs if '能力检测' in txt]
-            ac10 = any('popupClass' in x and 'true' in x for x in cap_log)
-            results.append(report("AC10 能力检测生效（弹窗/事件/斜杠可用）", ac10,
-                                  str(cap_log[:1])))
+            ac10 = any('renderedEvents' in x and 'true' in x for x in cap_log)
+            results.append(report("AC10 能力检测生效（RENDERED 事件）", ac10, str(cap_log[:1])))
 
             # ---------- AC11 全程零归因报错 ----------
             pe = r.pageerrors_from("chatfilesys")

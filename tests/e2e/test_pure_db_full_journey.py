@@ -14,8 +14,10 @@ v4 关键修复（v3 rendered=false 根因）：
   - v3 硬编码猜测键绑定（主聊天名），但宿主 getChat 用 characters[this_chid].chat
     （服务端「最近聊天」）作 file_name → 键不命中 → seam 透传 → 渲染真实 jsonl。
   - official 档 bindChatKey 是重绑语义（一家族一键），v3 绑两键实为后键覆盖前键。
-  - 宿主 chat_metadata.integrity 是字符串 slug（uuid 自造），库是数字计数器——
-    v4 起 seam 边界桥接（cfsys:<n>），get 响应带 integrity 防 saveChatInternal 拒存。
+  - 宿主 chat_metadata.integrity 是字符串 slug（uuid 自造），库**曾是**数字计数器——
+    v4 起 seam 边界桥接（`cfsys:<n>`），get 响应带 integrity 防 saveChatInternal 拒存。
+    **T1/N19 已改**：版本号统一为 `c-<36进制时间戳>-<随机>` 字符串，slug 桥接删除、入向值
+    必须与库内值**字符串相等**才允许写（见 `core/integrity.js`）。
 
 L0-1 纪律：不写实例文件系统（隐容器经官方端点、探针即删）；__cb_e2e 为专用测试角色。
 用法: python tests/e2e/test_pure_db_full_journey.py
@@ -25,6 +27,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from playwright.sync_api import sync_playwright  # noqa: E402
+from harness import reset_instance  # noqa: E402
 
 BASE = "https://127.0.0.1:8003"
 EXT_SRC = "http://127.0.0.1:8417/public/scripts/extensions/third-party/chatfilesys"
@@ -103,6 +106,14 @@ STEPS = """async (extSrc) => {
         if (String(c.characterId) !== String(idx)) { log('selectCharacterById never landed: characterId=' + c.characterId); out.ok = false; return out; }
         log('character landed: ' + c.characterId);
 
+        // ⑧ 强制经接缝读一次。
+        //    为什么必须显式重载：`reset_instance` 已经把测试角色选中了，且那个聊天就是它刚
+        //    `/newchat` 出来的——宿主内存里**已经有**这份聊天，于是上面那个「characterId 未落位
+        //    才重试」的循环体一次都不执行，宿主也就**不会**发 `chats/get`，接缝没机会服务
+        //    （实测症状：`opened: chatLen=1` = 内存里那份 first_mes，而不是库内投影）。
+        await c.reloadCurrentChat();
+        await new Promise(r => setTimeout(r, 3000));
+
         const chatArr = c.chat || [];
         const chatLen = chatArr.length;
         const mes1 = String(chatArr[0]?.mes || '');
@@ -142,8 +153,12 @@ STEPS = """async (extSrc) => {
             && mes1.includes('v4楼层1')
             && mesN >= 2
             && fl.length >= 3
-            && typeof integrity0 === 'string' && integrity0.startsWith('cfsys:')
-            && typeof liveIntegrity === 'string' && liveIntegrity.startsWith('cfsys:');
+            // T1/N19 起版本号是 `c-<36进制时间戳>-<随机>` 字符串（`core/integrity.js`），
+            // 不再是 T0 时代的 `cfsys:<n>` slug 桥接形态——旧断言必须随之更新。
+            && typeof integrity0 === 'string' && integrity0.startsWith('c-')
+            && typeof liveIntegrity === 'string' && liveIntegrity.startsWith('c-')
+            // 闭环：写成功之后宿主锁住的那份 = 库内那份
+            && liveIntegrity === f2?.integrity;
         return out;
     } catch (e) {
         log('FAIL: ' + String(e && e.stack || e).slice(0, 400));
@@ -163,6 +178,12 @@ def main():
         page = ctx.new_page()
         page.goto(BASE, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_selector("#send_textarea", state="attached", timeout=60000)
+        # T8 起：打开一个未入库的聊天会弹入库提醒（默认增强模式下库里什么都没有）——
+        # 本用例不测它，先写压制记录，免得模态窗挡住后续交互（与 harness.boot 同一做法）。
+        # 本用例是独立风格（不走 Runner.boot）：先把实例复位到**干净起点**（存储模式 / 测试角色 /
+        # 全新聊天 / 压制入库提醒）。否则串行跑时会被前一条用例留下的模式、旧聊天上的家族或
+        # 残留弹窗带偏——三类失败同源，2026-09-26 实测。
+        reset_instance(page)
 
         # 先在页面里保住原生 fetch 引用（seam 安装前）
         page.evaluate("() => { window.__nativeFetch = globalThis.fetch; }")
@@ -176,8 +197,12 @@ def main():
 
     ok = result.get("ok")
     if ok:
-        print("\nFULL JOURNEY PASS: 真机纯库模式全旅程（拦截读 → 渲染 → 拦截写 → 库一致 → integrity slug 闭环）")
+        print("\nFULL JOURNEY PASS: 真机纯库模式全旅程（拦截读 → 渲染 → 拦截写 → 库一致 → 版本号闭环）")
     else:
+        # 失败必须留下诊断：过去这里只有 `sys.exit(1)`，而页内那条复合断言（`out.ok = ...`）
+        # 失败时一行都不打 → 用例变成**静默失败**（2026-09-26 踩到：只看到 exit=1）。
+        print("\nFULL JOURNEY FAIL: 页内断言未通过")
+        print("  诊断字段: " + ", ".join(f"{k}={v!r}" for k, v in result.items() if k != "steps"))
         sys.exit(1)
 
 

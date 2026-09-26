@@ -95,21 +95,29 @@ function elementIndex(token, len) {
 /**
  * 应用一批消息补丁到「活跃走法投影」上，并按键写回行表。
  *
+ * **两个走法要分清（W6 修复，2026-09-26）**：
+ *   · `branchId` = **投影基准**：ops 的下标是对着它的 body 算的。原生分支/检查点键各有各的
+ *     body，必须按**该键所在走法**投影；切分支时 ops 是对着**切换前**的 body 算的。
+ *   · `targetBranchId` = **结构收敛目标**：补丁应用完之后 body 应当等于它的投影；被改写的
+ *     path 也是它。切分支时 = 目标走法；不切换时两条相同。
+ * 把两者合成一个参数会坏两件事：拿目标当投影基准 → 下标对不上（真机实录
+ * `projection-incomplete｜楼层 1 的变体 g1 在库中无行`、`test-failed｜/3`）；拿基准当收敛目标 →
+ * 切分支被误判成「删层」、目标走法的 path 不更新。
+ *
  * @param {object} args
  * @param {Array<{floorNo:number, variantId:string, content:string, sendDate?:any}>} args.rows 家族全部行
- * @param {object} args.path 当前活跃走法的 path（{floorNo: variantId}）——宿主那份 body 的投影基准
+ * @param {object} args.path 投影基准走法的 path（{floorNo: variantId}）——宿主那份 body 的投影基准
  * @param {Array<{op:string, path:string, value?:any, from?:string}>} args.ops 宿主 ops
- * @param {string} [args.branchId] 投影基准走法（ops 的下标是对着它的 body 算的）。
- *        未传 = 入向模型的 active_branch（= 走法切换的目标走法）
+ * @param {string} [args.branchId] 投影基准走法；未传 = 入向模型的 active_branch
+ * @param {string} [args.targetBranchId] 结构收敛目标走法；未传 = 投影基准走法
  * @param {object|null} [args.model] 入向模型（含目标走法 path；用于「换变体/追加」的变体身份判定）
  * @param {Function} [args.allocateGid] 新变体号分配器（入参 = 已占用 gid 集合）
  * @returns {{ok:true, rows:Array, deletes:Array<{floorNo:number,variantId:string}>, path:object, model:object|null, stats:object}
  *          | {ok:false, reason:string, detail?:string}}
  */
-export function planBodyPatch({ rows, path, ops, model = null, branchId = null, allocateGid }) {
-    // 投影基准走法：宿主 ops 是对着它的 body 算下标的。原生分支/检查点键各有各的 body，
-    // 必须按该键所在走法投影（否则在分支聊天里改消息会按活跃走法的下标写错行）。
+export function planBodyPatch({ rows, path, ops, model = null, branchId = null, targetBranchId = null, allocateGid }) {
     const basisId = branchId ?? model?.active_branch ?? null;
+    const convergeId = targetBranchId ?? basisId;
     const allRows = Array.isArray(rows) ? rows : [];
     const rowAt = new Map();
     for (const r of allRows) rowAt.set(`${r.floorNo}#${r.variantId}`, r);
@@ -204,7 +212,7 @@ export function planBodyPatch({ rows, path, ops, model = null, branchId = null, 
     }
 
     /* ── 3. 变体身份判定：插入/换变体的位置优先沿用目标走法声明的变体 ── */
-    const targetPath = model?.branches?.find((b) => b.id === basisId)?.path || null;
+    const targetPath = model?.branches?.find((b) => b.id === convergeId)?.path || null;
     const candAt = (floor) => (targetPath ? targetPath[floor] : undefined);
     const rowContentMatches = (floor, gid, line) => {
         const row = rowAt.get(`${floor}#${gid}`);
@@ -248,8 +256,12 @@ export function planBodyPatch({ rows, path, ops, model = null, branchId = null, 
         && pathFloors(targetPath).every((f) => targetPath[f] === resolvedPath[f]);
     let nextModel = model ? clone(model) : null;
     const nextPathForBranch = resolvedPath;
+    // 本次补丁是不是「切分支」：投影基准与收敛目标不同 —— 切分支时**不得**走全局删层语义
+    // （那会把来源分支的历史按目标分支的长度截断）。来源分支的 path 原样保留，只是它的行
+    // 不再出现在 body 里（折叠），这正是分支语义。
+    const switching = Boolean(basisId) && convergeId !== basisId;
 
-    if (!sameAsTarget && newLen < oldLen) {
+    if (!sameAsTarget && !switching && newLen < oldLen) {
         // 全局删层：所有走法失去被删楼层、后续楼层前移（与 deleteFloorEverywhere 同语义）
         const keptOld = new Set(origins.filter((o) => o !== null));
         const gone = new Set(baseFloors.filter((_, i) => !keptOld.has(i)));
@@ -257,7 +269,7 @@ export function planBodyPatch({ rows, path, ops, model = null, branchId = null, 
             const np = {};
             for (let i = 0; i < origins.length; i++) {
                 const o = origins[i];
-                if (o === null) continue; // 该新位置由活跃走法独占（走法切换），其他走法不占位
+                if (o === null) continue; // 该新位置由收敛目标独占（切分支），其他走法不占位
                 const gid = p[o + 1];
                 if (gid !== undefined) np[i + 1] = gid;
             }
@@ -265,7 +277,7 @@ export function planBodyPatch({ rows, path, ops, model = null, branchId = null, 
         };
         if (nextModel) {
             nextModel.branches = (nextModel.branches || []).map((b) => (
-                b.id === basisId ? { ...b, path: nextPathForBranch } : { ...b, path: remap(b.path || {}) }
+                b.id === convergeId ? { ...b, path: nextPathForBranch } : { ...b, path: remap(b.path || {}) }
             ));
             // 折叠组的楼层号随全局删层前移；落在被删楼层的组丢弃
             const groups = {};
@@ -279,11 +291,11 @@ export function planBodyPatch({ rows, path, ops, model = null, branchId = null, 
     } else if (!sameAsTarget && newLen > oldLen) {
         if (midInsert) return { ok: false, reason: 'mid-insert-unsupported', detail: `插入位置 <${oldLen}` };
         if (nextModel) {
-            nextModel.branches = (nextModel.branches || []).map((b) => (b.id === basisId ? { ...b, path: nextPathForBranch } : b));
+            nextModel.branches = (nextModel.branches || []).map((b) => (b.id === convergeId ? { ...b, path: nextPathForBranch } : b));
         }
     } else if (nextModel) {
-        // 重投影 / 同长编辑：只把活跃走法的 path 收敛到解析结果（其他走法原样保留）
-        nextModel.branches = (nextModel.branches || []).map((b) => (b.id === basisId ? { ...b, path: nextPathForBranch } : b));
+        // 重投影 / 同长编辑 / 切分支：只把收敛目标走法的 path 收敛到解析结果（其他走法原样保留）
+        nextModel.branches = (nextModel.branches || []).map((b) => (b.id === convergeId ? { ...b, path: nextPathForBranch } : b));
     }
 
     /* ── 5. 行表写回：被引用的行 upsert，已无任何走法在「该楼层」引用的旧行删除 ── */

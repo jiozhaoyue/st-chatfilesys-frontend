@@ -23,9 +23,11 @@ def build_family(r, floors=5):
         r.cmd(c)
         r.settle(700)
     r.wait_state(lambda s: s["chatLen"] == floors, desc="造楼")
-    r.click_action("fork", floor=3)
-    r.popup_ok()
-    r.settle(1500)
+    # R5：插件不再提供「新建走法」按钮（生产入口 = 宿主原生「创建分支 / 创建检查点」）；
+    # 测试需要精确楼层，故走数据层建走法（等价于已删除的面板分叉）
+    nb = r.create_branch(3, name="分叉·F3")
+    r.settle(800)
+    r.ensure_active(nb)
     st = r.wait_state(lambda s: s["activeId"] != "b_main" and s["activeFloors"] == 3, desc="分叉激活")
     r.cmd("/send U-b1-F4")
     r.settle(700)
@@ -100,11 +102,9 @@ def scenario_concurrent_forks(A, B):
     B.wait_state(lambda s: s["chatLen"] == 2, timeout=30000, desc="B 同步到同一聊天")
     print("B resync ok:", B.state()["chatFile"], B.state()["chatLen"])
 
-    A.click_action("fork", floor=2)
-    A.popup_ok()
+    A.create_branch(2, name="并发·F2")
     time.sleep(0.15)
-    B.click_action("fork", floor=2)
-    B.popup_ok()
+    B.create_branch(2, name="并发·F2")
     A.settle(5000)
 
     ok, why = invariants_ok(A)

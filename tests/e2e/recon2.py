@@ -22,9 +22,10 @@ def main():
         probe = """() => ({
             ext: document.querySelectorAll('#extensions_settings .inline-drawer').length,
             ext2: document.querySelectorAll('#extensions_settings2 .inline-drawer').length,
-            drawer: !!document.querySelector('#chatfilesys-settings'),
-            contentLen: (document.querySelector('#chatfilesys-settings .chatfilesys-content')||{innerHTML:''}).innerHTML.length,
+            entryBtn: !!document.getElementById('chatfilesys-entry'),
+            legacyDrawer: !!document.querySelector('#chatfilesys-settings'),
             mes: document.querySelectorAll('#chat .mes').length,
+            verBtns: document.querySelectorAll('#chat .chatfilesys-ver-btn').length,
             sendReady: !!document.querySelector('#send_textarea'),
             loader: !!document.querySelector('#loader'),
         })"""

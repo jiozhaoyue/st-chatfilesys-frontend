@@ -18,6 +18,9 @@ import { applyOpsToObject } from './ops-apply.js';
 import { projectionOf } from './patch-rows.js';
 import { normIntegrity } from './integrity.js';
 import { planTakeover, branchIdForKey, classifyNewChat } from './takeover.js';
+import { deleteBranch } from './branches.js';
+import { dropBindingsOfBranch, pinActiveForBoundKey } from './key-bindings.js';
+import { OWN_EXTENSION_KEY, splitChatMetadata, mergeHostMetadata, stripKeyOwnedMeta } from './chat-meta.js';
 
 /** 拦截的路由（URL 路径尾部匹配；meta 系 = 分支模型保存通道，get-delta = 原生分页读） */
 const ROUTES = [
@@ -74,9 +77,6 @@ function jsonResponse(body, status = 200) {
     return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-/** 本插件在聊天头里自管的两个位置：extensions.chatfilesys（走法模型）与 integrity（版本号） */
-const OWN_EXTENSION_KEY = 'chatfilesys';
-
 /**
  * 合成完整 chat_metadata（读响应用，T0/R0：聊天记录零丢失）。
  * 宿主与其他插件写进聊天头的内容**整份回显**；本插件两项覆盖在各自位置。
@@ -97,58 +97,7 @@ function composeChatMetadata(family, chatKey) {
 }
 
 /**
- * 入向聊天头并入前的处理（T1）：绑定键（分支/检查点）的 `main_chat` 属于该键自己，
- * 不得混进家族级 hostMetadata——否则根键也会带上「返回父聊天」。
- * @returns {object} 可并入家族级的聊天头内容
- */
-function stripKeyOwnedMeta(family, chatKey, incomingHost) {
-    const src = incomingHost && typeof incomingHost === 'object' ? incomingHost : {};
-    if (chatKey == null || !family?.keyBindings?.[chatKey]) return src;
-    const { main_chat: _omit, ...rest } = src; // eslint-disable-line no-unused-vars
-    return rest;
-}
-
-/**
- * 从完整 chat_metadata 拆出库内三份中的两份：`{ hostMetadata, model }`。
- * hostMetadata = 去掉本插件两项之后的**其余全部内容**（其他插件命名空间、main_chat、变量……）。
- * @param {object} meta
- */
-function splitChatMetadata(meta) {
-    const m = meta && typeof meta === 'object' ? meta : {};
-    const extensions = { ...(m.extensions || {}) };
-    const model = extensions[OWN_EXTENSION_KEY] ?? null;
-    delete extensions[OWN_EXTENSION_KEY];
-    const host = { ...m };
-    delete host.integrity;
-    if (Object.keys(extensions).length) host.extensions = extensions;
-    else delete host.extensions;
-    return { hostMetadata: host, model };
-}
-
-/**
- * 合并宿主元数据（T0/R0 关键：**不能浅合并掉别人的命名空间**）。
- *
- * 顶层浅合并 + `extensions` **按命名空间逐项合并**：其他插件的数据都挂在
- * `extensions.<插件名>` 下，若整体替换 `extensions`，宿主一次自带 `extensions` 的保存
- * 就会把所有插件的命名空间一起抹掉（真机实测：时有时无的丢命名空间）。
- * 每个命名空间内部按「该插件发来的整份即其最新值」替换，不做深合并。
- * 删除命名空间：`chats/meta/patch` 的 remove op（**非旧副本差分**的那种）——本函数不删任何东西。
- *
- * @param {object} prev 库内已有
- * @param {object} incoming 本次入向
- */
-function mergeHostMetadata(prev, incoming) {
-    const a = prev && typeof prev === 'object' ? prev : {};
-    const b = incoming && typeof incoming === 'object' ? incoming : {};
-    const merged = { ...a, ...b };
-    if (a.extensions || b.extensions) {
-        merged.extensions = { ...(a.extensions || {}), ...(b.extensions || {}) };
-    }
-    return merged;
-}
-
-/**
- * 入向模型是否代表一次「走法切换」。
+ * 入向模型是否代表一次「分支切换」。
  * 只有切换才让入向模型决定结构：宿主内存里的模型副本可能是旧版（它不知道本插件刚登记的
  * 追加楼层/新走法），让旧副本盖掉库内结构会丢东西。非切换场景一律以库内模型为准。
  * @param {{model?: object}} family 库内家族
@@ -164,6 +113,40 @@ function modelSwitchesBranch(family, incoming) {
 function branchFor(family, chatKey) {
     const id = branchIdForKey(family, chatKey);
     return family?.model?.branches?.find((b) => b.id === id) || null;
+}
+
+/**
+ * 追加/全量写时**新楼层**的变体身份分配器（T1/W3 修正，2026-09-26）。
+ *
+ * 规则与 `core/patch-rows.js#planBodyPatch` 第 3 步一致：**优先沿用本次走法已声明的变体**
+ * （`branch.path[floor]`，读回才认得这行），未声明才分配新号。
+ *
+ * 为什么不能再用「g<楼层号>」（旧写法 `activePath[f] || 'g'+f`）：同一个楼层号上，
+ * **别的走法**可能已经占用了那个名字——根走法的第 3 层就是 `g3`；在分叉于第 2 层的
+ * 原生分支键上发一条消息时，新楼层 3 会拿到 `g3` 并把根走法那一行 **upsert 覆盖掉**
+ * （根聊天第 3 条消息变成分支里的新消息）。而且模型侧的 `core/branches.js#nextGroupId`
+ * 分配的是 `g<max+1>`，两边不一致时刚写的楼层还会从投影里消失（行在库里、读不回来）。
+ *
+ * 分配起点 = `nextGroupId(model)`（= 全家族 path/组引用的最大 g 序号 + 1），逐层递增，
+ * 与 `index.js#syncAppendedFloors` 的 `registerAppendedGroup` 同源 → 两边算出同一个 id。
+ *
+ * @param {object|null} model 家族模型（库内的那一份）
+ * @returns {(branch: object|null, floor: number) => string} 逐层取变体 id
+ */
+function makeNewVariantId(model) {
+    let max = 0; // 全家族已占用的最大 g 序号（首个子分配 = g<max+1> = nextGroupId 的答案）
+    const scan = (gid) => {
+        const m = /^g(\d+)$/.exec(String(gid));
+        if (m) max = Math.max(max, Number(m[1]));
+    };
+    for (const b of model?.branches || []) Object.values(b.path || {}).forEach(scan);
+    Object.keys(model?.groups || {}).forEach(scan);
+    return (branch, floor) => {
+        const declared = branch?.path?.[floor];
+        if (declared) return declared;
+        max += 1;
+        return `g${max}`;
+    };
 }
 
 /**
@@ -183,23 +166,6 @@ function followKeyBinding(family, chatKey, nextModel) {
     const cur = kb[chatKey];
     if (!cur || cur.branchId === want) return null;
     return { ...kb, [chatKey]: { ...cur, branchId: want } };
-}
-
-/**
- * 入向模型的 `active_branch` 归属（T1）。
- *
- * 家族只有**一个** `active_branch`，而根键没有绑定、靠它解析投影。若绑定键（原生分支/检查点）
- * 上的走法切换把它带跑，用户点「返回父聊天」回到根键时会看到**截断内容**。
- * 故：绑定键上的切换只改该键的绑定（`followKeyBinding`），家族活跃走法保持不动。
- * 根键（无绑定）不 pin —— 那里的切换就是家族级切换，语义正确。
- * @returns {object|null} 落库用模型（active_branch 已归属）
- */
-function pinActiveForBoundKey(family, chatKey, incomingModel) {
-    if (!incomingModel || chatKey == null) return incomingModel ?? null;
-    if (!family?.keyBindings?.[chatKey]) return incomingModel;
-    const stored = family?.model?.active_branch;
-    if (!stored || stored === incomingModel.active_branch) return incomingModel;
-    return { ...incomingModel, active_branch: stored };
 }
 
 /**
@@ -416,11 +382,13 @@ export function installSeam(adapter, opts = {}) {
             if (hostChanged) family.hostMetadata = mergedHost;
             if (nextBindings) family.keyBindings = nextBindings;
         }
-        // 全量保存 = body 数组逐行 upsert（floorNo = 行序 +1；变体身份取自本次键所在走法的 path）
+        // 全量保存 = body 数组逐行 upsert（floorNo = 行序 +1；变体身份取自本次键所在走法的 path，
+        // 未声明的楼层才分配新号——见 makeNewVariantId 的说明）
         const branch = branchFor(family, chatKey);
+        const newVariantId = makeNewVariantId(family.model);
         const floors = rows.map((row, i) => ({
             floorNo: i + 1,
-            variantId: branch?.path?.[i + 1] || `g${i + 1}`,
+            variantId: newVariantId(branch, i + 1),
             seq: 0,
             content: JSON.stringify(row),
             contentHash: null, // save 路径不做合并判定，hash 留空由适配器按需补
@@ -448,9 +416,10 @@ export function installSeam(adapter, opts = {}) {
         const branch = branchFor(family, chatKey);
         const activePath = branch?.path || {};
         const base = Math.max(0, ...Object.keys(activePath).map(Number), 0);
+        const newVariantId = makeNewVariantId(family.model);
         const floors = messages.map((row, i) => ({
             floorNo: base + i + 1,
-            variantId: activePath[base + i + 1] || `g${base + i + 1}`,
+            variantId: newVariantId(branch, base + i + 1),
             seq: 0,
             content: JSON.stringify(row),
             contentHash: null,
@@ -481,18 +450,28 @@ export function installSeam(adapter, opts = {}) {
      * - 请求体**同时带整份 chat_metadata**（宿主内存副本）→ 其中的走法切换与其他插件命名空间
      *   必须与消息写入一起落地，否则「挂在这条写上的元数据变化」静默丢失（T0c 的时有时无）。
      *
-     * ops 打在「按活跃走法投影出来的 body 数组」上，库存的是含非活跃变体的行表——
+     * ops 打在「按**投影基准分支**投影出来的 body 数组」上，库存的是含非活跃变体的行表——
      * 投影 → 应用 → 按键写回由 `core/patch-rows.js` 统一完成（三档共用同一实现）。
+     *
+     * **W6（2026-09-26 真机实录修正）**：「投影基准」与「结构收敛目标」是**两件事**，过去合成
+     * 一个 `branchId` 传，切分支时把目标分支当成了投影基准，于是宿主算好的下标对不上库里的行表 →
+     * 接缝两次拒绝（`projection-incomplete｜楼层 1 的变体 g1 在库中无行`、`test-failed｜/3`），
+     * 宿主再自动重放一次全量保存才收敛（数据最终正确，但脏且慢）。现在：
+     *   · `branchId` = **本键当前所在分支**（切换**前**那条）——ops 是对着它的 body 算的
+     *   · `targetBranchId` = 入向模型声明的目标分支（切换时才有）
      */
     async function handlePatch(body) {
         const chatKey = normalizeChatKey(body?.avatar_url, body?.file_name);
         const family = await adapter.loadFamily({ chatKey });
         if (!family) return null;
         const { hostMetadata: incomingHost, model: incomingModel } = splitChatMetadata(body?.chat_metadata);
-        const mergedHost = mergeHostMetadata(family.hostMetadata, incomingHost);
+        // F1（2026-09-26）：并入家族级之前**必做键归属剔除**——宿主每条写请求都带整份
+        // chat_metadata，绑定键（原生分支/检查点键）的 main_chat 混进家族级会让根键也冒出
+        // 「返回父聊天」。四条写路径（save/append/meta/meta·patch）都要做，`chats/patch` 曾漏掉。
+        const mergedHost = mergeHostMetadata(family.hostMetadata, stripKeyOwnedMeta(family, chatKey, incomingHost));
         const hostChanged = JSON.stringify(mergedHost) !== JSON.stringify(family.hostMetadata || {});
-        // 入向模型只在「走法切换」时决定结构：宿主内存副本可能是旧版，
-        // 让旧副本盖掉本插件的结构更新会丢新走法（非切换时以库内模型为准）
+        // 入向模型只在「分支切换」时决定结构：宿主内存副本可能是旧版，
+        // 让旧副本盖掉本插件的结构更新会丢新分支（非切换时以库内模型为准）
         const switchTarget = modelSwitchesBranch(family, incomingModel) ? incomingModel.active_branch : null;
         const adoptModel = switchTarget ? pinActiveForBoundKey(family, chatKey, incomingModel) : undefined;
         const nextBindings = switchTarget ? followKeyBinding(family, chatKey, { active_branch: switchTarget }) : null;
@@ -500,9 +479,10 @@ export function installSeam(adapter, opts = {}) {
             familyId: family.familyId,
             ops: Array.isArray(body?.operations) ? body.operations : [],
             model: adoptModel,
-            // 投影基准（T1）：切换时 = 目标走法（宿主 ops 是按它的 body 算的）；
-            // 否则 = 本次键所在走法（原生分支/检查点键各有各的 body）
-            branchId: switchTarget ?? branchIdForKey(family, chatKey),
+            // 投影基准 = 本次键**当前**所在分支（切换前那条；原生分支/检查点键各有各的 body）
+            branchId: branchIdForKey(family, chatKey),
+            // 结构收敛目标 = 本次要切到的那条（不切换时不传 = 与投影基准相同）
+            targetBranchId: switchTarget || undefined,
             hostMetadata: hostChanged ? mergedHost : undefined,
             keyBindings: nextBindings || undefined,
             expectedIntegrity: expectedIntegrityOf(body),
@@ -533,11 +513,62 @@ export function installSeam(adapter, opts = {}) {
         return jsonResponse({ ok: true, sanitizedFileName: body?.renamed_file });
     }
 
-    /** 写路径：chats/delete → 家族删除（jsonl 原文件由 UI 层先经回收站，seam 不删源） */
+    /**
+     * 绑定键（原生分支/检查点键）被删时的动作（W2 修复，2026-09-26）：
+     * **只删该键绑定的那条分支 + 解绑该键**，家族与其余分支原样保留。
+     *
+     * 分支删不掉时（默认分支 / 家族活跃分支——`core/branches.js#deleteBranch` 的既有校验）
+     * **只解绑、保留分支**：宁可留一条没有门牌的分支（用户可在弹窗里删），也不越过既有不变量硬删
+     * （家族活跃分支是根键投影的来源，删掉它根键就没内容了）。
+     * 解绑后即使家族只剩默认分支、再无其他绑定键，也**不自动清理家族**（避免误删楼层）。
+     *
+     * @returns {Promise<object>} 适配器写入结果
+     */
+    async function dropBoundKey(family, chatKey) {
+        const branchId = family?.keyBindings?.[chatKey]?.branchId ?? null;
+        const nextBindings = dropBindingsOfBranch(family?.keyBindings, branchId) ?? family?.keyBindings ?? {};
+        let nextModel = null;
+        if (branchId && family?.model) {
+            const candidate = structuredClone(family.model); // 校验失败时不得改到已读出的家族对象
+            try {
+                deleteBranch(candidate, branchId);
+                nextModel = candidate;
+            } catch (e) {
+                log(`[chatfilesys-seam] 绑定键「${chatKey}」的分支 ${branchId} 未删除，只解绑：`, e?.message || e);
+            }
+        }
+        const r = await adapter.saveModel({
+            familyId: family.familyId,
+            model: nextModel ?? undefined,   // undefined = 本次不动模型（只解绑）
+            keyBindings: nextBindings,
+            expectedIntegrity: null,         // 宿主删聊天是显式意图，不走乐观锁
+            keepCurrent: !nextModel,
+        });
+        log(`[chatfilesys-seam] 删除绑定键「${chatKey}」→ 解绑${nextModel ? '并删除' : '（分支保留）'}该分支，家族 ${family.familyId} 保留`);
+        return r;
+    }
+
+    /**
+     * 写路径：chats/delete → **按键的性质**分流（W2 修复，2026-09-26）。
+     *
+     * 原实现一律「按 chatKey 找家族 → deleteFamily」：别的插件或宿主删掉一个**绑定键**
+     * （原生「创建分支/检查点」得到的那条聊天项）就会把**整个家族**（全部楼层 + 全部分支）删光。
+     * 绑定键只是家族里一条分支在宿主侧的**门牌**，删门牌不该拆房子。故：
+     *   · 主键（家族主聊天键）→ 仍删家族（原语义：用户删掉的就是这个聊天本身）
+     *   · 绑定键（非主键）→ 只删该键绑定的分支 + 解绑该键，家族保留
+     * 纯库/双写下绑定键在磁盘上**从来没有文件**（接管不落盘、双写只落主键），
+     * 所以这里不必也不能去动宿主的文件。
+     */
     async function handleDelete(body) {
         const chatKey = normalizeChatKey(body?.avatar_url, body?.chatfile);
         const family = await adapter.loadFamily({ chatKey });
         if (!family) return null;
+        const bound = family.keyBindings?.[chatKey] || null;
+        if (bound && chatKey !== family.chatKey) {
+            const r = await dropBoundKey(family, chatKey);
+            if (r && r.ok === false) log('[chatfilesys-seam] 绑定键解绑失败（家族未删）:', r.reason);
+            return jsonResponse({ ok: true });
+        }
         const r = await adapter.deleteFamily({ familyId: family.familyId });
         if (r?.conflict) return jsonResponse({ ok: false, conflict: true }, 409);
         return jsonResponse({ ok: true });

@@ -8,7 +8,7 @@ import { installSeam, normalizeChatKey } from '../../public/scripts/extensions/t
 
 /** mock adapter：内存实现 + 调用记录 */
 function mockAdapter() {
-    const calls = { loadFamily: 0, saveFloors: 0, applyOps: 0, saveModel: 0 };
+    const calls = { loadFamily: 0, saveFloors: 0, applyOps: 0, saveModel: 0, deleteFamily: 0 };
     const family = {
         familyId: 'f1', chatKey: 'av1::chat1', characterId: 'c1', name: 'chat1', integrity: 'c-5',
         // T0/R0：聊天头保留面（其他插件命名空间 + 宿主字段）——读时须整份回显
@@ -17,6 +17,8 @@ function mockAdapter() {
             variables: { hp: 10 },
             extensions: { 'third-party/someplugin': { flag: true } },
         },
+        // T1：键绑定（默认空；W2 的绑定键用例按需塞进去）
+        keyBindings: {},
         branches: [{ id: 'b_main', name: '主分支', is_default: true, fork_floor: 0, parent_branch_id: null }],
         branchPaths: { b_main: { 1: 'g1', 2: 'g2' } },
         model: {
@@ -32,13 +34,18 @@ function mockAdapter() {
     return {
         calls, family, floors,
         conflictNext: false,
-        async loadFamily({ chatKey }) { this.calls.loadFamily++; return chatKey === family.chatKey ? family : null; },
+        async loadFamily({ chatKey }) {
+            this.calls.loadFamily++;
+            // 主键命中 + 绑定键回落到同一家族（三档适配器同语义）
+            const hit = chatKey === family.chatKey || Boolean(family.keyBindings?.[chatKey]);
+            return hit ? family : null;
+        },
         async loadFloors() { return { floors: this.floors, hasMore: false }; },
         async saveFloors() { this.calls.saveFloors++; return this.conflictNext ? { ok: false, conflict: true } : { ok: true, integrity: 'c-6' }; },
-        async applyOps() { this.calls.applyOps++; return this.conflictNext ? { ok: false, conflict: true } : { ok: true, integrity: 'c-6' }; },
+        async applyOps(args) { this.calls.applyOps++; this.lastApplyOpsArgs = args; return this.conflictNext ? { ok: false, conflict: true } : { ok: true, integrity: 'c-6' }; },
         async saveModel(args) { this.calls.saveModel++; this.lastSaveModelArgs = args; return this.conflictNext ? { ok: false, conflict: true } : { ok: true, integrity: 'c-6' }; },
         async renameFamily() { return { ok: true, integrity: 'c-6' }; },
-        async deleteFamily() { return { ok: true }; },
+        async deleteFamily() { this.calls.deleteFamily++; return { ok: true }; },
     };
 }
 
@@ -193,6 +200,79 @@ test('seam：append → saveFloors 参数正确（floorNo 续接活跃分支 max
         assert.equal(body.appended, 1);
         assert.equal(captured.floors.length, 1);
         assert.equal(captured.floors[0].floorNo, 3); // 活跃分支 maxFloor=2 → 新楼层 3
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+/**
+ * W3/T1 回归（2026-09-26）：新楼层的变体号**不得**用「g<楼层号>」——同一楼层上别的走法
+ * 可能已经占用了那个名字（根走法第 3 层就是 g3），复用会把别人的行 upsert 覆盖掉
+ * （真机旅程：打开原生创建的分支键发一条消息 → 根聊天第 3 条消息被这条新消息顶掉）。
+ * 正确规则 = 优先沿用本次走法已声明的变体，未声明才分配 g<max+1>（与内存模型同源）。
+ */
+test('seam：在绑定键上 append → 新楼层的变体号不复用别的走法在同层的号', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    // 根走法 3 层（g1/g2/g3）；原生分支键 b1 分叉于第 2 层（共享 g1/g2）
+    adapter.family.keyBindings = { 'av1::chat1 - branch #1': { branchId: 'b1', mainChat: 'chat1' } };
+    adapter.family.model = {
+        active_branch: 'b_main',
+        branches: [
+            { id: 'b_main', name: '主分支', is_default: true, fork_base: 0, path: { 1: 'g1', 2: 'g2', 3: 'g3' } },
+            { id: 'b1', name: '主聊天 - branch #1', is_default: false, fork_base: 2, path: { 1: 'g1', 2: 'g2' } },
+        ],
+        groups: {},
+    };
+    let captured = null;
+    adapter.saveFloors = async (args) => { captured = args; return { ok: true, integrity: 'c-6' }; };
+    const seam = installSeam(adapter);
+    try {
+        const res = await globalThis.fetch('/api/chats/append', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1 - branch #1', integrity: 'c-5',
+                messages: [{ name: '我', mes: '分支里新一条' }],
+            }),
+        });
+        assert.equal((await res.json()).appended, 1);
+        assert.equal(captured.floors.length, 1);
+        assert.equal(captured.floors[0].floorNo, 3, '续接本键所在走法的 maxFloor=2');
+        assert.equal(captured.floors[0].variantId, 'g4', '旧写法给 g3 —— 那是根走法第 3 层的行，会被覆盖');
+        assert.notEqual(captured.floors[0].variantId, adapter.family.model.branches[0].path[3]);
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：全量保存（宿主 patch 失败后的回退路径）新楼层也不撞别的走法', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    adapter.family.keyBindings = { 'av1::chat1 - branch #1': { branchId: 'b1', mainChat: 'chat1' } };
+    adapter.family.model = {
+        active_branch: 'b_main',
+        branches: [
+            { id: 'b_main', name: '主分支', is_default: true, fork_base: 0, path: { 1: 'g1', 2: 'g2', 3: 'g3' } },
+            { id: 'b1', name: '主聊天 - branch #1', is_default: false, fork_base: 2, path: { 1: 'g1', 2: 'g2' } },
+        ],
+        groups: {},
+    };
+    let captured = null;
+    adapter.saveFloors = async (args) => { captured = args; return { ok: true, integrity: 'c-6' }; };
+    const seam = installSeam(adapter);
+    try {
+        await globalThis.fetch('/api/chats/save', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1 - branch #1', integrity: 'c-5',
+                chat: [{ mes: '一' }, { mes: '二' }, { mes: '分支里第三条' }],
+            }),
+        });
+        assert.deepEqual(captured.floors.map((f) => [f.floorNo, f.variantId]),
+            [[1, 'g1'], [2, 'g2'], [3, 'g4']],
+            '已声明的楼层沿用该走法的变体号；新楼层分配 g<max+1>（g3 是根走法第 3 层的行）');
     } finally {
         seam.dispose();
         globalThis.fetch = original;
@@ -694,6 +774,104 @@ test('seam：群聊端点不在拦截路由内（保持原生，行为不变）'
     }
 });
 
+/* ---------------- chats/delete：按键的性质分流（W2 修复，2026-09-26） ---------------- */
+
+/** 两条原生分支键各绑一条分支的家族（b_main 默认且活跃，b1=分支键，b2=检查点键） */
+function boundFamily(adapter, { branchId = 'b1', active = 'b_main' } = {}) {
+    adapter.family.keyBindings = {
+        'av1::chat1 - branch #1': { branchId, mainChat: 'chat1' },
+        'av1::chat1 - checkpoint #1': { branchId: 'b2', mainChat: 'chat1', isCheckpoint: true, markerFloor: 1 },
+    };
+    adapter.family.model = {
+        active_branch: active,
+        branches: [
+            { id: 'b_main', name: '主分支', is_default: true, fork_base: 0, path: { 1: 'g1', 2: 'g2' } },
+            { id: 'b1', name: 'av1::chat1 - branch #1', is_default: false, fork_base: 1, path: { 1: 'g1' } },
+            { id: 'b2', name: 'av1::chat1 - checkpoint #1', is_default: false, fork_base: 1, path: { 1: 'g1' } },
+        ],
+        groups: {},
+    };
+}
+
+const deleteReq = (chatfile) => ({
+    method: 'POST',
+    body: JSON.stringify({ avatar_url: 'av1', chatfile }),
+});
+
+test('seam：删「绑定键」→ 只少一条分支 + 解绑，家族不删（W2 数据丢失缺陷）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    boundFamily(adapter);
+    const seam = installSeam(adapter);
+    try {
+        const res = await globalThis.fetch('/api/chats/delete', deleteReq('chat1 - branch #1.jsonl'));
+        assert.equal(res.status, 200);
+        assert.equal((await res.json()).ok, true);
+        assert.equal(adapter.calls.deleteFamily, 0, '删绑定键绝不能删家族（全部楼层 + 全部分支）');
+        const args = adapter.lastSaveModelArgs;
+        assert.equal(args.familyId, 'f1');
+        assert.deepEqual(args.model.branches.map((b) => b.id), ['b_main', 'b2'], '只删该键绑定的那条分支');
+        assert.equal(Object.hasOwn(args.keyBindings, 'av1::chat1 - branch #1'), false, '该键解绑');
+        // 不变式 2：绑定表里再无指向已删分支的键；其余绑定原样保留
+        assert.equal(Object.values(args.keyBindings).some((v) => v.branchId === 'b1'), false);
+        assert.deepEqual(args.keyBindings['av1::chat1 - checkpoint #1'],
+            { branchId: 'b2', mainChat: 'chat1', isCheckpoint: true, markerFloor: 1 });
+        assert.equal(args.expectedIntegrity, null, '宿主删聊天是显式意图，不走乐观锁');
+        assert.equal(args.keepCurrent, false, '真要删分支则落模型');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：绑定键绑的是默认/家族活跃分支 → 只解绑、分支保留（core/branches.js 既有校验回落）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    boundFamily(adapter, { branchId: 'b_main' });
+    const seam = installSeam(adapter);
+    try {
+        const res = await globalThis.fetch('/api/chats/delete', deleteReq('chat1 - branch #1.jsonl'));
+        assert.equal((await res.json()).ok, true);
+        assert.equal(adapter.calls.deleteFamily, 0);
+        const args = adapter.lastSaveModelArgs;
+        assert.equal(args.model, undefined, '分支删不掉（默认/活跃）→ 不改模型，只解绑');
+        assert.equal(args.keepCurrent, true);
+        assert.equal(Object.hasOwn(args.keyBindings, 'av1::chat1 - branch #1'), false);
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：删「主键」仍删整个家族（原语义保留）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    boundFamily(adapter);
+    const seam = installSeam(adapter);
+    try {
+        const res = await globalThis.fetch('/api/chats/delete', deleteReq('chat1.jsonl'));
+        assert.equal((await res.json()).ok, true);
+        assert.equal(adapter.calls.deleteFamily, 1, '主键 = 这个聊天本身，删它才是删家族');
+        assert.equal(adapter.calls.saveModel, 0);
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+test('seam：家族内没有该键的绑定时按主键语义（未接管键仍透传）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    const seam = installSeam(adapter);
+    try {
+        await globalThis.fetch('/api/chats/delete', deleteReq('chat1 - branch #2.jsonl'));
+        assert.equal(adapter.calls.deleteFamily + adapter.calls.saveModel, 0, '家族未命中 → 透传原生');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
 test('seam：meta 冲突 → 409', async () => {
     const original = globalThis.fetch;
     const adapter = mockAdapter();
@@ -746,4 +924,92 @@ test('seam：dispose 后恢复原始 fetch', async () => {
         method: 'POST', body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1' }),
     });
     assert.equal(await res.text(), 'restored');
+});
+
+/* ---------------- W6（2026-09-26）：投影基准 vs 结构收敛目标 ---------------- */
+
+test('seam：切分支的补丁——投影基准 = 本键当前分支，收敛目标 = 入向目标（W6）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    const captured = [];
+    adapter.applyOps = async (args) => { captured.push(args); return { ok: true, integrity: 'c-6', totalMessages: 2 }; };
+    const seam = installSeam(adapter);
+    // 库内活跃分支 = b_main；入向模型把活跃分支改成 bX（= 一次分支切换）
+    const modelOf = (active) => ({
+        active_branch: active,
+        branches: [
+            { id: 'b_main', is_default: true, path: { 1: 'g1', 2: 'g2' } },
+            { id: 'bX', path: { 1: 'g1' } },
+        ],
+        groups: {},
+    });
+    try {
+        // ① 非切换（普通消息写）→ 收敛目标缺省 = 投影基准
+        await globalThis.fetch('/api/chats/patch', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1', integrity: 'c-5',
+                operations: [{ op: 'add', path: '/1/extra/x', value: 1 }],
+                chat_metadata: { extensions: { chatfilesys: modelOf('b_main') } },
+            }),
+        });
+        assert.equal(captured[0].branchId, 'b_main');
+        assert.equal(captured[0].targetBranchId, undefined);
+
+        // ② 切分支 → 投影基准仍是**切换前**那条（ops 的下标是对着旧 body 算的），
+        //    收敛目标才是入向声明的目标分支（旧实现把目标当基准 → 下标错位 → 接缝拒绝）
+        await globalThis.fetch('/api/chats/patch', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1', integrity: 'c-5',
+                operations: [{ op: 'test', path: '/0', value: {} }, { op: 'remove', path: '/0' }],
+                chat_metadata: { extensions: { chatfilesys: modelOf('bX') } },
+            }),
+        });
+        assert.equal(captured[1].branchId, 'b_main', '投影基准 = 切换前那条');
+        assert.equal(captured[1].targetBranchId, 'bX', '结构收敛目标 = 目标分支');
+        assert.equal(captured[1].model.active_branch, 'bX', '入向模型照旧传入（重投影要用目标分支）');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
+});
+
+/* ---------------- F1：绑定键上的写不得把 main_chat 污染进家族级（2026-09-26） ---------------- */
+
+test('seam：绑定键上的 patch 不得把该键的 main_chat 写进家族级（F1 数据污染）', async () => {
+    const original = globalThis.fetch;
+    const adapter = mockAdapter();
+    boundFamily(adapter);                       // 检查点键绑 b2，keyBindings[检查点键].mainChat = 'chat1'
+    delete adapter.family.hostMetadata.main_chat; // 这个家族的根键没有父线索（真机常态）
+    const seam = installSeam(adapter);
+    try {
+        // 宿主在检查点聊天里切 swipe / 编辑消息 / 删消息 → chats/patch 带整份 chat_metadata
+        //（含**该键**的 main_chat）。旧实现没做键归属剔除 → 混进家族级 → 根键读回也带 main_chat
+        //（凭空多出一个指向自己的「返回父聊天」，且之后每次都带）。
+        await globalThis.fetch('/api/chats/patch', {
+            method: 'POST',
+            body: JSON.stringify({
+                avatar_url: 'av1', file_name: 'chat1 - checkpoint #1', integrity: 'c-5',
+                operations: [{ op: 'replace', path: '/0/mes', value: '改过' }],
+                chat_metadata: { main_chat: 'chat1', extensions: { 'third-party/x': { f: 1 } } },
+            }),
+        });
+        const host = adapter.lastApplyOpsArgs.hostMetadata;
+        assert.equal('main_chat' in host, false, '绑定键的父线索归它自己（键绑定），不得进家族级');
+        assert.deepEqual(host.extensions['third-party/x'], { f: 1 }, '同一次入向的别人命名空间照常并入');
+
+        // 读回：根键不带 main_chat；绑定键仍按自己的绑定回显（检查点导航/返回父聊天照常可用）
+        const root = await globalThis.fetch('/api/chats/get', {
+            method: 'POST', body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1' }),
+        }).then((r) => r.json());
+        assert.equal(root[0].chat_metadata.main_chat, undefined, '根键不得冒出「返回父聊天」');
+        const cp = await globalThis.fetch('/api/chats/get', {
+            method: 'POST', body: JSON.stringify({ avatar_url: 'av1', file_name: 'chat1 - checkpoint #1' }),
+        }).then((r) => r.json());
+        assert.equal(cp[0].chat_metadata.main_chat, 'chat1', '该键自己的父线索照旧回显');
+    } finally {
+        seam.dispose();
+        globalThis.fetch = original;
+    }
 });

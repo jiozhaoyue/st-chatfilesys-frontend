@@ -82,11 +82,22 @@ export function activeProjection(model, body) {
  * 计算并应用「切换分支」：折叠/展开差集 + 生成 patch operations。
  * 共享前缀（两分支 path 相同 gid 的最长公共前缀）之后的区段才产生操作。
  *
+ * W6（2026-09-26）：**切换的起点可显式给出**。body 是**本聊天键所在分支**的投影
+ * （原生分支/检查点键各自的 body；`core/takeover.js#branchIdForKey`），而家族活跃分支是
+ * 另一条——按 `getActive` 算起点会拿错分支的 path 做最长公共前缀与尾部差集，生成的
+ * ops 与宿主真实的 body 对不上（接缝只能拒绝，宿主再回退全量保存）。
+ * 缺省仍是家族活跃分支（增强模式与家族级路径的既有行为）。
+ *
+ * @param {object} model
+ * @param {string} targetId 目标分支
+ * @param {Array<object>} body 当前 body（本键所在分支的投影）
+ * @param {string|null} [curId] 起点分支（缺省 = 家族活跃分支）
  * @returns {{operations: Array, model, switchedTo: string}}
  *   operations 顺序执行后，body 即目标分支投影；model 已就地更新（active_branch、groups 折叠/展开）。
  */
-export function planSwitch(model, targetId, body) {
-    const cur = getActive(model);
+export function planSwitch(model, targetId, body, curId = null) {
+    const cur = curId ? getBranch(model, curId) : getActive(model);
+    if (!cur) throw new Error(`planSwitch: 起点分支 "${curId}" 不存在`);
     const tgt = getBranch(model, targetId);
     if (!tgt) throw new Error(`planSwitch: 目标分支 "${targetId}" 不存在`);
     if (tgt.id === cur.id) return { operations: [], model, switchedTo: cur.id };
