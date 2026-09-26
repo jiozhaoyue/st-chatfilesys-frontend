@@ -14,6 +14,9 @@
  * - 复杂 UI：管理弹窗（官方 Popup DISPLAY+wide+large + renderLukerTabs，ST 降级内置 Tab）
  * - 聊天界面只剩两样：① 输入框上方工具图标排里的插件入口按钮 ② 消息旁的**版本按钮**
  *   （仅该层 swipe 组数 > 1 时出现；形状 = 分叉图标 + 计数，不用左右箭头）
+ * - T7 每层版本管理：版本按钮 → `ui/versions.js` 的官方 Popup（预览 / 切换 / 多选删除 / 重排编辑），
+ *   数据与下标规则住 `core/versions.js`（纯函数），写路径 = 本文件的 `writeFloorLine`
+ *   （整行 `replace /N`，与宿主自己的 swipe 同形；四条语义见 `core/versions.js` 文件头）
  * - 全局入口：输入框上方工具图标排里的插件按钮 + 快捷键 Alt+B（`/cb` 已删除）
  * - T8 入库提醒：打开未入库聊天时弹**官方 Popup**（正文 + 两个模式短按钮「纯库」「双写」+
  *   小字次按钮「不入库」+ 两个小勾选，`.chatfilesys-import-prompt`；关窗 = 不入库），
@@ -25,8 +28,12 @@ import { event_types, eventSource, clearChat, printMessages, saveSettingsDebounc
 import { Popup, callGenericPopup, POPUP_RESULT, POPUP_TYPE } from '../../../popup.js';
 
 import { enableForChat, registerAppendedGroup, renameBranch, deleteBranch, deleteFloorEverywhere, getBranch, getActive, maxFloor, adoptNativeCopy, setMainBranch, setDefaultBranch } from './core/branches.js';
-import { planSwitch } from './core/projection.js';
-import { createChatWriter } from './core/chat-writer.js';
+import { planSwitch, groupFromLine } from './core/projection.js';
+import { createChatWriter, bodyPath } from './core/chat-writer.js';
+import {
+    activateVariant, deleteVariants, deletionOrder, editVariantText, lineVariants,
+    moveVariant, snapshotActive, targetBranchForGroup,
+} from './core/versions.js';
 import { detectRemovedFloors } from './core/floor-diff.js';
 import { installSeam, normalizeChatKey } from './core/seam.js';
 import { branchIdForKey } from './core/takeover.js';
@@ -989,16 +996,208 @@ function onMessageRendered(messageId) {
     });
 }
 
-/** 该层版本弹窗（版本按钮点击入口；完整四项能力由 T7 接管 ui/versions.js） */
-function openVersionsForFloor(floor) {
+/* ---------------- T7：每层版本管理（组内版本的四条语义；写路径与宿主自己的 swipe 同形） ---------------- */
+
+/**
+ * 该层「非当前组」的正文补齐面（T7，**只读覆盖层**）。
+ *
+ * 为什么需要：家族模型是**家族级**的（`groups` 相对家族活跃分支折叠），而本聊天键读到的 body 是
+ * **该键所在分支**的投影（W3 / design.md §2.3）——绑定键（原生分支/检查点键）上两者不同时，
+ * 「别的组」的正文既不在 body、也不在 `model.groups`（它相对活跃分支其实「在 body 里」）。
+ * 库内的楼层行是完整事实源：把该层缺的那几个组按 `(floorNo, variantId)` 补出来，
+ * 供版本弹窗展示与预览。**不改库内模型**（改它会让不变量 3「组不重复存储」不成立）。
+ *
+ * 一键失败不阻断（L0-11）：拿不到就返回 null，弹窗按「正文不在本聊天的投影里」如实说明。
+ * @param {number} floor
+ * @returns {Promise<object|null>} `{ [gid]: group }`；不需要/拿不到时 null
+ */
+async function floorContentOverlay(floor) {
+    const model = getModel();
+    // 增强模式没有库、也没有键绑定面（body 就是活跃分支的投影）→ 不需要补齐
+    if (!storageState || !model) return null;
+    const want = (model.branches || []).map((b) => b.path?.[floor]).filter(Boolean);
+    const missing = [...new Set(want)].filter((gid) => !model.groups?.[gid]);
+    if (!missing.length) return null;
+    try {
+        const family = await storageState.adapter.loadFamily({ chatKey: normalizeChatKeyOf(ctx()) });
+        if (!family) return null;
+        const { floors } = await storageState.adapter.loadFloors({ familyId: family.familyId, from: 0, limit: 1e9 });
+        const overlay = {};
+        for (const row of floors || []) {
+            if (row.floorNo !== floor || !missing.includes(row.variantId)) continue;
+            try {
+                overlay[row.variantId] = groupFromLine(row.variantId, floor, JSON.parse(row.content));
+            } catch { /* 不可解析的库内行跳过（库不自洽时宁缺不崩） */ }
+        }
+        return Object.keys(overlay).length ? overlay : null;
+    } catch (e) {
+        console.warn(`[${MODULE_NAME}] 该层其他组的正文补齐失败（弹窗会如实说明取不到，功能不受影响）:`, e);
+        return null;
+    }
+}
+
+/**
+ * 改完一层后的即时重绘：优先用宿主自带的单条重绘钩子，缺失就退回整载重绘。
+ * 两条路都自愈注入——`renderAll()` 的 150ms 防抖会重注版本按钮（幂等）。
+ */
+function repaintFloor(mesId) {
+    const c = ctx();
+    const el = document.querySelector(`#chat .mes[mesid="${mesId}"]`);
+    if (el && typeof c.updateMessageBlock === 'function') {
+        try {
+            c.updateMessageBlock(mesId);
+            return;
+        } catch (e) {
+            console.warn(`[${MODULE_NAME}] updateMessageBlock 失败，退回整载重绘:`, e);
+        }
+    }
+    void renderChat();
+}
+
+/**
+ * 「改这一层的消息行」统一写路径：**克隆 → 纯函数改 → 整行 replace 写回**。
+ *
+ * 为什么与宿主自己的 swipe 同形：宿主编辑消息 / 切 swipe 时写的就是 `test /N` + `replace /N`
+ * （真机探针 `tests/e2e/probe_patch_ops.py`），接缝侧（`core/patch-rows.js#planBodyPatch`）已按
+ * 这条形态验收过。复用同一形态 → 三档落库手法（SQL / 容器 / IDB）零新增面。
+ *
+ * **不提前改宿主内存**：只改克隆体，写成不成由官方 API 决定；失败时内存与库都不动
+ * （克隆用 JSON 往返而非 `structuredClone`：与行在库里的存储形态一致，且遇到不可序列化值时
+ * 是「跳过该字段」而不是抛错——被跳过的字段在 `replace` 整行写里同属 JSON 的丢失面）。
+ *
+ * @param {number} floor 楼层号（从 1 起）
+ * @param {(line: object) => void} mutate 就地改克隆体的纯函数（`core/versions.js`）
+ */
+async function writeFloorLine(floor, mutate) {
+    const c = ctx();
+    const line = (c.chat || [])[floor - 1];
+    if (!line) throw new Error(`第 ${floor} 层不存在`);
+    const next = JSON.parse(JSON.stringify(line));
+    mutate(next);
+    await messageWriter.applyOperations([{ op: 'replace', path: bodyPath(floor - 1), value: next }]);
+    repaintFloor(floor - 1);
+    renderAll();
+    maybeAutoExport();
+}
+
+/**
+ * 原生 `MESSAGE_SWIPE_DELETED`（语义④：每步一次，第三方扩展按它维护的下标才跟得上真实中间态）。
+ * payload 与宿主 `script.js#deleteSwipe` 同形：`{ messageId, swipeId, newSwipeId }`。
+ * 宿主没有这个事件时静默跳过（能力检测；删除本身照常完成）。
+ */
+async function emitSwipeDeleted(messageId, swipeId, newSwipeId) {
+    const et = event_types?.MESSAGE_SWIPE_DELETED;
+    if (!et) return;
+    try {
+        await eventSource.emit(et, { messageId, swipeId, newSwipeId });
+    } catch (e) {
+        console.warn(`[${MODULE_NAME}] 发 MESSAGE_SWIPE_DELETED 失败（删除本身已生效）:`, e);
+    }
+}
+
+/** 组内版本切换（纯 swipe 语义：只换这一层这一份内容，**后续楼层不动**） */
+async function switchVariantFlow(floor, k) {
+    await writeFloorLine(floor, (line) => activateVariant(snapshotActive(line), k));
+    toastr.success(`已切到第 ${floor} 层的第 ${k + 1} 个版本`, '聊天文件系统');
+}
+
+/**
+ * 别的组的某版本 → **切分支**（design.md §5.4）。
+ *
+ * 目标组折叠在 `model.groups` 里：先把它的「当前版本」在模型上指向用户选的那一个，
+ * 切分支时 `planSwitch` 用 `lineFromGroup` 展开的就是它——一次写入，两条语义合一
+ * （否则会先切分支、再补一次 swipe 切换，两次写入且中间态可见）。
+ * 切换没生效（模型不自洽等）时把组内指针回滚，保持「屏幕看到的就是模型里的」。
+ */
+async function switchToGroupVersionFlow(floor, gid, variantIndex) {
     const model = getModel();
     if (!model) return;
+    const target = targetBranchForGroup(model, gid, floor, currentBranchId);
+    if (!target) throw new Error('这一版已经在当前分支上');
+    const g = model.groups?.[gid];
+    const prevActive = g?.active;
+    if (g && Array.isArray(g.variants) && g.variants.length > 1) {
+        const k = Number.isInteger(variantIndex) ? variantIndex : 0;
+        g.active = Math.min(Math.max(k, 0), g.variants.length - 1);
+        setModel(model);
+    }
+    await switchBranch(target);
+    if ((currentBranchId || getModel()?.active_branch) !== target && prevActive !== undefined) {
+        g.active = prevActive;
+        setModel(model);
+    }
+}
+
+/**
+ * 多选删除组内版本（语义③④）：**降序逐条**执行，每步落一次盘 + 发一次删除事件。
+ * 「至少保留一个」由 `core/versions.js#deleteVariants` 强制（越界即抛错，弹窗内提示）。
+ */
+async function deleteVariantsFlow(floor, indices) {
+    const order = deletionOrder(indices);
+    if (!order.length) throw new Error('请先选择要删除的版本');
+    let active = null;
+    for (const k of order) {
+        await writeFloorLine(floor, (line) => { active = deleteVariants(line, [k]).active; });
+        await emitSwipeDeleted(floor - 1, k, active);
+    }
+    return active;
+}
+
+/** 重排组内版本（正文与元数据一起搬，「当前」跟着它所属的那一份走） */
+async function moveVariantFlow(floor, from, to) {
+    await writeFloorLine(floor, (line) => moveVariant(line, from, to));
+}
+
+/** 编辑某个版本的正文；**没改就不写**（不白增家族版本号） */
+async function editVariantFlow(floor, k, text) {
+    const line = (ctx().chat || [])[floor - 1];
+    if (!line) throw new Error(`第 ${floor} 层不存在`);
+    if (lineVariants(line).texts[k] === text) return;
+    await writeFloorLine(floor, (l) => editVariantText(l, k, text));
+    toastr.success('版本正文已改。', '聊天文件系统');
+}
+
+/**
+ * 该层版本弹窗（**版本按钮点击入口**；四项能力的编排在 `ui/versions.js`，DOM 也在那里）。
+ *
+ * 同步签名 + 自带失败兜底：入口是消息按钮的 click 事件，事件回调不 await，
+ * 弹窗打开失败（含补齐该层正文失败）不能让异常变成未处理的 rejection。
+ */
+function openVersionsForFloor(floor) {
+    if (!getModel()) return;
+    if (typeof Popup !== 'function') {
+        toastr.error('当前环境缺少 Popup API，版本管理不可用。');
+        return;
+    }
+    void openVersionsPopupFor(floor).catch((e) => {
+        console.error(`[${MODULE_NAME}] 版本弹窗打开失败:`, e);
+        toastr.error(`版本弹窗打开失败: ${e?.message || e}`, '聊天文件系统');
+    });
+}
+
+/** 打开展示层：先尽力补齐该层其他组的正文，再交给 `ui/versions.js` */
+async function openVersionsPopupFor(floor) {
+    const overlay = await floorContentOverlay(floor);
+    const getView = () => {
+        const live = getModel();
+        // 覆盖层**只读**：只补「本键看不到的那几个组」的正文，不改库内模型（改它会让不变量 3
+        // 「组不重复存储」不成立——那些组相对家族活跃分支其实「在 body 里」）。
+        const merged = live && overlay ? { ...live, groups: { ...overlay, ...(live.groups || {}) } } : live;
+        return { model: merged, chat: ctx().chat || [], currentBranchId };
+    };
+    const view = getView();
+    if (!view.model) return;
     openVersionsPopup({
         floor,
-        model,
-        chat: ctx().chat || [],
+        model: view.model,
+        chat: view.chat,
         currentBranchId,
-        onSwitchBranch: (branchId) => switchBranch(branchId),
+        getView,
+        onSwitchVariant: (k) => switchVariantFlow(floor, k),
+        onSwitchGroup: (gid, k) => switchToGroupVersionFlow(floor, gid, k),
+        onDeleteVariants: (indices) => deleteVariantsFlow(floor, indices),
+        onMoveVariant: (from, to) => moveVariantFlow(floor, from, to),
+        onEditVariant: (k, text) => editVariantFlow(floor, k, text),
     });
 }
 

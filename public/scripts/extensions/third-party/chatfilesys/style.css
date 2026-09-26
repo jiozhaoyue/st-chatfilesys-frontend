@@ -282,42 +282,60 @@
     color: #d29922;
 }
 
-/* ---------- 该层版本弹窗（T4 最小版；T7 内化 swipe 版本管理后扩展） ---------- */
+/* ---------- 该层版本弹窗（T7：每层版本管理四项能力） ---------- */
 
 .chatfilesys-versions .chatfilesys-ver-head {
     font-size: 12.5px;
     margin-bottom: 8px;
 }
 
-.chatfilesys-versions .chatfilesys-ver-group {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 6px 4px;
-    border-bottom: 1px solid var(--SmartThemeBorderColor, #30363d);
-    font-size: 12px;
+.chatfilesys-versions .chatfilesys-ver-err {
+    color: var(--SmartThemeErrorColor, #f85149);
+    font-size: 11.5px;
+    line-height: 1.6;
+    margin: 6px 0;
+}
+
+.chatfilesys-versions .chatfilesys-ver-list {
+    max-height: 320px;
+    overflow-y: auto;
+    border: 1px solid var(--SmartThemeBorderColor, #30363d);
+    border-radius: 8px;
+    margin-bottom: 8px;
+}
+
+.chatfilesys-versions .chatfilesys-ver-group + .chatfilesys-ver-group {
+    border-top: 1px solid var(--SmartThemeBorderColor, #30363d);
 }
 
 .chatfilesys-versions .chatfilesys-ver-group.active {
     background: rgba(88, 166, 255, .08);
 }
 
+.chatfilesys-versions .chatfilesys-ver-ghead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    font-size: 11px;
+    opacity: .85;
+    flex-wrap: wrap;
+}
+
 .chatfilesys-versions .chatfilesys-ver-idx {
-    width: 64px;
+    font-weight: 600;
     flex-shrink: 0;
-    opacity: .8;
 }
 
 .chatfilesys-versions .chatfilesys-ver-meta {
     font-size: 10.5px;
-    opacity: .6;
+    opacity: .7;
     flex-shrink: 0;
 }
 
 .chatfilesys-versions .chatfilesys-ver-owners {
     display: flex;
     gap: 4px;
-    flex: 1;
     flex-wrap: wrap;
 }
 
@@ -333,6 +351,95 @@
     border-color: var(--SmartThemeQuoteColor, #58a6ff);
     color: var(--SmartThemeQuoteColor, #58a6ff);
     opacity: 1;
+}
+
+.chatfilesys-versions .chatfilesys-ver-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px 5px 14px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.chatfilesys-versions .chatfilesys-ver-item + .chatfilesys-ver-item {
+    border-top: 1px dashed var(--SmartThemeBorderColor, #30363d);
+}
+
+.chatfilesys-versions .chatfilesys-ver-item:hover {
+    background: var(--white20a, rgba(255, 255, 255, .04));
+}
+
+.chatfilesys-versions .chatfilesys-ver-item.selected {
+    outline: 1px solid var(--SmartThemeQuoteColor, #58a6ff);
+    outline-offset: -1px;
+}
+
+.chatfilesys-versions .chatfilesys-ver-k {
+    flex-shrink: 0;
+    font-size: 10.5px;
+    opacity: .7;
+}
+
+.chatfilesys-versions .chatfilesys-ver-txt {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: .9;
+}
+
+.chatfilesys-versions .chatfilesys-ver-nocheck {
+    width: 13px;
+    flex-shrink: 0;
+}
+
+.chatfilesys-versions .chatfilesys-ver-tag {
+    flex-shrink: 0;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    border: 1px solid var(--SmartThemeQuoteColor, #58a6ff);
+    color: var(--SmartThemeQuoteColor, #58a6ff);
+}
+
+.chatfilesys-versions .chatfilesys-ver-ops {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.chatfilesys-versions .chatfilesys-ver-ops .menu_button {
+    padding: 1px 6px;
+    font-size: 10.5px;
+}
+
+.chatfilesys-versions .chatfilesys-ver-preview {
+    border: 1px solid var(--SmartThemeBorderColor, #30363d);
+    border-radius: 8px;
+    padding: 6px 8px;
+    margin-bottom: 8px;
+}
+
+.chatfilesys-versions .chatfilesys-ver-preview-head {
+    font-size: 11px;
+    opacity: .7;
+    margin-bottom: 4px;
+}
+
+.chatfilesys-versions .chatfilesys-ver-preview-body {
+    max-height: 180px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 12px;
+    line-height: 1.6;
+    opacity: .95;
+}
+
+.chatfilesys-versions .chatfilesys-ver-edit {
+    width: 100%;
+    margin: 4px 0;
 }
 
 /* ---------- 入库提醒弹窗（T8 / R8.1：打开未入库聊天时提醒装库流程） ---------- */
