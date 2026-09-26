@@ -67,7 +67,7 @@ ChatFilesys 是一个 [SillyTavern](https://github.com/SillyTavern/SillyTavern)�
 
 ```bash
 # 数据库单测（node:test，直接 import 扩展源码；含接缝/三档适配器/指纹合并/回收站/导入旅程）
-node --test tests/branches/*.test.mjs   # 25 个测试文件 / 278 项
+node --test tests/branches/*.test.mjs   # 29 个测试文件 / 387 项
 
 # e2e（Playwright 驱动宿主真实实例 https://127.0.0.1:8003/，测试角色前缀 __cb_e2e，自动清理）
 # Windows 下必须带 PYTHONIOENCODING=utf-8（断言明细含非 GBK 字符，否则打印即崩）
