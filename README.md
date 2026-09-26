@@ -130,3 +130,11 @@ e2e 依赖本地 Luker 实例（默认 `https://127.0.0.1:8003`，可在 `tests/
 ## License
 
 [AGPL-3.0](LICENSE)——与 SillyTavern 上游一致。
+
+### 第三方库（本地副本，无构建步骤）
+
+| 库 | 版本 | 用途 | 许可 | 位置 |
+| --- | --- | --- | --- | --- |
+| [dagre](https://github.com/dagrejs/dagre) | 0.8.5 | 图布局（分支图算坐标） | MIT | `public/scripts/extensions/third-party/chatfilesys/vendor/dagre.js` |
+
+副本**原样不改**（仅保留原有许可头），安装即用、无需 `npm install`。
