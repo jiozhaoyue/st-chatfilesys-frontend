@@ -10,6 +10,15 @@ ChatFilesys 是一个 [SillyTavern](https://github.com/SillyTavern/SillyTavern)�
 - **智能合并**：content_hash 指纹对齐——完全相同楼层幂等去重、最长公共前缀对齐为分叉点；跨聊天同层合并消灭文件间重复历史
 - **可视化**：SVG 结构树（默认向下、可切右、可缩放拖拽，只显结构不含消息内容）；消息旁仅在**该层有多个 swipe 组**时出现一个版本按钮
 
+## 文档
+
+**完整文档在文档站：<https://jiozhaoyue.github.io/st-chatfilesys-frontend/>**
+
+- [指南](https://jiozhaoyue.github.io/st-chatfilesys-frontend/guide/)：安装与入口、三种模式、三档存储、管理弹窗、分支与版本、导入 / 导出 / 回收站、隐私边界……每个功能一页，每页都写明**边界与未做到**
+- [边界与未做到（汇总）](https://jiozhaoyue.github.io/st-chatfilesys-frontend/guide/boundaries)：一眼看全所有限制
+- [开发文档](https://jiozhaoyue.github.io/st-chatfilesys-frontend/dev/)：架构、接缝、适配器契约、宿主兼容、测试基建、文档政策
+- [路线图](https://jiozhaoyue.github.io/st-chatfilesys-frontend/dev/roadmap)：计划的唯一权威出处
+
 ## 安装
 
 把 `public/scripts/extensions/third-party/chatfilesys/` 整个目录复制到实例的 `data/<user-handle>/extensions/chatfilesys/`，重启服务后在扩展设置中启用。
@@ -67,7 +76,7 @@ ChatFilesys 是一个 [SillyTavern](https://github.com/SillyTavern/SillyTavern)�
 
 ```bash
 # 数据库单测（node:test，直接 import 扩展源码；含接缝/三档适配器/指纹合并/回收站/导入旅程）
-node --test tests/branches/*.test.mjs   # 29 个测试文件 / 387 项
+node --test tests/branches/*.test.mjs   # 29 个测试文件 / 411 项
 
 # e2e（Playwright 驱动宿主真实实例 https://127.0.0.1:8003/，测试角色前缀 __cb_e2e，自动清理）
 # Windows 下必须带 PYTHONIOENCODING=utf-8（断言明细含非 GBK 字符，否则打印即崩）
@@ -106,26 +115,16 @@ e2e 依赖本地 Luker 实例（默认 `https://127.0.0.1:8003`，可在 `tests/
 
 ## 路线图
 
+计划的**唯一权威出处**是文档站的[路线图](https://jiozhaoyue.github.io/st-chatfilesys-frontend/dev/roadmap)页
+（已完成 / 进行中 / 未开始 / 明确不做，逐条列全）。此处只留一句概要：
+
 - ✅ 一期：分支数据层 + 写路径 + 原生书签收编 + 增量导出
 - ✅ 二期：UI 重构（管理弹窗 + 消息旁轻量注入）+ SVG 分支树 + 写路径迁移官方消息 API
-- ✅ 三期：**纯数据库模式核心**（2026-09-24 重评定向）：fetch 拦截接缝 + 三档存储适配器（Authority SQL / 官方通道 / IndexedDB）+ 导入旅程（智能合并 + 回收站）+ 读库渲染；真机 UI 全旅程已过
-- ⬜ 四期（进行中）：
-  - ✅ 原生「创建分支 / 创建检查点」接管（点宿主原生按钮不再落复制文件，直接在库内成结构）
-  - ✅ 双写模式（库为准 + 磁盘保留标准聊天文件，只写不读）
-  - ✅ 入库提醒弹窗（四选择 + 冷启动也弹 + 两个压制勾选）
-  - ✅ 主分支可换（「设为主分支」，主分支不可直接删）
-  - ✅ 界面分工收敛（唯一界面 = 弹窗四页签；聊天界面只剩入口按钮与版本按钮；删扩展设置抽屉与 `settings.html`）
-  - ✅ 每层版本按钮（仅该层有多个 swipe 组时出现）
-  - ✅ 版本弹窗的四项能力（预览 / 切换 / 多选删除 / 重排；**只参考外部插件的交互设计，未引入其任何代码**）
-  - ⬜ 导出：家族压缩包（单条分支导出已有）
-  - ⬜ 把一个角色卡的所有聊天合并成一个家族（按原有父子关系接树 + 占位文件保活）
-  - ⬜ 解绑重绑 · 聊天改名自动索引（部分已有）· 视图内化（插件态与独立态同源）
-  - ⬜ 术语统一为「分支」（全仓「分支」存量待扫）
-  - ⬜ 三模式行为矩阵参数化回归 + 多插件共存实测
-  - ⬜ Authority 档真机验证 · 性能基准与多并发验证
-  - ⬜ 首次用户旅程实测（用真实聊天走一遍导入→聊天→分支→切版本）
+- ✅ 三期：**纯数据库模式核心**：fetch 拦截接缝 + 三档存储适配器 + 导入旅程（智能合并 + 回收站）+ 读库渲染
+- 🚧 四期（进行中）：图视图的**渲染与交互**（数据源 / 图引擎 / 布局已交付）；导出下载产物与家族压缩包；解绑重绑；跨三模式一致性回归；多插件共存与首次用户旅程实测；档 1 真机验证
 
-未做到与已做到的全部差异，逐条列在 [`docs/pure-db-mode-explained.md`](docs/pure-db-mode-explained.md) 末节。
+未做到与已做到的全部差异，逐条列在 [`docs/pure-db-mode-explained.md`](docs/pure-db-mode-explained.md) 末节，
+以及文档站的[边界与未做到（汇总）](https://jiozhaoyue.github.io/st-chatfilesys-frontend/guide/boundaries)页。
 
 ## License
 

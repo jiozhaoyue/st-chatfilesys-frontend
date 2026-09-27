@@ -75,6 +75,12 @@ export default defineConfig({
                     text: '开发',
                     items: [
                         { text: '总览', link: '/dev/' },
+                        { text: '架构', link: '/dev/architecture' },
+                        { text: '接缝（拦截层）', link: '/dev/seam' },
+                        { text: '适配器契约', link: '/dev/storage-adapter' },
+                        { text: '宿主兼容', link: '/dev/host-compat' },
+                        { text: '测试基建', link: '/dev/testing' },
+                        { text: '文档政策', link: '/dev/docs-policy' },
                         { text: '路线图（计划公开）', link: '/dev/roadmap' },
                     ],
                 },
