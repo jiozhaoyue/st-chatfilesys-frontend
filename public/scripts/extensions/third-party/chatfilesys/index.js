@@ -47,6 +47,7 @@ import {
     exportRegistry, resetAll, resetSetting, BY_KEY,
 } from './core/settings-registry.js';
 import { makeError, diagnosisText } from './core/errors.js';
+import { cleanSummaryText } from './core/summary-text.js';
 import { createStorageAdapter } from './core/storage/adapter.js';
 import { modelFromStore, storeFromModel } from './core/store-bridge.js';
 import { createTrash } from './core/trash.js';
@@ -354,17 +355,45 @@ function canSummarize() {
 /**
  * 让模型概括一段对话。
  *
+ * ── 两条链路**都要试**，且必须校验返回值（2026-09-28 真机修的缺陷）──
+ * 真机实测（Dev Luker 8003）：`generateQuietPrompt(...)` **两种调用形状都返回字面量
+ * `"undefined"`**（几百毫秒就回来了，根本没真调用），而 `generateRaw(...)` 正常
+ * （约 6 秒、返回真实文本）。此前的写法是「有 quiet 就用 quiet 且**不校验返回值**」
+ * ⇒ 用户点「AI 总结」拿到的是 `undefined` / 思维链残片，**而且看起来像成功了**。
+ *
+ * 现在的顺序与判据：
+ * 1. `generateRaw` 在前（实测两宿主都能用）
+ * 2. 每次调用后**清洗 + 判空**；空/无效就当这次失败，**接着试下一条链路**
+ * 3. 全部失败才抛错，并把**每条链路的失败原因**带出去（不吞）
+ *
  * 摘要长度、总字数、每层字数**全部走设置**（`ai.max_summary_len` / `ai.max_chars` /
- * `ai.chars_per_floor`）——此前的 20 / 4000 / 200 是写死在两个文件里的三个魔数，
- * 用户既看不见也改不了（本轮「全部用户可调」的整治对象之一）。
+ * `ai.chars_per_floor`）。
  */
 async function generateSummary(text) {
     const c = ctx();
     const maxLen = Number(getSetting('ai.max_summary_len')) || 60;
     const prompt = `请用不超过 ${maxLen} 个字概括下面这段对话的走向，只输出概括本身，不要引号、不要解释：\n\n${text}`;
-    if (typeof c.generateQuietPrompt === 'function') return String(await c.generateQuietPrompt({ quietPrompt: prompt }) ?? '');
-    if (typeof c.generateRaw === 'function') return String(await c.generateRaw({ prompt }) ?? '');
-    throw new Error('宿主无可用生成链路');
+
+    const attempts = [];
+    if (typeof c.generateRaw === 'function') {
+        attempts.push(['generateRaw', () => c.generateRaw({ prompt })]);
+    }
+    if (typeof c.generateQuietPrompt === 'function') {
+        attempts.push(['generateQuietPrompt', () => c.generateQuietPrompt({ quietPrompt: prompt })]);
+    }
+    if (!attempts.length) throw new Error('宿主没有可用的生成链路');
+
+    const failures = [];
+    for (const [name, call] of attempts) {
+        try {
+            const cleaned = cleanSummaryText(await call());
+            if (cleaned) return cleaned;
+            failures.push(`${name} 返回空/无效内容`);
+        } catch (e) {
+            failures.push(`${name}: ${e?.message || e}`);
+        }
+    }
+    throw new Error(`生成链路都不可用（${failures.join('；')}）`);
 }
 
 function autoExportEnabled() {
@@ -540,8 +569,16 @@ function bumpGraph() { graphToken += 1; }
  */
 function graphSourceDeps() {
     const c = ctx();
-    const characters = Array.isArray(c.characters) ? c.characters : [];
-    const ch = characters[Number(c.characterId)] ?? characters.find((x) => String(x?.avatar) === String(c.characterId));
+    // `characters` 在宿主里可能是数组也可能是下标对象——两种都吃下（不再只认数组）
+    const characters = Array.isArray(c.characters) ? c.characters : Object.values(c.characters || {});
+    const idx = Number(c.characterId);
+    // 三级回退，**每一级都是宿主已有的字段**，不是猜：
+    // ① 按下标取（常态）；② 按 `avatar` 匹配 `characterId`（部分宿主把 id 当 avatar 用）；
+    // ③ 按 `name2`（宿主的「当前角色名」）找 —— 真机实测过 `characterId` 与数组下标解耦的场合，
+    //    只写 ① 会让「数据源不可用」，而实际角色就在那儿（2026-09-28）。
+    let ch = Number.isFinite(idx) ? characters[idx] : undefined;
+    if (!ch) ch = characters.find((x) => String(x?.avatar) === String(c.characterId));
+    if (!ch && c.name2) ch = characters.find((x) => String(x?.name) === String(c.name2));
     if (!ch && !c.groupId) return null;
 
     const deps = {

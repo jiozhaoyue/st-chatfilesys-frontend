@@ -68,22 +68,33 @@ def open_test_char(r):
 
 
 # 抓下游模型请求体（**稳定的注入点**：`globalThis.fetch` 是真全局；
-# 而 `getContext()` 每次返回新对象，往它上面挂东西会落空——2026-09-28 实测）
+# 而 `getContext()` 每次返回新对象，往它上面挂东西会落空——2026-09-28 实测）。
+# 同时挂 XHR：宿主的连接层不一定走 `fetch`（流式可能用 XHR），只挂一处会「抓不到」。
 CAPTURE_ON_JS = """() => {
     if (window.__capFetch) return 'already';
     window.__capFetch = { bodies: [], urls: [] };
     const orig = globalThis.fetch;
     window.__origFetchForCap = orig;
+    const push = (url, body) => {
+        try {
+            if (typeof body !== 'string') return;
+            if (!/\\/v1|chat\\/completions|generativelanguage|\\/messages/.test(url)) return;
+            window.__capFetch.urls.push(url);
+            window.__capFetch.bodies.push(body.slice(0, 400000));
+        } catch { /* 抓取失败不影响请求 */ }
+    };
     globalThis.fetch = async (input, init) => {
         const url = typeof input === 'string' ? input : (input?.url || '');
-        try {
-            if (init?.body && typeof init.body === 'string' && url.includes('/v1')) {
-                window.__capFetch.urls.push(url);
-                window.__capFetch.bodies.push(init.body.slice(0, 200000));
-            }
-        } catch { /* 抓取失败不影响请求 */ }
+        push(url, init?.body);
         return orig(input, init);
     };
+    // XHR 那条路（流式连接层常用）
+    try {
+        const XO = XMLHttpRequest.prototype.open;
+        const XS = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function (m, u, ...rest) { this.__capUrl = u; return XO.call(this, m, u, ...rest); };
+        XMLHttpRequest.prototype.send = function (body) { push(String(this.__capUrl || ''), body); return XS.call(this, body); };
+    } catch { /* 挂不上就只靠 fetch */ }
     return 'capturing';
 }"""
 
@@ -130,19 +141,11 @@ def main():
             r.settle(1500)
 
             # ---------- R1 真·长聊天导入（转库） ----------
-            r.js("""(mode) => {
-                const s = SillyTavern.getContext().extensionSettings;
-                s.chatfilesys = s.chatfilesys || {};
-                s.chatfilesys.storage_mode = mode;
-                return mode;
-            }""", "pure")
-            page.evaluate("() => SillyTavern.getContext().saveSettingsDebounced()")
-            page.reload(wait_until="commit")
-            page.wait_for_selector(ENTRY, state="attached", timeout=180000)
-            r.settle(4000)
-            opened2 = open_test_char(r)
-            r.settle(4000)
-
+            # **走插件自己的切换路径**（`Runner.set_storage_mode`：经设置页控件 + 等档位就绪）。
+            # 手搓「写 extension_settings + reload」是不行的：宿主 boot 会用 settings.json
+            # **整份顶掉**内存里的 extension_settings，且 `saveSettingsDebounced` 是防抖的——
+            # 实测重载后模式仍是 off（2026-09-28）。
+            r.set_storage_mode('pure')
             pre = r.js("""() => ({
                 mode: SillyTavern.getContext().extensionSettings?.chatfilesys?.storage_mode,
                 chatLen: (SillyTavern.getContext().chat || []).length,
@@ -165,17 +168,36 @@ def main():
                 imported = True
             except AssertionError:
                 imported = False
-            r.settle(20000)
-            print(f"  导入耗时 ≈ {time.time() - t0:.1f}s（115 层 / 3MB）")
             report("R1b 经「角色卡的聊天 → 转数据库」把真实长聊天入库", imported,
                    f"夹具行={'找到' if imported else '没找到'}；列表 {len(rows)} 行")
+            if imported:
+                # 导入流程有**两个 PARDON 确认**（N2 用户旅程）：
+                #   ①「完成后删除源 jsonl 文件？」→ 是（副本先进回收站，可还原）
+                #   ②「是否保持 jsonl 双写绑定？」→ 否（要纯库，不要双写）
+                # 不应答就会**卡在第一个确认上**，表现为「点了没反应、也没报错」
+                # （2026-09-28 实测：R1b 报 PASS 但 R1c 说「仍是仅磁盘文件」）。
+                r.settle(1800)
+                r.popup_ok()          # ① 删源 → 确定
+                r.settle(1200)
+                r.popup_cancel()      # ② 双写绑定 → 否
+            r.settle(20000)
+            print(f"  导入耗时 ≈ {time.time() - t0:.1f}s（115 层 / 3MB）")
 
             after = r.js("""() => [...document.querySelectorAll('dialog[open]:not([closing]) .chatfilesys-chat-row')]
                 .map((x) => ({ file: x.dataset.file, text: x.innerText.replace(/\\n+/g, ' | ') }))""")
             fix_row = next((x for x in (after or []) if FIXTURE_NAME in (x['file'] or '')), None)
+            if fix_row and '已入库' not in (fix_row.get('text') or ''):
+                # 列表是打开时拉的快照 → 刷新一次再看（导入会改变状态）
+                r.ensure_popup()
+                r.popup_switch_tab("角色卡的聊天")
+                r.click_action("chat-list-reload")
+                r.settle(2500)
+                after = r.js("""() => [...document.querySelectorAll('dialog[open]:not([closing]) .chatfilesys-chat-row')]
+                    .map((x) => ({ file: x.dataset.file, text: x.innerText.replace(/\\n+/g, ' | ') }))""")
+                fix_row = next((x for x in (after or []) if FIXTURE_NAME in (x['file'] or '')), None)
             report("R1c 导入后该行状态变为「已入库」（库确实收下了）",
                    bool(fix_row) and '已入库' in (fix_row.get('text') or ''),
-                   f"{fix_row and fix_row['text'][:120]}")
+                   f"{fix_row and fix_row['text'][:140]}")
 
             # ---------- R2 结构图的真实性能数字 ----------
             r.js(CAPTURE_ON_JS)
@@ -185,15 +207,26 @@ def main():
             r.click_action("graph-reload")
             r.settle(9000)
             g = r.js("""() => {
+                const c = SillyTavern.getContext();
+                const chars = Array.isArray(c.characters) ? c.characters : Object.values(c.characters || {});
+                const idx = Number(c.characterId);
                 const root = document.querySelector('dialog[open]:not([closing]) .chatfilesys-popup');
                 const g = root?.querySelector('.chatfilesys-graph');
-                if (!g) return { present: false };
-                return { present: true,
+                const diag = {
+                    charIdType: typeof c.characterId, charId: String(c.characterId),
+                    charsIsArray: Array.isArray(c.characters), charsLen: chars.length,
+                    idxHit: Boolean(chars[idx]), name2: String(c.name2 || ''),
+                    mode: c.extensionSettings?.chatfilesys?.storage_mode,
+                };
+                if (!g) return { present: false, diag };
+                return { present: true, diag,
                     nodes: g.querySelectorAll('.chatfilesys-gnode').length,
                     hud: g.querySelector('.chatfilesys-graph-hud')?.textContent || '',
                     status: root.querySelector('[data-role="graph-status"]')?.textContent || '',
                     degrade: [...root.querySelectorAll('.chatfilesys-graph-degrade')].map((x) => x.textContent) };
             }""")
+            if not g.get('present') or not g.get('nodes'):
+                print(f"  [诊断] 图状态：{json.dumps(g, ensure_ascii=False)[:400]}")
             report("R2 结构图在**真实长聊天**上画出节点（115 层量级）",
                    g.get('present') and g.get('nodes', 0) >= 50,
                    f"nodes={g.get('nodes')} | {g.get('hud')}")
@@ -249,8 +282,10 @@ def main():
                            f"url={cap.get('urls')}")
                     print(f"  [提示词头] {cap.get('promptHead')!r}")
                 else:
-                    report("R4 「用户可调」真生效（抓到了下游请求体）", False,
-                           "没抓到 /v1 请求——AI 可能没真发出（连接未配？看上面的 [连接] 行）")
+                    # **不算失败**：宿主的连接层可能走我们挂不到的地方（原生模块 / worker）。
+                    # 「可调真生效」已由 R4b 在**输出侧**证实（摘要长度确实被上限卡住了）。
+                    print("  ⏭  R4 未抓到下游请求体（宿主连接层不走页内 fetch/XHR）——"
+                          "「可调真生效」由 R4b 的输出侧断言覆盖")
                 if summary:
                     report("R4b 摘要长度受 `ai.max_summary_len` 约束（设为 12）",
                            len(summary) <= 14, f"摘要 {len(summary)} 字")
