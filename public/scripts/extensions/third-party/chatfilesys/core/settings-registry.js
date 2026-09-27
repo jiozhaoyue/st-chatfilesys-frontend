@@ -207,8 +207,28 @@ export const SETTINGS = Object.freeze([
         apply: APPLY.GRAPH,
     },
 
-    /* ---------------- AI ---------------- */
+    /* ---------------- 接管 ---------------- */
     {
+        key: 'takeover.content_gate',
+        label: '原生「创建分支/检查点」接管：内容闸门',
+        group: '接管',
+        type: 'enum',
+        values: ['strict', 'fields', 'off'],
+        valueLabels: {
+            strict: '严格：整行完全相同才算（最保守）',
+            fields: '只比正文/说话人：忽略插件补的字段（装了改写类插件选这个）',
+            off: '不比内容：宿主说是分叉就照做（风险自负）',
+        },
+        default: 'strict',
+        describe: '纯库 / 双写模式下，宿主的「创建分支 / 创建检查点」要不要被本插件接管进库，'
+            + '取决于新聊天文件的内容能不能对上父分支。这一项决定「怎么算对得上」。',
+        why: '默认「严格」是不擅自改变既有行为。但装了消息改写类插件（变量框架、模板引擎）时，'
+            + '它们会在载入与写出之间给消息补字段，整行永远不全等 ⇒ **接管会失效**'
+            + '（表现为「创建分支没反应」）。真机已实测到这个形态；那时应改成「只比正文/说话人」。',
+        apply: APPLY.NONE,   // 接缝**每次判定时现取**，不需要重装
+    },
+
+    /* ---------------- AI ---------------- */    {
         key: 'ai.enabled',
         label: '启用 AI 功能',
         group: 'AI',
@@ -287,7 +307,7 @@ export const SETTINGS = Object.freeze([
 ]);
 
 /** 分组显示顺序（表里没列到的分组排在最后，按名字） */
-export const GROUP_ORDER = Object.freeze(['存储', '入库', '界面', '结构图', 'AI', '回收站', '诊断']);
+export const GROUP_ORDER = Object.freeze(['存储', '入库', '界面', '结构图', '接管', 'AI', '回收站', '诊断']);
 
 /** key → 定义（查表用；`SETTINGS` 本身仍是唯一事实源） */
 export const BY_KEY = new Map(SETTINGS.map((s) => [s.key, s]));

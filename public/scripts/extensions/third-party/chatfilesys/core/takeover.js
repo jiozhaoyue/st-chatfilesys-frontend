@@ -37,23 +37,75 @@ function floorsOf(path) {
 }
 
 /**
+ * 内容闸门的档位（**用户可调**，见设置项 `takeover.content_gate`）。
+ *
+ * ── 为什么它必须可调（真机实据）──
+ * `strict`（整行 JSON 全等）的前提是「宿主克隆出的行与我们存的同源」。**在有消息改写类插件
+ * 在场时这个前提不成立**：宿主与变量类插件会在「载入 → 写出」之间给消息对象**补字段**
+ * （实测入向行比库内行多出 `extra` / `variables` / `variables_initialized` / `is_ejs_processed`），
+ * 于是整行永远不全等 ⇒ **接管在真机几乎永不触发**（2026-09-27 实测定性）。
+ *
+ * 三档的取舍：
+ * - `strict`：最保守，**原样保留**。装了改写类插件时接管会失效（表现为「创建分支没反应」）。
+ * - `fields`：只比 `is_user` / `mes` / `name` —— 与**节点身份**（`core/graph/identity.js`）
+ *   同一套判定面，忽略插件补的字段。**这是装了改写类插件时应选的那一档。**
+ * - `off`  ：完全不比内容，只看「不超长」。给它是因为**有人确实想要**「不管内容、
+ *   宿主说这是分叉就照做」；它把内容闸门整个交出去，风险自负。
+ *
+ * 默认值是 `strict`——**不擅自改变既有行为**。这一档该不该换是用户的事
+ * （任务 `09-26-takeover-content-gate` 在等裁定），设置项把选择权先交出去。
+ */
+export const GATE_MODES = Object.freeze(['strict', 'fields', 'off']);
+
+/** 归一档位（非法值回落 `strict` —— 保守侧） */
+export const normGateMode = (m) => (GATE_MODES.includes(m) ? m : 'strict');
+
+/** 取「判定面」三字段的规范串（与节点身份同一套字段；缺项归一成空，缺字段与空串同判） */
+function identityOf(row) {
+    return JSON.stringify([
+        Boolean(row?.is_user),
+        String(row?.mes ?? ''),
+        String(row?.name ?? ''),
+    ]);
+}
+
+/**
  * 逐行前缀校验：入向行序列必须是父分支投影的**逐行相同前缀**。
- * 用 JSON 序列化比对（键序由两侧解析顺序决定，宿主克隆出的行与我们存的同源）。
+ *
  * @param {Array<object>} rows 入向正文行（已去 header）
  * @param {Array<string>} parentContents 父分支投影行的 content 字符串（楼层 1..N 顺序）
- * @returns {{ok: true} | {ok: false, reason: string, firstDiff?: number}}
+ * @param {{mode?: 'strict'|'fields'|'off'}} [opts] 闸门档位（缺省 `strict`，见上）
+ * @returns {{ok: true, gate: string} | {ok: false, reason: string, firstDiff?: number}}
  */
-export function checkPrefix(rows, parentContents) {
+export function checkPrefix(rows, parentContents, opts = {}) {
+    const mode = normGateMode(opts?.mode);
     if (!rows.length) return { ok: false, reason: '正文为空' };
     if (rows.length > parentContents.length) {
         return { ok: false, reason: `正文 ${rows.length} 行超过父分支 ${parentContents.length} 层` };
     }
     for (let i = 0; i < rows.length; i++) {
-        if (JSON.stringify(rows[i]) !== parentContents[i]) {
+        const parent = parentContents[i];
+        if (mode === 'off') continue;          // 不比内容，只保留上面的长度约束
+        if (mode === 'fields') {
+            let parentRow = null;
+            try { parentRow = JSON.parse(parent); } catch { parentRow = null; }
+            if (parentRow === null) {
+                // 父侧存的不是 JSON（不该发生）→ 退回整行比对，宁可严也不放行
+                if (JSON.stringify(rows[i]) !== parent) {
+                    return { ok: false, reason: `第 ${i + 1} 层内容不是父分支前缀（父侧行不可解析）`, firstDiff: i };
+                }
+                continue;
+            }
+            if (identityOf(rows[i]) !== identityOf(parentRow)) {
+                return { ok: false, reason: `第 ${i + 1} 层的正文不是父分支前缀（按 is_user/mes/name 比）`, firstDiff: i };
+            }
+            continue;
+        }
+        if (JSON.stringify(rows[i]) !== parent) {
             return { ok: false, reason: `第 ${i + 1} 层内容不是父分支前缀`, firstDiff: i };
         }
     }
-    return { ok: true };
+    return { ok: true, gate: mode };
 }
 
 /**
@@ -91,8 +143,9 @@ export function checkPrefix(rows, parentContents) {
  */
 export function planTakeover({
     kind, rows, parentContents, parentModel, parentBranchId, parentKey, newKey, fileName, mainChat, parentBindings,
+    gateMode = 'strict',
 }) {
-    const pre = checkPrefix(rows, parentContents);
+    const pre = checkPrefix(rows, parentContents, { mode: gateMode });
     if (!pre.ok) return pre;
 
     const model = structuredClone(parentModel);

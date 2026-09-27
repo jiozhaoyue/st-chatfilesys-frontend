@@ -15,6 +15,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import {
     SETTINGS, BY_KEY, TYPES, APPLY, GROUP_ORDER, defaults, grouped, normalize,
@@ -223,4 +224,33 @@ test('exportRegistry：分组键集合与 grouped() 一致（UI 与导出不许�
     const flat = reg.groups.flatMap((g) => g.keys).sort();
     assert.deepEqual(flat, SETTINGS.map((s) => s.key).sort());
     assert.deepEqual(reg.groups.map((g) => g.name), grouped().map((g) => g.name));
+});
+
+/* ---------------- 7. 防「死设置」（2026-09-28 真机自查的产物） ---------------- */
+
+test('注册表：每一项都必须**在插件代码里真的被引用**（防死设置）', () => {
+    // 这条写下来的原因：本轮自查发现 `debug.verbose` 声明了却没有任何消费点——
+    // 「看着有、改了没反应」正是本轮要消灭的那类缺陷。手工查一次不够，要变成门禁。
+    //
+    // 判据：key 在**插件源码**里至少出现一次（`getSetting('key')` / `BY_KEY.get('key')` /
+    // 注释里提到都算——**弱判据，只抓「一次都没提」**）。强判据做不到：
+    // 消费点可能是间接的（如 `import_prompt.never` 走结构读取）。
+    const path = (p) => new URL(`../../public/scripts/extensions/third-party/chatfilesys/${p}`, import.meta.url);
+    const files = ['index.js', 'ui/popup.js', 'ui/merge.js', 'ui/graph/controller.js',
+        'ui/graph/view.js', 'core/settings-registry.js'];
+    const src = files.map((f) => {
+        try { return fs.readFileSync(path(f), 'utf8'); } catch { return ''; }
+    }).join('\n');
+
+    const dead = [];
+    for (const s of SETTINGS) {
+        // 在注册表自己的定义之外，还要在别处出现
+        const uses = src.split(s.key).length - 1;
+        const inRegistryOnly = s.key.split('.').length === 1
+            ? uses <= 1            // 单段 key 只出现在表里 → 疑似没人用
+            : uses <= 1;
+        if (inRegistryOnly) dead.push(s.key);
+    }
+    assert.deepEqual(dead, [],
+        `这些设置项除了在表里定义之外，代码里一次都没提到（死设置）：\n  ${dead.join('\n  ')}`);
 });

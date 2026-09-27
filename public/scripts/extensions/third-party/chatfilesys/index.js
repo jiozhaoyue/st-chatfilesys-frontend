@@ -37,7 +37,7 @@ import {
 } from './core/versions.js';
 import { detectRemovedFloors } from './core/floor-diff.js';
 import { installSeam, normalizeChatKey } from './core/seam.js';
-import { branchIdForKey } from './core/takeover.js';
+import { branchIdForKey, normGateMode } from './core/takeover.js';
 import { dropBindingsOfBranch, setBindingBranch } from './core/key-bindings.js';
 import { alignHostFileName } from './core/rename-align.js';
 import { createMirror } from './core/mirror.js';
@@ -176,6 +176,17 @@ function trashRetentionMs() {
 /** 双写：改动即落文件（设置项 `mirror_sync_on_write`） */
 function mirrorSyncOnWrite() {
     return Boolean(getSetting('mirror_sync_on_write'));
+}
+
+/**
+ * 详细日志（设置项 `debug.verbose`）。
+ *
+ * **只影响「信息性」输出**（建图耗时、逐次刷新摘要、选档过程这类平时没人看的东西）；
+ * 警告与错误**一律照打**，不受这个开关影响——排障时最怕的就是「把日志关掉了才发现要日志」。
+ */
+function vlog(...args) {
+    if (!getSetting('debug.verbose')) return;
+    try { console.log(`[${MODULE_NAME}]`, ...args); } catch { /* 日志失败与业务无关 */ }
 }
 
 /* ---------------- 错误面（R6） ---------------- */
@@ -470,6 +481,8 @@ async function enablePureDb() {
             onWrote: (evt) => {
                 if (mirrorMode() && mirrorSyncOnWrite()) storageState?.mirror?.markDirty(evt);
             },
+            // 内容闸门档位**现取设置**（用户改完立刻生效，不缓存）
+            takeoverGate: () => normGateMode(getSetting('takeover.content_gate')),
         });
         const mirror = createMirror({
             adapter,
@@ -604,6 +617,8 @@ async function ensureGraphPanel(host) {
             }),
             layoutOptions: () => ({ direction: getSetting('graph.direction') }),
             log: console.warn,
+            // 信息性输出归「详细日志」设置管（见 vlog 的说明）
+            info: vlog,
         });
         graphPanel = { controller, view, host: null };
     }
@@ -2157,7 +2172,13 @@ async function maybePromptImport() {
         // 交给随后的 CHAT_CHANGED（那条路一定会来）。
         const fileName = String(c.getCurrentChatId?.() || c.chatId || '').replace(/\.jsonl$/i, '');
         if (!fileName) return;
-        const prompt = normImportPrompt(extension_settings[MODULE_NAME]?.import_prompt);
+        // `never`（总开关）走设置表；`mutedKeys`（逐聊天静音名单）留在结构里由弹窗维护。
+        // 两者住在**同一个路径**上（`import_prompt.never` / `import_prompt.mutedKeys`），
+        // 不存在第二份真源。
+        const prompt = normImportPrompt({
+            ...(settingsTree().import_prompt || {}),
+            never: Boolean(getSetting('import_prompt.never')),
+        });
         const chatKey = normalizeChatKeyOf(c, fileName);
         const inLibrary = await isCurrentChatInLibrary(chatKey);
         const show = shouldPromptImport({

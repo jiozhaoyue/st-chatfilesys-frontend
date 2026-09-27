@@ -280,6 +280,21 @@ def section_merge(r):
             report("C1 合并：把两条分支合成一条新分支", False, f"启用分支失败：{e}")
             return
 
+    # **先把楼层垫够**：`createBranch(forkFloor)` 要求 fork 点不超过活跃分支的层数，
+    # 而测试聊天刚建时只有 1 层（开场白）——直接 fork@2 会抛
+    # `forkFloor=2 超出活跃分支范围 0..1`（2026-09-28 实测）。
+    r.js("""async () => {
+        const ctx = SillyTavern.getContext();
+        for (let i = 0; i < 4; i++) {
+            await ctx.addMessages([{ name: i % 2 ? 'AI' : '我', is_user: i % 2 === 0,
+                mes: `合并探针：第 ${i + 1} 条，用来把楼层垫到 5 层。` }]);
+        }
+        return (ctx.chat || []).length;
+    }""")
+    r.settle(2500)
+    floors = r.js("() => (SillyTavern.getContext().chat || []).length")
+    print(f"  （C 段：楼层数 {floors}）")
+
     # 两条分支：主分支 5 层；另建一条 fork@2 且带自己独有层的分支
     info = r.js("""async () => {
         const ctx = SillyTavern.getContext();
@@ -352,7 +367,10 @@ def section_merge(r):
         return m.branches.map((b) => ({ id: b.id, name: b.name, path: JSON.stringify(b.path) }));
     }""")
     names = [b['name'] for b in after]
-    merged = next((b for b in after if b['name'].startswith('合并·') or '合并' in b['name']), None)
+    before_ids = {x['id'] for x in before}
+    # **按 id 找新增的那条**，不按名字猜：`'合并' in name` 会把探针分支「合并探针·B」也算进来
+    # （2026-09-28 实测：C1c 因此报「结果 2 层」——其实它量的是探针分支，产品是对的）。
+    merged = next((b for b in after if b['id'] not in before_ids), None)
     report("C1b 合并落成**一条新分支**（不是就地改原分支）",
            len(after) == len(before) + 1 and merged is not None,
            f"分支 {len(before)} → {len(after)}；新分支={merged and merged['name']}")
@@ -360,7 +378,8 @@ def section_merge(r):
     if merged:
         # 逐层并集：主分支 5 层 ⇒ 合并结果应有 5 层
         n = len(json.loads(merged['path']))
-        report("C1c 合并结果 = 逐层并集（主分支 5 层 ⇒ 结果 5 层）", n == 5, f"结果 {n} 层")
+        report("C1c 合并结果 = 逐层并集（主分支 5 层 ⇒ 结果 5 层）", n == 5,
+               f"结果 {n} 层；名字={merged['name']}")
 
     same = all(any(b['id'] == a['id'] and b['path'] == a['path'] for b in after) for a in before)
     report("C2 **原分支一字未改**（合并不改历史，撤销 = 删新分支）", same,

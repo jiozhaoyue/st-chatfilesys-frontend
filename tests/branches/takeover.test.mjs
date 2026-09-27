@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { nextIntegrity, normIntegrity, integrityConflict } from '../../public/scripts/extensions/third-party/chatfilesys/core/integrity.js';
 import {
     classifyNewChat, checkPrefix, planTakeover, branchIdForKey, BRANCH_NAME_RE, CHECKPOINT_NAME_RE,
+    GATE_MODES, normGateMode,
 } from '../../public/scripts/extensions/third-party/chatfilesys/core/takeover.js';
 
 /* ---------------- 版本号（N19） ---------------- */
@@ -61,10 +62,11 @@ const P = (obj) => JSON.stringify(obj);
 
 test('takeover：checkPrefix——逐行相同前缀通过；越界/内容不符拒绝', () => {
     const parent = [P({ mes: '一' }), P({ mes: '二' }), P({ mes: '三' })];
-    assert.deepEqual(checkPrefix([{ mes: '一' }], parent), { ok: true });
-    assert.deepEqual(checkPrefix([{ mes: '一' }, { mes: '二' }], parent), { ok: true });
+    // 返回值多带一个 `gate`（这次用的哪一档，可供断言）；其余形状不变
+    assert.deepEqual(checkPrefix([{ mes: '一' }], parent), { ok: true, gate: 'strict' });
+    assert.deepEqual(checkPrefix([{ mes: '一' }, { mes: '二' }], parent), { ok: true, gate: 'strict' });
     // 等长（在最后一层分叉）也算前缀
-    assert.deepEqual(checkPrefix([{ mes: '一' }, { mes: '二' }, { mes: '三' }], parent), { ok: true });
+    assert.deepEqual(checkPrefix([{ mes: '一' }, { mes: '二' }, { mes: '三' }], parent), { ok: true, gate: 'strict' });
     assert.equal(checkPrefix([], parent).ok, false);
     assert.equal(checkPrefix([{ mes: '一' }, { mes: '二' }, { mes: '三' }, { mes: '四' }], parent).ok, false);
     const bad = checkPrefix([{ mes: '一' }, { mes: '改过' }], parent);
@@ -197,4 +199,62 @@ test('takeover：branchIdForKey——键绑定优先，无绑定回落活跃分�
     assert.equal(branchIdForKey(fam, 'av::未知键'), 'b_main');
     assert.equal(branchIdForKey({ model: { active_branch: 'bx' } }, 'k'), 'bx');
     assert.equal(branchIdForKey({}, 'k'), null);
+});
+
+/* ---------------- 内容闸门档位（2026-09-28：用户可调） ---------------- */
+
+test('闸门档位：strict 下「插件补了字段」⇒ 不认（这就是真机上接管失效的根因）', () => {
+    const parent = [JSON.stringify({ name: 'A', is_user: false, mes: '你好' })];
+    // 宿主/变量插件在载入与写出之间会补这些字段（真机实测的形态）
+    const incoming = [{ name: 'A', is_user: false, mes: '你好', extra: {}, variables: {}, is_ejs_processed: true }];
+    assert.equal(checkPrefix(incoming, parent, { mode: 'strict' }).ok, false,
+        'strict 必须不认——不认才是当前行为，改了它等于偷偷换语义');
+    assert.equal(checkPrefix(incoming, parent, { mode: 'fields' }).ok, true,
+        'fields 只比 is_user/mes/name ⇒ 补字段不影响');
+});
+
+test('闸门档位：fields 仍然拦住**真的不一样**的层', () => {
+    const parent = [JSON.stringify({ name: 'A', is_user: false, mes: '你好' })];
+    const diffMes = [{ name: 'A', is_user: false, mes: '你好啊', extra: {} }];
+    const diffWho = [{ name: 'B', is_user: false, mes: '你好' }];
+    const diffRole = [{ name: 'A', is_user: true, mes: '你好' }];
+    for (const [row, why] of [[diffMes, '正文不同'], [diffWho, '说话人不同'], [diffRole, '用户/角色不同']]) {
+        const r = checkPrefix(row, parent, { mode: 'fields' });
+        assert.equal(r.ok, false, `${why}必须被拦住`);
+        assert.ok(r.reason.includes('第 1 层'), r.reason);
+    }
+});
+
+test('闸门档位：off 完全不比内容，但**长度约束仍然在**', () => {
+    const parent = [JSON.stringify({ mes: 'a' })];
+    assert.equal(checkPrefix([{ mes: '完全不同' }], parent, { mode: 'off' }).ok, true);
+    // 长度约束是结构性的（不可能「接出一个比父分支还长的前缀」），任何档位都要守
+    const long = [{ mes: 'a' }, { mes: 'b' }];
+    assert.equal(checkPrefix(long, parent, { mode: 'off' }).ok, false);
+    assert.equal(checkPrefix([], parent, { mode: 'off' }).ok, false, '正文为空在任何档位都不认');
+});
+
+test('闸门档位：非法/缺失值回落 strict（保守侧）', () => {
+    const parent = [JSON.stringify({ name: 'A', is_user: false, mes: '你好' })];
+    const incoming = [{ name: 'A', is_user: false, mes: '你好', extra: {} }];
+    for (const m of [undefined, null, 'nonsense', 42, {}]) {
+        const r = checkPrefix(incoming, parent, { mode: m });
+        assert.equal(r.ok, false, `mode=${JSON.stringify(m)} 应回落到 strict`);
+    }
+    assert.equal(normGateMode('fields'), 'fields');
+    assert.equal(normGateMode('STRICT'), 'strict');
+    assert.deepEqual(GATE_MODES, ['strict', 'fields', 'off']);
+});
+
+test('闸门档位：结果里**带上这次用的哪一档**（可断言，不靠猜）', () => {
+    const parent = [JSON.stringify({ name: 'A', is_user: false, mes: '你好' })];
+    const rows = [{ name: 'A', is_user: false, mes: '你好' }];
+    assert.equal(checkPrefix(rows, parent, { mode: 'fields' }).gate, 'fields');
+    assert.equal(checkPrefix(rows, parent, {}).gate, 'strict');
+});
+
+test('闸门档位：父侧行不可解析时**退回整行比对**（宁可严，不放行）', () => {
+    const parent = ['不是 JSON 的一行'];
+    assert.equal(checkPrefix([{ mes: 'x' }], parent, { mode: 'fields' }).ok, false);
+    assert.ok(checkPrefix([{ mes: 'x' }], parent, { mode: 'fields' }).reason.includes('不可解析'));
 });

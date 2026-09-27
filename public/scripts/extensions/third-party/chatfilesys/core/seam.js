@@ -260,6 +260,11 @@ async function ensurePathCovers(adapter, family, branch, floors, log) {
 export function installSeam(adapter, opts = {}) {
     const pageSize = opts.pageSize ?? 200;
     const log = opts.log ?? console.warn;
+    /**
+     * 内容闸门档位取值器（设置项 `takeover.content_gate`）。
+     * 传**函数**而不是值：用户在设置里改完要立刻生效，不能等到下次装接缝。
+     */
+    const takeoverGate = typeof opts.takeoverGate === 'function' ? opts.takeoverGate : null;
     const originalFetch = globalThis.fetch;
     // 成功写回调（T2 双写模式用）：参数 { familyId, chatKey }，只做通知、不改写结果
     const onWrote = typeof opts.onWrote === 'function' ? opts.onWrote : null;
@@ -303,6 +308,8 @@ export function installSeam(adapter, opts = {}) {
             fileName,
             mainChat: hostMain,
             parentBindings: parent.keyBindings,
+            // 内容闸门档位：**现取**（用户改了设置立刻生效，不缓存）
+            gateMode: typeof takeoverGate === 'function' ? takeoverGate() : 'strict',
         });
         if (!plan.ok) {
             log(`[chatfilesys-seam] 疑似原生分支/检查点「${fileName}」未接管（${plan.reason}），透传原生路径`);

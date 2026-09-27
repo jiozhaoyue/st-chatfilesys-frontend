@@ -46,6 +46,12 @@ function defaultWorkerUrl() {
  */
 export function createGraphController(deps = {}) {
     const log = deps.log ?? (() => {});
+    /**
+     * **信息性**日志（每次刷新的摘要）。与 `log` 分开是有意的：
+     * 它平时没人看（每次弹窗刷新都刷一行），归「详细日志」设置管；
+     * 而降级/失败这类**必须看得见**的东西走 `log`，不受那个开关影响。
+     */
+    const info = deps.info ?? log;
     const cache = createGraphCache({ log });
     const layoutService = createLayoutService({
         workerUrl: deps.workerUrl === undefined ? defaultWorkerUrl() : deps.workerUrl,
@@ -139,7 +145,7 @@ export function createGraphController(deps = {}) {
             layoutFailedReason: layout ? null : (layoutService.describe?.().lastReason || '布局服务没有给出坐标'),
         };
         lastSummary = summary;
-        log('[chatfilesys-graph] 图刷新', {
+        info('图刷新', {
             nodes: summary.nodeCount, changed, via: summary.layout?.via,
             tier: degrade.tier, graphMs: summary.timing.graphMs, layoutMs: summary.timing.layoutMs,
         });
