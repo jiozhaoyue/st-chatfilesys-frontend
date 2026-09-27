@@ -158,9 +158,16 @@ def main():
             r.popup_switch_tab("角色卡的聊天")
             r.settle(800)
             r.click_action("chat-list-reload")
-            r.settle(2500)
-            rows = r.js("""() => [...document.querySelectorAll('dialog[open]:not([closing]) .chatfilesys-chat-row')]
-                .map((x) => ({ file: x.dataset.file, text: x.innerText.replace(/\\n+/g, ' | ').slice(0, 90) }))""")
+            # **有界等待列表出现**，不要只 settle 一个固定时长：列表是异步拉的，拉完之前读到 0 行
+            # 会判成「夹具没找到」——那是**读得太早**，不是产品问题（2026-09-28 实测的 flake）。
+            rows = []
+            end = time.time() + 30
+            while time.time() < end:
+                r.settle(1500)
+                rows = r.js("""() => [...document.querySelectorAll('dialog[open]:not([closing]) .chatfilesys-chat-row')]
+                    .map((x) => ({ file: x.dataset.file, text: x.innerText.replace(/\\n+/g, ' | ').slice(0, 90) }))""") or []
+                if any(FIXTURE_NAME in (x['file'] or '') for x in rows):
+                    break
             print(f"  [聊天列表] {len(rows)} 行；含夹具={any(FIXTURE_NAME in (x['file'] or '') for x in rows)}")
             t0 = time.time()
             try:
@@ -205,8 +212,12 @@ def main():
             r.popup_switch_tab("结构图")
             r.settle(2000)
             r.click_action("graph-reload")
-            r.settle(9000)
-            g = r.js("""() => {
+            # 同样**有界等待**：建图 + 布局是异步的，固定 settle 会读到「正在读取数据并建图…」
+            g = {}
+            end = time.time() + 40
+            while time.time() < end:
+                r.settle(2500)
+                g = r.js("""() => {
                 const c = SillyTavern.getContext();
                 const chars = Array.isArray(c.characters) ? c.characters : Object.values(c.characters || {});
                 const idx = Number(c.characterId);
@@ -225,6 +236,8 @@ def main():
                     status: root.querySelector('[data-role="graph-status"]')?.textContent || '',
                     degrade: [...root.querySelectorAll('.chatfilesys-graph-degrade')].map((x) => x.textContent) };
             }""")
+                if g.get('nodes'):
+                    break
             if not g.get('present') or not g.get('nodes'):
                 print(f"  [诊断] 图状态：{json.dumps(g, ensure_ascii=False)[:400]}")
             report("R2 结构图在**真实长聊天**上画出节点（115 层量级）",
