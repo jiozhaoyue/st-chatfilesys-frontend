@@ -30,6 +30,8 @@ SUITE: list[tuple[str, str, str]] = [
     ("takeover", "test_native_branch_checkpoint_takeover.py", "原生分支/检查点接管"),
     ("mirror", "test_mirror_mode.py", "双写模式（库为准 + 落标准文件）"),
     ("swipe", "test_swipe_versions.py", "每层版本管理（T7）"),
+    ("compat", "test_host_compat.py", "四宿主兼容（ST / Luker / PT；串行）"),
+    ("tt", "test_host_compat_tt.py", "TauriTavern 兼容（需 TT 在跑 + tauri-pilot）"),
 ]
 
 # 默认跑「本轮改动最可能碰坏的那些」——全量太慢，且部分老用例本身有既存问题

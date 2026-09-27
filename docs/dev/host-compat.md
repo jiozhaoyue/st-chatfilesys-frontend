@@ -57,7 +57,7 @@
 | SillyTavern | `http://127.0.0.1:8001` | 扫扩展目录 | ✅ 9/9 |
 | Luker | `https://127.0.0.1:8003` | 扫扩展目录 | ✅ 9/9 |
 | PureTavern | `http://127.0.0.1:8899` | **`installExtension(zipUrl)`**（不扫目录） | ✅ 9/10（A2 是预期中的安装前探测） |
-| TauriTavern | 无 HTTP 端点（桌面） | `tauri:dev:pilot` + WebView 自动化 | ⏳ 见下 |
+| TauriTavern | 无 HTTP 端点（桌面） | `tauri:dev:pilot` + `tauri-pilot` CLI | ✅ 9/9 |
 
 断言覆盖的是**跨宿主真正会碎的东西**（装配与协议），不是把功能用例再跑一遍：
 静态面可取且内容真是我们的 / 装得上 / 入口出现（说明宿主真调到了 `init`）/ 弹窗与五页签 /
@@ -72,15 +72,25 @@
    四宿主看起来「全没起」；必须显式装空 `ProxyHandler`。另：**302 也是「活着」**
    （Luker 未登录时重定向到登录页，`urllib` 报 redirect loop）。
 
-**TauriTavern** 是 Rust/Tauri 桌面宿主，没有 HTTP 端口，自动化入口是
-`pnpm tauri:dev:pilot`（启用 `tauri-plugin-pilot` 做 WebView 自动化）。首次要编译整个
-Rust workspace（796 个 crate）——很慢；中途被打断会留下占着 **1430** 端口的
+**TauriTavern** 是 Rust/Tauri 桌面宿主，没有 HTTP 端口。自动化路径（TT 官方 README 指定）：
+`pnpm tauri:dev:pilot` 起应用（启用 `tauri-plugin-pilot`）+ `cargo install tauri-pilot-cli`
+装驱动，再用 `tauri-pilot eval "<js>"` 在页面里求值——于是能复用与浏览器版同形的断言。
+四条实测要点：
+- **必须用 MSVC 工具链**：GNU/mingw 下 TT **自己编不过**（`ld: export ordinal too large: 344970`，
+  是 TT 在该工具链下的限制，不是插件的问题）。设
+  `RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc` 即可，**不必改默认工具链**。
+- **`eval` 按表达式求值**：顶层 `await` 报 `await is not defined`；异步要挂 `window.__probe` 再轮询。
+- **读回时 CLI 的输出已被解析过一遍**：判据只认「字符串」会永远判超时（值其实早写回了）。
+- **同步插件后必须重载页面**：TT 只在启动时扫扩展目录。
+另：首次编译整个 Rust workspace 很慢；中途被打断会留下占着 **1430** 端口的
 `node scripts/tauri-dev-server.mjs` 残留进程，使下一次以 `EADDRINUSE :::1430` 失败。
 
 ## 边界与未做到
 
-- **TauriTavern 的四宿主用例尚未跑通**：其余三宿主已真机绿；TT 的 Rust 编译耗时很长，
-  本轮未能在预算内完成「编译 → 起 pilot → 断言」整条链。
+- **四宿主的兼容用例只覆盖「装配与协议」**：静态面、装得上、入口出现、弹窗与页签、
+  关窗无残留、零本插件归因报错、落点白名单。**功能语义**的跨宿主覆盖仍以 Luker 的真机用例
+  （`test_pure_db_full_journey` / `test_night_features` / `test_graph_view`）为主，
+  另外三宿主尚未各跑一遍完整功能套件。
 - **界面落点依赖宿主 DOM 的一处结构**：入口按钮挂在输入框那排工具图标（`#leftSendForm`），
   依据是 Luker 自己的扩展菜单按钮也挂在那里。宿主改这处结构会影响入口按钮（届时只影响入口，
   不影响弹窗与数据）。`Alt+B` 是不依赖 DOM 结构的那条路。
