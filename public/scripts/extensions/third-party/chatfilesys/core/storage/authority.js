@@ -105,7 +105,77 @@ CREATE TABLE IF NOT EXISTS branch_paths (
         migrated = true;
     }
 
-    const q = (statement, params = []) => client.sql.query({ database: DB, statement, params });
+    /**
+     * SQL 查询——**单点拆信封**。
+     *
+     * SDK 返回的是信封 `{ kind, columns, rowCount, rows }`，**不是行数组**
+     * （2026-09-27 真机取证）。早期按「行数组」写，真机上 `loadFamily` / `listFamilies`
+     * 直接抛 `(rows || []).map is not a function`——而单测的 mock 也返回裸数组，
+     * 于是**mock 与真机一起错**，谁都没拦住。mock 已按真实信封改正。
+     * 调用方一律拿到行数组：数组原样放行（兼容旧形态），否则取 `.rows`。
+     */
+    const q = async (statement, params = []) => {
+        const res = await client.sql.query({ database: DB, statement, params });
+        return Array.isArray(res) ? res : (res?.rows ?? []);
+    };
+
+    /**
+     * Authority `fs` 的真实形态（2026-09-27 真机取证，SDK `client.js`）：
+     * `writeFile(path, content, opts)` / `readFile(path, opts) -> { entry, content, encoding }`
+     * / `readDir(path, opts) -> entries` / `delete(path, opts)` / `mkdir(path, {recursive})`。
+     *
+     * 三个易错点（都在真机上踩过）：
+     * ① 参数是**位置参数**，不是 `{ path, content }` 对象；
+     * ② 方法名是 **`readDir`**（大写 D）——没有 `readdir`，写错会得到 `undefined`
+     *    被 `?? []` 兜成空数组，**静默给出「回收站是空的」这种假结果**；
+     * ③ **写之前父目录必须存在**：inline 写可以靠 `createParents`，
+     *    但**超过内联阈值（256KiB）走 transfers 的那条路不传 createParents** ⇒ 大文件必失败；
+     *    另外首跑时 `readDir('trash')` 会抛 `private_path_not_found`——那不是故障，
+     *    是「回收站还是空的」，必须当成空列表而不是报错。
+     */
+    /**
+     * 是否「路径不存在」。
+     *
+     * 实测的错误形态（2026-09-27 真机取证）：`AuthorityValidationError`，
+     * `message = 'private_path_not_found'`、`code = 'validation_error'`（**分类码**）、
+     * `category = 'validation'`、`status = 404`。
+     * ⚠️ 坑：`code` 是分类码不是原因码——只判 `code`（或写 `code || message`）会被它遮住，
+     * 把「目录还没建」误判成真故障（第一版就这么写错了）。所以取 `status === 404` 为主判据，
+     * 并对全部文本字段做兜底匹配。
+     */
+    const errText = (e) => [e?.message, e?.code, e?.category, e?.details && JSON.stringify(e.details)]
+        .filter(Boolean).join(' ');
+    const isNotFound = (e) => e?.status === 404 || /not[_ ]?found/i.test(errText(e));
+
+    /** 幂等建目录。已存在时 mkdir 抛错，这里吞掉——真失败会在随后的写入上暴露出来。 */
+    const fsEnsureDir = async (dir) => {
+        if (!dir) return;
+        try {
+            if (typeof client.fs.mkdir === 'function') await client.fs.mkdir(dir, { recursive: true });
+        } catch { /* 目录已存在（或该档不提供 mkdir）——不掩盖：写入会给出真原因 */ }
+    };
+
+    const fsWrite = async (path, content) => {
+        await fsEnsureDir(path.slice(0, path.lastIndexOf('/')));
+        return client.fs.writeFile(path, content, { createParents: true });
+    };
+
+    const fsReadText = async (path) => {
+        const r = await client.fs.readFile(path);
+        return typeof r === 'string' ? r : (r?.content ?? '');
+    };
+
+    const fsList = async (path) => {
+        try {
+            const entries = await client.fs.readDir(path);
+            return (entries || []).map((e) => (typeof e === 'string' ? e : (e?.name ?? ''))).filter(Boolean);
+        } catch (e) {
+            if (isNotFound(e)) return [];   // 目录尚未创建 = 空（首跑路径），不是读失败
+            throw e;
+        }
+    };
+
+    const fsRemove = (path) => client.fs.delete(path, { recursive: true });
 
 
     /** 写新版本号（N19：字符串形态，每次成功写一个新值） */
@@ -397,22 +467,18 @@ CREATE TABLE IF NOT EXISTS branch_paths (
             await ensureMigrated();
             const trashId = `t${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`;
             // 档1 回收站：Authority fs（trash/<trashId>/original.jsonl + meta.json）
-            await client.fs.writeFile({ path: `trash/${trashId}/original.jsonl`, content: String(content ?? '') });
-            await client.fs.writeFile({
-                path: `trash/${trashId}/meta.json`,
-                content: JSON.stringify({ source, movedAt: Date.now() }),
-            });
+            await fsWrite(`trash/${trashId}/original.jsonl`, String(content ?? ''));
+            await fsWrite(`trash/${trashId}/meta.json`, JSON.stringify({ source, movedAt: Date.now() }));
             return { ok: true, trashId };
         },
 
         async listTrash() {
             await ensureMigrated();
-            const entries = await client.fs.readdir?.('trash') || [];
+            const entries = await fsList('trash');
             const out = [];
             for (const trashId of entries) {
                 try {
-                    const meta = await client.fs.readFile({ path: `trash/${trashId}/meta.json` });
-                    const j = JSON.parse(meta.content ?? meta);
+                    const j = JSON.parse(await fsReadText(`trash/${trashId}/meta.json`));
                     out.push({ trashId, source: j.source, movedAt: j.movedAt });
                 } catch { /* 损坏条目跳过 */ }
             }
@@ -420,15 +486,14 @@ CREATE TABLE IF NOT EXISTS branch_paths (
         },
 
         async restoreFromTrash({ trashId }) {
-            const meta = await client.fs.readFile({ path: `trash/${trashId}/meta.json` });
-            const j = JSON.parse(meta.content ?? meta);
-            const file = await client.fs.readFile({ path: `trash/${trashId}/original.jsonl` });
+            const j = JSON.parse(await fsReadText(`trash/${trashId}/meta.json`));
+            const content = await fsReadText(`trash/${trashId}/original.jsonl`);
             // 还原 = 经官方通道写回宿主聊天（restoreTarget 由调用方给出）
-            return { ok: true, content: file.content ?? file, source: j.source, movedAt: j.movedAt };
+            return { ok: true, content, source: j.source, movedAt: j.movedAt };
         },
 
         async deleteFromTrash({ trashId }) {
-            await client.fs.delete?.({ path: `trash/${trashId}` });
+            await fsRemove(`trash/${trashId}`);
             return { ok: true };
         },
 

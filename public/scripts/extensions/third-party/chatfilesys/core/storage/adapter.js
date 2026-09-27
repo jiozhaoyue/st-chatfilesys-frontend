@@ -53,33 +53,54 @@ import { createIdbAdapter } from './idb.js';
 
 /**
  * 特性检测选档并构造适配器。
- * @param {{fetch?: Function, log?: Function, authorityClient?: object, getSettings?: Function}} ctx
- * @returns {Promise<{tier: 'authority'|'official'|'idb', adapter: object, dispose: Function}>}
+ *
+ * **降级归因（quality-guidelines「降级归因」节）**：每一档的尝试结果都随返回值给出
+ * （`attempts`），**真原因必须落在返回值上**，不能只交给 `log` 回调——调用方要能
+ * 报出「为什么没落到更高一档」，否则故障看起来像一切正常。
+ * 档1 的失败原因由调用方（编排层）传入 `authorityReason`：只有它知道 probe / init 的实情，
+ * 本模块不替它编一个泛化标记。
+ *
+ * @param {{fetch?: Function, log?: Function, authorityClient?: object, authorityReason?: string,
+ *          getSettings?: Function}} ctx
+ * @returns {Promise<{tier: 'authority'|'official'|'idb', adapter: object, dispose: Function,
+ *                    attempts: Array<{tier: string, ok: boolean, reason?: string}>}>}
+ *   `attempts` 按尝试顺序排列（含选中那一档，其 `ok:true`）；未尝试的档不出现在其中。
+ *   例：SDK 缺失 → `[{tier:'authority', ok:false, reason:'sdk-missing'}, {tier:'official', ok:true}]`
  */
 export async function createStorageAdapter(ctx = {}) {
     const log = ctx.log ?? console.warn;
+    const attempts = [];
 
     // 档1：Authority SQL（真分片库，性能最佳）
-    if (ctx.authorityClient) {
+    if (!ctx.authorityClient) {
+        attempts.push({ tier: 'authority', ok: false, reason: ctx.authorityReason || 'no-client' });
+    } else {
         try {
             const adapter = await createAuthorityAdapter(ctx);
-            return { tier: 'authority', adapter, dispose: adapter.dispose };
+            attempts.push({ tier: 'authority', ok: true });
+            return { tier: 'authority', adapter, dispose: adapter.dispose, attempts };
         } catch (e) {
+            attempts.push({ tier: 'authority', ok: false, reason: `init-failed: ${e?.message || e}` });
             log('[chatfilesys-storage] Authority 档初始化失败，降级官方通道:', e);
         }
     }
 
     // 档2：官方 /api/chats/* 通道（隐藏聊天容器）
-    if (typeof ctx.fetch === 'function') {
+    if (typeof ctx.fetch !== 'function') {
+        attempts.push({ tier: 'official', ok: false, reason: 'no-fetch' });
+    } else {
         try {
             const adapter = await createOfficialAdapter(ctx);
-            return { tier: 'official', adapter, dispose: adapter.dispose };
+            attempts.push({ tier: 'official', ok: true });
+            return { tier: 'official', adapter, dispose: adapter.dispose, attempts };
         } catch (e) {
+            attempts.push({ tier: 'official', ok: false, reason: `init-failed: ${e?.message || e}` });
             log('[chatfilesys-storage] 官方通道档初始化失败，降级 IndexedDB:', e);
         }
     }
 
-    // 档3：IndexedDB（仅缓存，非事实源）
+    // 档3：IndexedDB（仅缓存，非事实源）—— 最后一档，构造失败即向上抛（由调用方接住退回增强模式）
     const adapter = await createIdbAdapter(ctx);
-    return { tier: 'idb', adapter, dispose: adapter.dispose };
+    attempts.push({ tier: 'idb', ok: true });
+    return { tier: 'idb', adapter, dispose: adapter.dispose, attempts };
 }

@@ -436,7 +436,14 @@ class Runner:
         }""", [EXT_SRC, floor])
 
     def ensure_active(self, branch_id, tries=4, settle_ms=1600):
-        """点击切换并轮询确认 active_branch，未生效则重试（对重渲染竞态自愈）。"""
+        """点击切换并轮询确认 active_branch，未生效则重试（对重渲染竞态自愈）。
+
+        重试时会**关窗重开**一次：`create_branch` 之类的直接写数据层的动作不会触发 UI 重绘，
+        而已经打开的弹窗内容会停在写之前的快照上 ⇒ 找不到新分支的切换按钮。
+        实测（2026-09-27）：同一套件里场景1 通过（弹窗是首次打开、内容新），场景2 失败
+        （弹窗还开着，内容是上一场景的）。关窗重开是**有界**的补救：仍找不到就照旧抛错，
+        不会把「按钮真的没了」这种真故障吞掉。
+        """
         for i in range(tries):
             try:
                 self.click_action("switch", branch=branch_id)
@@ -444,6 +451,11 @@ class Runner:
                 if i == tries - 1:
                     raise
                 self.settle(600)  # 面板重渲染窗口，稍后重试
+                try:
+                    self.close_popup()
+                    self.ensure_popup()
+                except Exception as e:                      # noqa: BLE001
+                    print(f"  [warn] 关窗重开失败（继续重试）: {e}")
                 continue
             self.settle(settle_ms)
             st = self.state()

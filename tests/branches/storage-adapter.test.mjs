@@ -18,85 +18,111 @@ import { installSeam } from '../../public/scripts/extensions/third-party/chatfil
 function mockSqlClient() {
     const db = { families: [], floors: [], branches: [], branch_paths: [] };
     const calls = { migrate: 0, queries: [] };
+    /**
+     * SQL 实现体（返回**行数组**）。
+     * 注意：真实 SDK 的 `client.sql.query()` 返回的是**信封**而不是行数组——包装见下面的 `query`。
+     */
+    function runQuery(statement, params) {
+        calls.queries.push({ statement, params });
+        const s = statement.replace(/\s+/g, ' ').trim();
+        const p = params || [];
+        if (s.startsWith('SELECT * FROM families WHERE chat_key')) return db.families.filter((f) => f.chat_key === p[0]);
+        if (s.startsWith('SELECT * FROM families WHERE id')) return db.families.filter((f) => f.id === p[0]);
+        if (s.startsWith('SELECT integrity FROM families WHERE id')) return db.families.filter((f) => f.id === p[0]).map((f) => ({ integrity: f.integrity }));
+        if (s.startsWith('SELECT id, name, updated_at FROM families')) return db.families.map((f) => ({ id: f.id, name: f.name, updated_at: f.updated_at }));
+        if (s.startsWith('SELECT * FROM families WHERE key_bindings')) {
+            // T1：档1 的绑定键回落查询（键绑定列非空且非空对象）
+            return db.families.filter((f) => f.key_bindings && f.key_bindings !== p[0]);
+        }
+        if (s.startsWith('SELECT * FROM branches')) return db.branches.filter((b) => b.family_id === p[0]);
+        if (s.startsWith('SELECT * FROM branch_paths')) return db.branch_paths.filter((b) => b.family_id === p[0]);
+        if (s.startsWith('SELECT * FROM floors WHERE family_id')) {
+            const rows = db.floors.filter((f) => f.family_id === p[0] && (p[1] == null || f.floor_no >= p[1]));
+            return [...rows].sort((a, b) => a.floor_no - b.floor_no || (a.seq ?? 0) - (b.seq ?? 0));
+        }
+        if (s.startsWith('INSERT INTO floors')) {
+            const existing = db.floors.find((f) => f.family_id === p[0] && f.floor_no === p[1] && f.variant_id === p[2]);
+            if (existing) Object.assign(existing, { seq: p[3], content: p[4], content_hash: p[5], send_date: p[6] });
+            else db.floors.push({ family_id: p[0], floor_no: p[1], variant_id: p[2], seq: p[3], content: p[4], content_hash: p[5], send_date: p[6] });
+            return [];
+        }
+        if (s.startsWith('INSERT INTO branches')) {
+            db.branches.push({ family_id: p[0], branch_id: p[1], parent_branch_id: p[2], name: p[3], fork_floor: p[4], is_default: p[5] });
+            return [];
+        }
+        if (s.startsWith('INSERT INTO branch_paths')) {
+            db.branch_paths.push({ family_id: p[0], branch_id: p[1], floor_no: p[2], variant_id: p[3] });
+            return [];
+        }
+        if (s.startsWith('UPDATE families SET integrity')) {
+            // T1/N19：UPDATE families SET integrity = ?, updated_at = ? WHERE id = ?
+            db.families.forEach((f) => { if (f.id === p[2]) { f.integrity = p[0]; f.updated_at = p[1]; } });
+            return [];
+        }
+        if (s.startsWith('UPDATE families SET key_bindings')) {
+            db.families.forEach((f) => { if (f.id === p[2]) { f.key_bindings = p[0]; f.updated_at = p[1]; } });
+            return [];
+        }
+        if (s.startsWith('UPDATE families SET model')) {
+            db.families.forEach((f) => { if (f.id === p[2]) f.model = p[0]; });
+            return [];
+        }
+        if (s.startsWith('UPDATE families SET host_metadata')) {
+            db.families.forEach((f) => { if (f.id === p[2]) { f.host_metadata = p[0]; f.updated_at = p[1]; } });
+            return [];
+        }
+        if (s.startsWith('UPDATE families SET name')) {
+            db.families.forEach((f) => { if (f.id === p[2]) f.name = p[0]; });
+            return [];
+        }
+        if (s.startsWith('DELETE FROM')) {
+            const table = s.match(/DELETE FROM (\w+)/)[1];
+            const key = table === 'families' ? 'id' : 'family_id';
+            if (table === 'floors' && p.length >= 3) {
+                // 按键删单行（T0b：删层/换层后清旧键行）
+                db.floors = db.floors.filter((r) => !(r.family_id === p[0] && r.floor_no === p[1] && r.variant_id === p[2]));
+                return [];
+            }
+            db[table] = p[0] == null ? [] : db[table].filter((r) => r[key] !== p[0]);
+            return [];
+        }
+        return [];
+    }
+
     const client = {
         sql: {
             async migrate({ migrations }) {
                 calls.migrate++;
                 calls.lastMigrations = migrations;
             },
+            /** 真实 SDK：`client.sql.query()` 返回**信封** `{ kind, columns, rowCount, rows }`，不是行数组
+             *  （2026-09-27 真机取证）。mock 必须照真机形状给——早先 mock 返回裸数组，
+             *  于是 mock 与适配器**一起错**，真机上的 `(rows || []).map is not a function` 一条单测都拦不住。 */
             async query({ statement, params }) {
-                calls.queries.push({ statement, params });
-                const s = statement.replace(/\s+/g, ' ').trim();
-                const p = params || [];
-                if (s.startsWith('SELECT * FROM families WHERE chat_key')) return db.families.filter((f) => f.chat_key === p[0]);
-                if (s.startsWith('SELECT * FROM families WHERE id')) return db.families.filter((f) => f.id === p[0]);
-                if (s.startsWith('SELECT integrity FROM families WHERE id')) return db.families.filter((f) => f.id === p[0]).map((f) => ({ integrity: f.integrity }));
-                if (s.startsWith('SELECT id, name, updated_at FROM families')) return db.families.map((f) => ({ id: f.id, name: f.name, updated_at: f.updated_at }));
-                if (s.startsWith('SELECT * FROM families WHERE key_bindings')) {
-                    // T1：档1 的绑定键回落查询（键绑定列非空且非空对象）
-                    return db.families.filter((f) => f.key_bindings && f.key_bindings !== p[0]);
-                }
-                if (s.startsWith('SELECT * FROM branches')) return db.branches.filter((b) => b.family_id === p[0]);
-                if (s.startsWith('SELECT * FROM branch_paths')) return db.branch_paths.filter((b) => b.family_id === p[0]);
-                if (s.startsWith('SELECT * FROM floors WHERE family_id')) {
-                    const rows = db.floors.filter((f) => f.family_id === p[0] && (p[1] == null || f.floor_no >= p[1]));
-                    return [...rows].sort((a, b) => a.floor_no - b.floor_no || (a.seq ?? 0) - (b.seq ?? 0));
-                }
-                if (s.startsWith('INSERT INTO floors')) {
-                    const existing = db.floors.find((f) => f.family_id === p[0] && f.floor_no === p[1] && f.variant_id === p[2]);
-                    if (existing) Object.assign(existing, { seq: p[3], content: p[4], content_hash: p[5], send_date: p[6] });
-                    else db.floors.push({ family_id: p[0], floor_no: p[1], variant_id: p[2], seq: p[3], content: p[4], content_hash: p[5], send_date: p[6] });
-                    return [];
-                }
-                if (s.startsWith('INSERT INTO branches')) {
-                    db.branches.push({ family_id: p[0], branch_id: p[1], parent_branch_id: p[2], name: p[3], fork_floor: p[4], is_default: p[5] });
-                    return [];
-                }
-                if (s.startsWith('INSERT INTO branch_paths')) {
-                    db.branch_paths.push({ family_id: p[0], branch_id: p[1], floor_no: p[2], variant_id: p[3] });
-                    return [];
-                }
-                if (s.startsWith('UPDATE families SET integrity')) {
-                    // T1/N19：UPDATE families SET integrity = ?, updated_at = ? WHERE id = ?
-                    db.families.forEach((f) => { if (f.id === p[2]) { f.integrity = p[0]; f.updated_at = p[1]; } });
-                    return [];
-                }
-                if (s.startsWith('UPDATE families SET key_bindings')) {
-                    db.families.forEach((f) => { if (f.id === p[2]) { f.key_bindings = p[0]; f.updated_at = p[1]; } });
-                    return [];
-                }
-                if (s.startsWith('UPDATE families SET model')) {
-                    db.families.forEach((f) => { if (f.id === p[2]) f.model = p[0]; });
-                    return [];
-                }
-                if (s.startsWith('UPDATE families SET host_metadata')) {
-                    db.families.forEach((f) => { if (f.id === p[2]) { f.host_metadata = p[0]; f.updated_at = p[1]; } });
-                    return [];
-                }
-                if (s.startsWith('UPDATE families SET name')) {
-                    db.families.forEach((f) => { if (f.id === p[2]) f.name = p[0]; });
-                    return [];
-                }
-                if (s.startsWith('DELETE FROM')) {
-                    const table = s.match(/DELETE FROM (\w+)/)[1];
-                    const key = table === 'families' ? 'id' : 'family_id';
-                    if (table === 'floors' && p.length >= 3) {
-                        // 按键删单行（T0b：删层/换层后清旧键行）
-                        db.floors = db.floors.filter((r) => !(r.family_id === p[0] && r.floor_no === p[1] && r.variant_id === p[2]));
-                        return [];
-                    }
-                    db[table] = p[0] == null ? [] : db[table].filter((r) => r[key] !== p[0]);
-                    return [];
-                }
-                return [];
+                const rows = runQuery(statement, params);
+                return { kind: 'query', columns: [], rowCount: rows.length, rows };
             },
         },
         fs: {
             files: {},
-            async writeFile({ path, content }) { client.fs.files[path] = content; },
-            async readFile({ path }) { return client.fs.files[path] ?? null; },
-            async readdir() { return Object.keys(client.fs.files).map((p) => p.split('/')[1]).filter(Boolean); },
-            async delete({ path }) { for (const k of Object.keys(client.fs.files)) if (k.startsWith(path)) delete client.fs.files[k]; },
+            // 真实 SDK 同样是**位置参数**且方法名是 `readDir`（大写 D，没有 `readdir`）：
+            // 写错会得到 undefined 被 `?? []` 兜成空数组 → 静默给出「回收站是空的」这种假结果。
+            async writeFile(path, content) { client.fs.files[path] = content; return { entry: { path } }; },
+            async readFile(path) {
+                if (!(path in client.fs.files)) throw new Error(`fs.readFile: 不存在 ${path}`);
+                return { entry: { path }, content: client.fs.files[path], encoding: 'utf8' };
+            },
+            async readDir(path) {
+                const prefix = path.endsWith('/') ? path : `${path}/`;
+                const names = [...new Set(Object.keys(client.fs.files)
+                    .filter((k) => k.startsWith(prefix))
+                    .map((k) => k.slice(prefix.length).split('/')[0]))];
+                return names.map((name) => ({ name, kind: 'file' }));
+            },
+            async delete(path) {
+                const prefix = path.endsWith('/') ? path : `${path}/`;
+                for (const k of Object.keys(client.fs.files)) if (k === path || k.startsWith(prefix)) delete client.fs.files[k];
+            },
         },
     };
     client._db = db;
@@ -273,14 +299,87 @@ test('档2：saveModel 容器元数据持久化模型（meta.model 往返不丢�
 });
 
 test('选档：无 authorityClient + 有 fetch → tier=official', async () => {
-    const { tier } = await createStorageAdapter({ fetch: async () => ({ ok: true, json: async () => ({}) }) });
+    const { tier, attempts } = await createStorageAdapter({ fetch: async () => ({ ok: true, json: async () => ({}) }) });
     assert.equal(tier, 'official');
+    // 降级归因：未尝试/失败的那一档要把原因带回来，不能只写日志
+    assert.deepEqual(attempts[0], { tier: 'authority', ok: false, reason: 'no-client' });
+    assert.deepEqual(attempts[1], { tier: 'official', ok: true });
 });
 
 test('选档：mock authority 成功 → tier=authority', async () => {
     const { client, db } = mockSqlClient();
     const { tier } = await createStorageAdapter({ authorityClient: client });
     assert.equal(tier, 'authority');
+});
+
+test('选档：authorityReason 原样带进 attempts（真原因由编排层给出）', async () => {
+    const { tier, attempts } = await createStorageAdapter({
+        fetch: async () => ({ ok: true, json: async () => ({}) }),
+        authorityReason: 'probe-failed: sdk-stale',
+    });
+    assert.equal(tier, 'official');
+    assert.equal(attempts[0].reason, 'probe-failed: sdk-stale');
+});
+
+test('选档：authority 客户端不可用 → attempts 记 init-failed 且降级 official', async () => {
+    const { tier, attempts } = await createStorageAdapter({
+        authorityClient: {},   // 无 .sql ⇒ createAuthorityAdapter 抛错
+        fetch: async () => ({ ok: true, json: async () => ({}) }),
+    });
+    assert.equal(tier, 'official');
+    assert.equal(attempts[0].tier, 'authority');
+    assert.equal(attempts[0].ok, false);
+    assert.match(attempts[0].reason, /^init-failed: /);
+    assert.equal(attempts[1].ok, true);
+});
+
+/* ---------------- 档1 fs / 回收站（真机形态：位置参数、readDir、父目录必须先存在） ---------------- */
+
+test('档1 回收站：move → list → restore → purge 全往返', async () => {
+    const { client } = mockSqlClient();
+    const mk = [];
+    client.fs.mkdir = async (p) => { mk.push(p); };
+    const adapter = await createAuthorityAdapter({ authorityClient: client });
+
+    const moved = await adapter.moveToTrash({ source: 'chatA.jsonl', content: '{"mes":"a"}' });
+    assert.equal(moved.ok, true);
+    // 写之前必须先把父目录建出来：真机上缺父目录会 400 `private_parent_directory_missing`
+    assert.equal(mk[0], `trash/${moved.trashId}`);
+
+    const rows = await adapter.listTrash();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].trashId, moved.trashId);
+    assert.equal(rows[0].source, 'chatA.jsonl');
+
+    const back = await adapter.restoreFromTrash({ trashId: moved.trashId });
+    assert.equal(back.ok, true);
+    assert.equal(back.content, '{"mes":"a"}');
+    assert.equal(back.source, 'chatA.jsonl');
+
+    await adapter.deleteFromTrash({ trashId: moved.trashId });
+    assert.deepEqual(await adapter.listTrash(), []);
+});
+
+test('档1 回收站：首跑（trash 目录尚未创建）→ 空列表，不是读失败', async () => {
+    const { client } = mockSqlClient();
+    // 真机形态：readDir 命中不存在的路径抛 AuthorityValidationError（status 404、message private_path_not_found、
+    // 而 code 是**分类码** validation_error）——早期只判 code 会被它遮住，把「还没建目录」误判成故障
+    client.fs.readDir = async () => {
+        const e = new Error('private_path_not_found');
+        e.status = 404;
+        e.code = 'validation_error';
+        e.category = 'validation';
+        throw e;
+    };
+    const adapter = await createAuthorityAdapter({ authorityClient: client });
+    assert.deepEqual(await adapter.listTrash(), []);
+});
+
+test('档1 回收站：别的读错误照旧向上抛（不把真故障吞成空列表）', async () => {
+    const { client } = mockSqlClient();
+    client.fs.readDir = async () => { const e = new Error('disk exploded'); e.status = 500; e.code = 'core_error'; throw e; };
+    const adapter = await createAuthorityAdapter({ authorityClient: client });
+    await assert.rejects(() => adapter.listTrash(), /disk exploded/);
 });
 
 /* ---------------- 档3 idb：内存 indexedDB stub ---------------- */

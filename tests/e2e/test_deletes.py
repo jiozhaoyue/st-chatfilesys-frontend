@@ -159,6 +159,12 @@ def main():
                 return 1
             r.open_test_char()
             r.settle(2500)
+            # **必须开新聊天**：`open_test_char` 走的是 `/go`，会打开该角色**最近**那个聊天；
+            # 若那是上一轮（或库模式那几轮）留下的聊天，它可能没有 chatfilesys 命名空间
+            # ⇒ 下面 `create_branch` 的 `ctx.chatMetadata.extensions.chatfilesys` 直接读崩
+            # （实测：2026-09-27 报 `Cannot read properties of undefined (reading 'chatfilesys')`）。
+            # 新聊天的命名空间由扩展在 CHAT_CHANGED 时自动建（决策#6），前提稳定。
+            r.new_chat()
 
             print("===== 场景1: 删层 =====")
             scenario_delete_floor(r)

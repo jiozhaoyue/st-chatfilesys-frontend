@@ -19,7 +19,7 @@
 | `chats/get` | 库 → 拼成 `[header, ...messages]` 的合规响应（含分页 `has_more`） |
 | `chats/save` | 整份落库 |
 | `chats/append` | 追加 |
-| `chats/patch` | 增量补丁（RFC 6902，可含 `/N/字段` 深路径） |
+| `chats/patch` | 增量补丁（RFC 6902，可含 `/N/字段` 深路径；下标约定见[适配器契约](/dev/storage-adapter)） |
 | `chats/rename` | 改名 |
 | `chats/delete` | 删除 |
 | `chats/meta` | 聊天头保留面（宿主与其他插件写进 `chat_metadata` 的内容） |

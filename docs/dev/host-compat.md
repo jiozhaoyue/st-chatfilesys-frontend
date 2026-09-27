@@ -19,6 +19,7 @@
 | `generateQuietPrompt` / `generateRaw` | 分支树上的 AI 总结按钮 | **按钮不出现**（宁可不给，也不给一个点了没反应的） |
 | `Popup`（`DISPLAY` + `wide` / `large`） | 管理弹窗本体 | 无降级路径——弹窗是本插件唯一的界面 |
 | `/api/chats/*` | 官方通道档的读写 | 退到 IndexedDB 档 |
+| `window.STAuthority.AuthoritySDK`（Authority 后端插件） | 库模式的档 1（SQL + 私有文件） | **退档 2 / 档 3**，只记一条带真原因的日志；插件其余功能照常 |
 | `getRequestHeaders()` | 官方通道档的请求头 | 传空对象 |
 | `extension_settings` / `chat_metadata` | 设置项、聊天头保留面 | 无降级——这两个是宿主原生存储 |
 
@@ -39,7 +40,7 @@
   一律用消息 API：`addMessages` / `updateMessages`（批量合并成一次持久化）/ `deleteMessages` / `saveChatMetadata`。
   e2e 里有**源码级断言**守着这条（不允许它们重新出现在代码里）。
 - **Authority 的 Host Bridge 禁用**：本插件是跨宿主形态，需要服务端能力时**只能用 Authority 的可移植子集**
-  （SQL / 文件 / 后台任务 / 事件流的公开 API），**不得**走「逐宿主打补丁」的 Host Bridge 路径——
+  （这里实际用到的是 `client.sql` 与 `client.fs` 两项公开面），**不得**走「逐宿主打补丁」的 Host Bridge 路径——
   那条路按宿主版本号设门禁、补丁面在宿主间分叉，Luker 上实测会被版本门禁拒绝，
   表现是**功能时好时坏而不是直接报错**，极难排查。
 - **样式不许泄漏**：注入宿主的每条 CSS 规则都必须带 `chatfilesys-` 前缀，

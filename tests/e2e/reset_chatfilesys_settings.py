@@ -23,6 +23,9 @@ WRITE = """() => {
     s.chatfilesys = s.chatfilesys || {};
     s.chatfilesys.storage_mode = 'off';
     s.chatfilesys.import_prompt = { never: false, mutedKeys: [] };
+    // 弹窗页签记忆也要复位：任何切过存储模式的用例都会把 tabState 留成「设置」，
+    // 后面的套件打开弹窗就落在设置页 → 找不到「切换分支」等按钮（实测：test_deletes 场景2）。
+    delete s.chatfilesys.tabState;
     return JSON.parse(JSON.stringify(s.chatfilesys));
 }"""
 READ = "() => SillyTavern.getContext().extensionSettings?.chatfilesys?.storage_mode"
@@ -51,7 +54,8 @@ with sync_playwright() as p:
     browser.close()
 
 print("chatfilesys 设置（内存）:", out)
-if out.get("storage_mode") != "off" or out.get("import_prompt", {}).get("never") is not False:
+if (out.get("storage_mode") != "off" or out.get("import_prompt", {}).get("never") is not False
+        or out.get("tabState") is not None):
     print("RESET FAIL：没能恢复出厂")
     sys.exit(1)
 print("RESET DONE")

@@ -60,6 +60,10 @@ const MODULE_NAME = 'chatfilesys';
 /** 库内隐容器前缀（不能当聊天列出来） */
 const HIDDEN_PREFIX = '__cfsys__';
 
+/** Authority 接入（档1）：扩展 ID 必须与扩展目录 ID 一致；版本供 Authority 登记用 */
+const AUTHORITY_EXT_ID = 'third-party/chatfilesys';
+const EXT_VERSION = '1.0.0';
+
 const ctx = () => getContext();
 
 /**
@@ -156,17 +160,78 @@ function getTrash() {
 }
 
 /**
+ * 探测并初始化 Authority SDK（档1 的服务端能力入口）。
+ *
+ * 纪律：
+ * - **只用公开可移植子集**（`client.sql` / `client.fs`），禁用 Host Bridge（L0-12）；
+ *   不直连 core、不手拼 token、不手写数据文件路径。
+ * - **最小权限声明**（L1-MF-5）：只声明实际用到的两项。
+ *   `sql.private` = 家族/楼层/模型（`core/storage/authority.js` 的 migrate + query）；
+ *   `fs.private` = 回收站（同文件 trash/*）。两者系统默认 granted，预期不弹授权窗。
+ * - **任何失败都只返回原因，绝不抛**（L0-11）：调用方据此降级到档2/档3，聊天主路径不受影响。
+ *
+ * @returns {Promise<{client: object|null, reason: string|null}>}
+ *   reason 取值：'sdk-missing' | 'probe-failed: …' | 'init-failed: …' | null（成功）
+ */
+async function acquireAuthorityClient() {
+    const sdk = globalThis.STAuthority?.AuthoritySDK;
+    if (typeof sdk?.init !== 'function') return { client: null, reason: 'sdk-missing' };
+    try {
+        if (typeof sdk.probe === 'function') {
+            const probe = await sdk.probe();
+            // probe 响应实测（Authority 1.6.8）：`{ id, online, version, pluginVersion,
+            // sdkBundledVersion, sdkDeployedVersion, coreBundledVersion, coreVerified,
+            // installStatus, installMessage, storageRoot, core:{…} }`——**没有 `ok` 字段**
+            // （2026-09-27 真机取证；早期按假设写给过一次 `!probe.ok`，把健康的装好态误判成失败：
+            //  `online:true, installStatus:'ready'` 也会被拒 ⇒ 档1 永远选不到，且看着像「环境没装」）。
+            // 判据取**只在明确否证时拒绝**：明确 offline / 明确非 ready 才跳过；形状未知一律放行，
+            // 交给 init 去真验证（失败会被下面的 catch 接住并带上真原因）——这样不会因字段改名而静默失去档1。
+            const bad = probe?.online === false || (probe?.installStatus && probe.installStatus !== 'ready');
+            if (bad) {
+                return {
+                    client: null,
+                    reason: `probe-failed: online=${probe?.online} installStatus=${probe?.installStatus}`
+                        + (probe?.installMessage ? ` msg=${probe.installMessage}` : ''),
+                };
+            }
+        }
+        const client = await sdk.init({
+            extensionId: AUTHORITY_EXT_ID,
+            displayName: 'ChatFilesys',
+            version: EXT_VERSION,
+            installType: 'local',
+            declaredPermissions: {
+                sql: { private: true },
+                fs: { private: true },
+            },
+        });
+        if (!client?.sql) return { client: null, reason: 'init-failed: client.sql 不可用' };
+        return { client, reason: null };
+    } catch (e) {
+        return { client: null, reason: `init-failed: ${e?.message || e}` };
+    }
+}
+
+/**
  * 启用纯库模式：选档 → 装 seam（拦截先于聊天 get 就绪）。
  * 全程 try/catch 静默降级（L0-11）：失败仅 console.warn，插件其余功能照常。
  */
 async function enablePureDb() {
     if (storageState) return storageState;
     try {
-        const { tier, adapter, dispose } = await createStorageAdapter({
+        // 档1 接线：只在启用库模式时探测与 init（用户不用库模式就不拉起 SDK 会话）
+        const { client: authorityClient, reason: authorityReason } = await acquireAuthorityClient();
+        const { tier, adapter, dispose, attempts } = await createStorageAdapter({
             fetch: (...args) => globalThis.fetch(...args),
             headers: () => (typeof ctx().getRequestHeaders === 'function' ? ctx().getRequestHeaders() : {}),
             log: console.warn,
+            authorityClient,
+            authorityReason,
         });
+        // 降级归因（quality-guidelines「降级归因」节）：真原因挂在返回值上、逐条报到日志
+        for (const a of attempts ?? []) {
+            if (!a.ok) console.warn(`[${MODULE_NAME}] 存储选档：${a.tier} 不可用（${a.reason}）`);
+        }
         // 双写模式：成功写标脏 → 1.5s 防抖落标准聊天文件（§4；失败只 warn 不阻断）
         const seam = installSeam(adapter, {
             log: console.warn,
