@@ -24,6 +24,9 @@ tests/e2e/shots/
 __pycache__/
 *.pyc
 
+# 跨宿主 e2e 的临时分发目录（PT 要从 zip URL 安装扩展，由用例现打现删）
+.e2e-dist/
+
 # 文档站（docs/）的依赖与构建产物——可再生成；扩展本体不依赖它们
 docs/node_modules/
 docs/.vitepress/dist/

@@ -337,6 +337,7 @@ export function createPopupContent(ctx, view) {
             listChats = null, chatsNote = '', storage = {}, pureLike = false, chatsToken = 0,
             branchId = null, graphToken = 0, renderGraph = null, graphSelection = null,
             graphEnabled = true, settingsGroups = [], settingsValues = {},
+            errors = [],
         } = v;
         // W3：本聊天键绑定的分支优先，无绑定才回落家族活跃分支（绑定键上的 body 是它自己的投影）
         const active = model ? getActiveBranch(model, branchId) : null;
@@ -359,6 +360,20 @@ export function createPopupContent(ctx, view) {
             warnEl.textContent = warning;
         } else if (warnEl) {
             warnEl.remove();
+        }
+
+        // 错误面：插在页签外壳之前（**任何页签下都看得见**——失败不该藏在某个页签里）
+        let errEl = root.querySelector('.chatfilesys-errhost');
+        const errHtml = errorsHtml(errors);
+        if (errHtml) {
+            if (!errEl) {
+                errEl = document.createElement('div');
+                errEl.className = 'chatfilesys-errhost';
+                root.insertBefore(errEl, shellHost);
+            }
+            errEl.innerHTML = errHtml;
+        } else if (errEl) {
+            errEl.remove();
         }
 
         for (const t of TABS) {
@@ -501,6 +516,38 @@ export function createPopupContent(ctx, view) {
                 ? '已经是主分支'
                 : '把选中的分支设为主分支（主分支 = 打开这个聊天看到的内容）';
         }
+    }
+
+    /**
+     * 错误面（R6：有限屏幕内一眼看懂）。
+     *
+     * 形态：**一条聚合标题**（「N 项失败」）+ 逐条**只展开 `what`**，`why` 与 `detail` 折叠。
+     * 为什么这么排：弹窗高度有限，而用户第一眼只需要知道「什么坏了 + 能做什么」；
+     * 归因与原始文本是**排障时才要的**，折叠起来但它们必须在（不能只留一句「失败了」）。
+     */
+    function errorsHtml(errors) {
+        if (!errors || !errors.length) return '';
+        const list = errors.slice(-6);
+        return `<div class="chatfilesys-errbar">
+            <div class="chatfilesys-errbar-head">
+                <span class="chatfilesys-badge chatfilesys-errbar-count">${errors.length} 项失败</span>
+                <button class="menu_button" data-action="errors-copy" title="把全部失败连同编号、原因、原始信息复制走">复制诊断</button>
+                <button class="menu_button" data-action="errors-clear" title="清掉这些提示（不影响任何数据）">清空</button>
+            </div>
+            ${list.map((e) => `
+                <div class="chatfilesys-err" data-code="${esc(e.code)}">
+                    <div class="chatfilesys-err-what">
+                        <code class="chatfilesys-err-code">${esc(e.code)}</code>
+                        <span>${esc(e.what)}</span>
+                    </div>
+                    <div class="chatfilesys-err-fix">怎么办：${e.fix.map((f) => esc(f.label)).join(' / ')}</div>
+                    <details class="chatfilesys-err-more">
+                        <summary>为什么 / 原始信息</summary>
+                        <div class="chatfilesys-err-why">${esc(e.why || '未定位（没有足够证据，不编原因）')}</div>
+                        ${e.detail ? `<pre class="chatfilesys-err-detail">${esc(e.detail)}</pre>` : ''}
+                    </details>
+                </div>`).join('')}
+        </div>`;
     }
 
     /**

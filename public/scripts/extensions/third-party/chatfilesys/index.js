@@ -46,6 +46,7 @@ import {
     APPLY, SETTINGS, grouped, ensureAll, readSetting, writeSetting,
     exportRegistry, resetAll, resetSetting, BY_KEY,
 } from './core/settings-registry.js';
+import { makeError, diagnosisText } from './core/errors.js';
 import { createStorageAdapter } from './core/storage/adapter.js';
 import { modelFromStore, storeFromModel } from './core/store-bridge.js';
 import { createTrash } from './core/trash.js';
@@ -175,6 +176,94 @@ function trashRetentionMs() {
 /** 双写：改动即落文件（设置项 `mirror_sync_on_write`） */
 function mirrorSyncOnWrite() {
     return Boolean(getSetting('mirror_sync_on_write'));
+}
+
+/* ---------------- 错误面（R6） ---------------- */
+
+/**
+ * 近期失败（**界面之外的第二出口**）：toast 几秒就没了，而这些要留在弹窗里能回看。
+ * 上限 8 条——只留最近的是有意的：**旧的失败被新的挤掉**比留一长串更有用。
+ */
+const errorLog = [];
+const ERROR_LOG_MAX = 8;
+
+/**
+ * 报一条失败（**唯一出口**）。
+ *
+ * @param {string} code `core/errors.js` 目录里的编号
+ * @param {{detail?: string, why?: string, toast?: boolean}} [ctx]
+ *   `detail` = 原始错误文本（折叠区）；`why` = **有证据**的补充归因（没有就别传）
+ * @returns {object} `makeError` 的产物（调用方需要时可用它的 `text`）
+ */
+function reportError(code, ctx = {}) {
+    const err = makeError(code, ctx);
+    if (!err.registered) {
+        // 编号写错不该静默：打出来，下一个改代码的人立刻看得见
+        console.warn(`[${MODULE_NAME}] 未登记的错误编号 ${code}（请补进 core/errors.js 的目录）`);
+    }
+    errorLog.push(err);
+    while (errorLog.length > ERROR_LOG_MAX) errorLog.shift();
+    // toast 只给**一行**（编号 + 发生了什么）——屏幕有限，细节留给弹窗里的折叠区
+    if (ctx.toast !== false) toastr.error(err.headline, '聊天文件系统');
+    console.warn(`[${MODULE_NAME}] ${err.text}`);
+    try { renderAll(); } catch { /* 界面还没起来也不影响记账 */ }
+    return err;
+}
+
+/** 清空失败记录（**不动任何数据**，只是把提示清掉） */
+function clearErrors() {
+    errorLog.length = 0;
+    renderAll();
+}
+
+/**
+ * 动作名 → 兜底错误编号（动作自己没接住异常时用）。
+ * 只列**域可判**的动作；没列到的一律 `CFS-G003`（通用失败）。
+ * 这张表存在的意义：兜底报错也能带上正确的域，用户一眼知道「是哪一块坏了」。
+ */
+const ACTION_FALLBACK_CODE = {
+    'switch': 'CFS-B001',
+    'rename': 'CFS-B002',
+    'delete-branch': 'CFS-B003',
+    'set-main-branch': 'CFS-B004',
+    'merge-branches': 'CFS-M001',
+    'export': 'CFS-X001',
+    'chat-export': 'CFS-X001',
+    'run-import': 'CFS-I001',
+    'chat-import': 'CFS-I001',
+    'trash-restore': 'CFS-R002',
+    'trash-purge': 'CFS-R003',
+    'ai-summary': 'CFS-A001',
+    'graph-reload': 'CFS-N001',
+    'graph-goto': 'CFS-N001',
+    'settings-reset-all': 'CFS-G003',
+    'settings-export': 'CFS-G003',
+};
+
+/** 复制诊断文本（用户贴给作者/agent 就能定位） */
+async function copyDiagnosis() {
+    const text = diagnosisText(errorLog, {
+        扩展版本: EXT_VERSION,
+        存储模式: storageMode(),
+        存储档位: storageState?.tier ?? '（未启用库模式）',
+        宿主: globalThis.SillyTavern?.getContext?.()?.version ?? '未取到',
+        页面: globalThis.location?.href ?? '',
+    });
+    try {
+        await globalThis.navigator?.clipboard?.writeText?.(text);
+        toastr.success('诊断信息已复制到剪贴板', '聊天文件系统');
+    } catch (e) {
+        // 剪贴板不可用（非安全上下文/被拒）——把文本摆出来让用户自己全选
+        try {
+            await callGenericPopup(
+                `<div class="chatfilesys-note">剪贴板不可用，请手动全选复制：</div>
+                 <textarea class="text_pole chatfilesys-export-json" readonly rows="14">${esc(text)}</textarea>`,
+                POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true, okButton: '关闭' },
+            );
+        } catch {
+            console.warn(`[${MODULE_NAME}] 诊断信息（复制失败，见控制台）:\n${text}`);
+        }
+    }
 }
 
 /**
@@ -778,6 +867,8 @@ function currentView() {
         // 设置页签**由表生成**（`core/settings-registry.js` 是唯一事实源）
         settingsGroups: grouped(),
         settingsValues: Object.fromEntries(SETTINGS.map((s) => [s.key, getSetting(s.key)])),
+        // 错误面：近期的失败（弹窗顶部一条聚合条；见 ui/popup.js#errorsHtml）
+        errors: [...errorLog],
     };
 }
 
@@ -899,7 +990,8 @@ async function switchBranch(branchId) {
     try {
         ({ operations } = planSwitch(model, branchId, c.chat || [], currentId));
     } catch (e) {
-        toastr.error(`切换失败: ${e.message}`);
+        // 规划阶段就失败 ⇒ 一个字都没写进聊天，说清楚「内容没变」用户才敢重试
+        reportError('CFS-B001', { detail: e?.stack || e?.message });
         return;
     }
     // N1：主键上的普通切换 = 家族级切换 → 主分支标记（is_default）跟着迁（用户 2026-09-26 裁定）
@@ -1041,7 +1133,7 @@ async function renameBranchFlow(branchId) {
         renderAll();
         toastr.success('分支已改名');
     } catch (e) {
-        toastr.error(`改名失败: ${e.message}`);
+        reportError('CFS-B002', { detail: e?.stack || e?.message });
         return;
     }
     // 对齐宿主侧文件名——**仅当磁盘上真有该文件**（W4；L0-11：失败只提示，不阻断、不回退库内名）
@@ -1115,7 +1207,7 @@ async function deleteBranchFlow(branchId) {
         renderAll();
         if (getSetting('ui.toast')) toastr.success(`分支「${b.name}」已删除`);
     } catch (e) {
-        toastr.error(`删除失败: ${e.message}`);
+        reportError('CFS-B003', { detail: e?.stack || e?.message });
     }
 }
 
@@ -2186,7 +2278,7 @@ async function setMainBranchFlow(branchId) {
             expectedIntegrity: family.integrity,
         });
         if (!r?.ok) {
-            toastr.error(`设为主分支失败：${r?.reason || '未知原因'}`, '聊天文件系统');
+            reportError('CFS-B004', { why: r?.reason ? String(r.reason) : null });
             return false;
         }
         setModel(work);
@@ -2310,7 +2402,7 @@ async function summarizeBranch(branchId) {
         toastr.success(`「${b.name}」摘要：${summary}`, '聊天文件系统');
     } catch (e) {
         console.warn(`[${MODULE_NAME}] AI 总结失败（降级不阻断）:`, e);
-        toastr.error(`AI 总结失败：${e?.message || e}`, '聊天文件系统');
+        reportError('CFS-A001', { detail: e?.stack || e?.message });
     }
 }
 
@@ -2321,9 +2413,9 @@ async function restoreTrashEntry(trashId) {
     if (!(await popupConfirm('把这条回收站条目还原成聊天文件？同名聊天已存在时会被覆盖。'))) return;
     try {
         const r = await trash.restore({ trashId });
-        if (!r?.ok) { toastr.error(`还原失败：${r?.reason || '未知原因'}`, '聊天文件系统'); return; }
+        if (!r?.ok) { reportError('CFS-R002', { why: r?.reason ? String(r.reason) : null }); return; }
         const fileName = String(r.source || '').split('::').pop();
-        if (!fileName) { toastr.error('还原失败：条目缺少源文件名。', '聊天文件系统'); return; }
+        if (!fileName) { reportError('CFS-R002', { why: '回收站条目里没有源文件名（数据不自洽）' }); return; }
         const seam = storageState?.seam;
         const doFetch = (...a) => (seam?.native ? seam.native(...a) : globalThis.fetch(...a));
         const headers = typeof ctx().getRequestHeaders === 'function' ? ctx().getRequestHeaders() : {};
@@ -2338,7 +2430,7 @@ async function restoreTrashEntry(trashId) {
         bumpChatList();
         renderAll();
     } catch (e) {
-        toastr.error(`还原失败：${e?.message || e}`, '聊天文件系统');
+        reportError('CFS-R002', { detail: e?.stack || e?.message });
     }
 }
 
@@ -2349,7 +2441,7 @@ async function purgeTrashEntry(trashId) {
     if (!(await popupConfirm('从回收站永久删除这一条？此操作不可撤销。'))) return;
     const r = await trash.purge({ trashId });
     if (r?.ok) toastr.success('已从回收站永久删除。', '聊天文件系统');
-    else toastr.error(`清理失败：${r?.reason || '未知原因'}`, '聊天文件系统');
+    else reportError('CFS-R003', { why: r?.reason ? String(r.reason) : null });
     renderAll();
 }
 
@@ -2390,6 +2482,8 @@ async function handleAction(action, el) {
         /* 设置中枢：恢复默认 / 导出清单 / 一键开图 */
         case 'settings-reset-all': return await resetAllSettingsFlow();
         case 'settings-export': return await exportSettingsFlow();
+        case 'errors-clear': return clearErrors();
+        case 'errors-copy': return await copyDiagnosis();
         case 'settings-enable-graph': {
             setSetting('graph.enabled', true);
             bumpGraph();
@@ -2425,7 +2519,11 @@ function bindPopupEvents(rootEl) {
             await handleAction(el.dataset.action, el);
         } catch (e) {
             console.error(`[${MODULE_NAME}] 操作 ${el.dataset.action} 失败:`, e);
-            toastr.error(`操作失败: ${e.message}`);
+            // 兜底也要有编号：按动作名映射到域（**只有没在自己那里接住异常的动作才会走到这**）
+            reportError(ACTION_FALLBACK_CODE[el.dataset.action] || 'CFS-G003', {
+                detail: e?.stack || e?.message,
+                why: `动作 ${el.dataset.action} 抛了异常`,
+            });
         }
     });
     // 设置项（原设置页控件搬进弹窗「设置」页签；分支选择器的 data-branch 同步在 popup.js 内）

@@ -52,6 +52,27 @@ DELETE_CHAT_FILE_JS = """async ([fileName]) => {
     return res.status;
 }"""
 
+# 直接从 **B1 数据源**取「它到底看到了什么」（诊断用；与图看到的是同一份输入）
+SOURCE_FACTS_JS = """async () => {
+    const src = '/scripts/extensions/third-party/chatfilesys';
+    const ctx = SillyTavern.getContext();
+    const mod = await import(src + '/core/source/chat-source.js');
+    const ch = ctx.characters[ctx.characterId];
+    const source = mod.createChatSource({
+        mode: 'off',
+        character: () => ({ avatarUrl: ch.avatar, characterId: ctx.characterId, name: ch.name, groupId: null }),
+        headers: () => ctx.getRequestHeaders(),
+        log: () => {},
+    });
+    const refs = await source.listSessions();
+    const rows = await Promise.all(refs.map(async (r) => {
+        const s = await source.readSession(r);
+        return { name: r.name, kind: r.kind, msgs: (s.messages || []).length,
+                 first: String((s.messages || [])[0]?.mes || '').slice(0, 20) };
+    }));
+    return { refs: refs.length, rows, notes: source.describe().notes.slice(0, 4) };
+}"""
+
 # 从**当前**聊天取前 N 行（用来拼那份共享前缀的文件）
 CURRENT_ROWS_JS = """(n) => (SillyTavern.getContext().chat || []).slice(0, n).map(x => ({
     name: x.name, is_user: x.is_user, mes: x.mes, send_date: x.send_date,
@@ -235,6 +256,8 @@ def main():
                    st0["chatLen"] >= base_len + 5,
                    f"chatLen {base_len} → {st0['chatLen']}（落盘 {flushed} 条）")
 
+            print("  [诊断] 数据源看到:", r.js(SOURCE_FACTS_JS))
+
             # ---------- ① 结构图页签可达 ----------
             tabs = r.js("""() => {
                 const root = document.querySelector('dialog[open]:not([closing]) .chatfilesys-popup');
@@ -245,6 +268,11 @@ def main():
                 return 1
 
             # ---------- ②③ 图渲染 + 布局路径 ----------
+            # **先显式重算**：弹窗的刷新时机由宿主动作驱动，用例不能假设「切到页签刚好就渲染过」
+            # （2026-09-27 实测：不重算时读到的是上一次刷新的旧图，2 节点而非 6 节点 ⇒ 假红）
+            gs = open_graph_tab(r)
+            r.click_action("graph-reload")
+            r.settle(3000)
             gs = open_graph_tab(r)
             report("② 结构图渲染出节点与边（B1→B2→B3→B4 整链跑通）",
                    gs.get("present") and gs.get("nodeCount", 0) >= 5 and gs.get("edgeCount", 0) >= 4,

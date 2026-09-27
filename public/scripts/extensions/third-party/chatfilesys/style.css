@@ -33,7 +33,9 @@
 }
 
 .chatfilesys-popup .chatfilesys-error {
-    color: #f85149;
+    /* 走宿主主题的错误色（L1-MR-3 铁律 4）；回退值是中性红，且**与宿主变量同名**，
+       这样宿主换了主题它也换——此前的硬编码 #f85149 在任何主题下都一样，是违规写法 */
+    color: var(--SmartThemeErrorColor, #f85149);
     font-size: 11.5px;
     line-height: 1.6;
     margin: 6px 0;
