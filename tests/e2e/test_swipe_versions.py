@@ -44,8 +44,24 @@ SEED_JS = """async (args) => {
     const ctx = SillyTavern.getContext();
     const adapterMod = await import(src + '/core/storage/adapter.js');
     const proj = await import(src + '/core/projection.js');
+    // **必须与插件用同一套依赖**：本仓自 2026-09-27 起档1（Authority SQL）优先。
+    // 不传 `authorityClient` 时 `createStorageAdapter` 会落到档2/档3，而家族住在档1 的库里
+    // ⇒ `loadFamily` 恒为 null（`no-family`）。本用例的种入与读回都在这里，
+    // 少了这一步会**一开始就判失败**（2026-09-28 定位到的测试基建缺陷，8 个用例同形）。
+    let __authClient = null;
+    try {
+        const sdk = globalThis.STAuthority?.AuthoritySDK;
+        if (sdk && typeof sdk.init === 'function') {
+            __authClient = await sdk.init({
+                extensionId: 'third-party/chatfilesys', displayName: 'ChatFilesys',
+                version: '1.0.0', installType: 'local',
+                declaredPermissions: { sql: { private: true }, fs: { private: true } },
+            });
+        }
+    } catch { /* 拿不到就走降级档（与插件自身行为一致） */ }
     const built = await adapterMod.createStorageAdapter({
         fetch: (...a) => globalThis.fetch(...a), headers: () => ctx.getRequestHeaders(), log: () => {},
+        authorityClient: __authClient,
     });
     try {
         const fam = await built.adapter.loadFamily({ chatKey });
@@ -92,8 +108,24 @@ READ_LIB_JS = """async (args) => {
     const [src, chatKey] = args;
     const ctx = SillyTavern.getContext();
     const adapterMod = await import(src + '/core/storage/adapter.js');
+    // **必须与插件用同一套依赖**：本仓自 2026-09-27 起档1（Authority SQL）优先。
+    // 不传 `authorityClient` 时 `createStorageAdapter` 会落到档2/档3，而家族住在档1 的库里
+    // ⇒ `loadFamily` 恒为 null（`no-family`）。本用例的种入与读回都在这里，
+    // 少了这一步会**一开始就判失败**（2026-09-28 定位到的测试基建缺陷，8 个用例同形）。
+    let __authClient = null;
+    try {
+        const sdk = globalThis.STAuthority?.AuthoritySDK;
+        if (sdk && typeof sdk.init === 'function') {
+            __authClient = await sdk.init({
+                extensionId: 'third-party/chatfilesys', displayName: 'ChatFilesys',
+                version: '1.0.0', installType: 'local',
+                declaredPermissions: { sql: { private: true }, fs: { private: true } },
+            });
+        }
+    } catch { /* 拿不到就走降级档（与插件自身行为一致） */ }
     const built = await adapterMod.createStorageAdapter({
         fetch: (...a) => globalThis.fetch(...a), headers: () => ctx.getRequestHeaders(), log: () => {},
+        authorityClient: __authClient,
     });
     try {
         const fam = await built.adapter.loadFamily({ chatKey });

@@ -128,10 +128,20 @@ STEPS = """async (extSrc) => {
         const fillTopDialog = (text) => {
             const dlg = document.querySelector('dialog[open]:not([closing]):last-of-type');
             if (!dlg) return 'no-dialog';
-            const inp = dlg.querySelector('input');
+            // **广谱查找**：宿主的弹窗模板对不同类型用不同控件——输入可能是 `input`、
+            // `textarea`、`contenteditable`，甚至是带 `.popup-input` 类的元素。
+            // 只找 `input` 会在「Create Checkpoint」这类对话框上判成 `no-input`，
+            // 让整条用例挂在命名那一步（2026-09-28 实测：真实原因是用例选择器过时，
+            // 而不是产品有问题——同一轮日志里接管的 seam 行是成功的）。
+            const inp = dlg.querySelector('input, textarea, [contenteditable="true"], .popup-input');
             if (!inp) return 'no-input: ' + dlg.innerHTML.slice(0, 200);
-            inp.value = text;
+            if (inp.isContentEditable) {
+                inp.textContent = text;
+            } else {
+                inp.value = text;
+            }
             inp.dispatchEvent(new Event('input', { bubbles: true }));
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
             const ok = dlg.querySelector('.popup-button-ok') || dlg.querySelector('button[value="1"]');
             if (!ok) return 'no-ok: ' + dlg.innerHTML.slice(0, 200);
             ok.click();
