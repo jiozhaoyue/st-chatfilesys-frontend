@@ -512,6 +512,9 @@ async function enablePureDb() {
             },
             // 内容闸门档位**现取设置**（用户改完立刻生效，不缓存）
             takeoverGate: () => normGateMode(getSetting('takeover.content_gate')),
+            // 列举合并（兼容）：让酒馆与别的插件「列出聊天」时也看得到库里的聊天
+            serveListing: () => Boolean(getSetting('compat.serve_chat_listing')),
+            listLibraryChats,
         });
         const mirror = createMirror({
             adapter,
@@ -840,6 +843,37 @@ async function mergeBranchesFlow(aId) {
             }
         },
     });
+}
+
+/**
+ * 库内聊天列表（给**其它插件与宿主**看的形状）。
+ *
+ * **为什么需要**（真机实测的兼容缺口）：纯库模式下源 jsonl 已移入回收站 ⇒ 磁盘列举为空 ⇒
+ * 任何「列出这个角色有哪些聊天」的插件（聊天备份 / 聊天仓库 / 聊天合并 / 按聊天统计）
+ * 会看到「零个聊天」。接缝的 `chats/search` 处理器把这份列表**追加**上去。
+ *
+ * **两个刻意的取舍**：
+ * - `message_count` / `last_mes` 给 `null` 而**不是 0**：适配器契约里没有这两个值
+ *   （`listFamilies` 只给 `{familyId,name,updatedAt}`）。编一个 `0` 出来会让界面显示
+ *   「0 条」——那是**假事实**（0 条与「不知道」是两回事）。`null` 让消费方自己决定怎么显示。
+ * - 只给名字：多数列举类插件要的就是名字（拿到名字后再 `chats/get` 读内容，那条路由已接管）。
+ *
+ * @returns {Promise<Array<{file_name: string, message_count: null, last_mes: null}>>}
+ *   失败返回空数组（**绝不抛**——它挂在 fetch 路径上，抛会把别人的列举带崩）
+ */
+async function listLibraryChats() {
+    if (!storageState?.adapter) return [];
+    try {
+        const c = ctx();
+        const fams = await storageState.adapter.listFamilies({ characterId: c.characterId });
+        return (Array.isArray(fams) ? fams : [])
+            .map((f) => String(f?.name || '').replace(/\.jsonl$/i, ''))
+            .filter((name) => name && !name.includes(HIDDEN_PREFIX))
+            .map((name) => ({ file_name: name, message_count: null, last_mes: null }));
+    } catch (e) {
+        console.warn(`[${MODULE_NAME}] 库内聊天列表读取失败（本次不补进列举）:`, e);
+        return [];
+    }
 }
 
 /* ---------------- 模型读写 ---------------- */

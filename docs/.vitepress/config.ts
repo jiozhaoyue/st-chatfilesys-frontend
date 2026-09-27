@@ -55,6 +55,7 @@ export default defineConfig({
                     text: '设置与排障',
                     items: [
                         { text: '设置：能调什么', link: '/guide/settings' },
+                        { text: 'AI 总结', link: '/guide/ai-summary' },
                         { text: '出错时你会看到什么', link: '/guide/errors' },
                     ],
                 },

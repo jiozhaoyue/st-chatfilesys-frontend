@@ -207,6 +207,21 @@ export const SETTINGS = Object.freeze([
         apply: APPLY.GRAPH,
     },
 
+    /* ---------------- 兼容 ---------------- */
+    {
+        key: 'compat.serve_chat_listing',
+        label: '让「列出聊天」也看得到库里的聊天',
+        group: '兼容',
+        type: 'boolean',
+        default: true,
+        describe: '酒馆和别的插件在「列出这个角色有哪些聊天」时，把数据库里的聊天一并列出来。'
+            + '关掉则只列磁盘上的文件。',
+        why: '默认开——纯库模式下源文件已移入回收站，磁盘上一个聊天都没有；'
+            + '不补这一步，聊天备份 / 聊天仓库 / 聊天合并这类**需要翻列表**的插件会「什么都找不到」，'
+            + '而宿主的聊天列表也会显得空。实现上**只增不减**、出错即退回磁盘事实（不会弄坏列表）。',
+        apply: APPLY.NONE,   // 接缝每次请求现取，不必重装
+    },
+
     /* ---------------- 接管 ---------------- */
     {
         key: 'takeover.content_gate',
@@ -307,7 +322,7 @@ export const SETTINGS = Object.freeze([
 ]);
 
 /** 分组显示顺序（表里没列到的分组排在最后，按名字） */
-export const GROUP_ORDER = Object.freeze(['存储', '入库', '界面', '结构图', '接管', 'AI', '回收站', '诊断']);
+export const GROUP_ORDER = Object.freeze(['存储', '入库', '界面', '结构图', '兼容', '接管', 'AI', '回收站', '诊断']);
 
 /** key → 定义（查表用；`SETTINGS` 本身仍是唯一事实源） */
 export const BY_KEY = new Map(SETTINGS.map((s) => [s.key, s]));

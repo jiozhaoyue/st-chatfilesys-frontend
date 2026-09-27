@@ -290,6 +290,34 @@ def main():
                     report("R4b 摘要长度受 `ai.max_summary_len` 约束（设为 12）",
                            len(summary) <= 14, f"摘要 {len(summary)} 字")
 
+            # ---------- R5 列举兼容：别的插件「列聊天」时看得到库里的聊天 ----------
+            # 走**与别的插件同一条路**（页面里的 `fetch('/api/chats/search')`，会被接缝拦），
+            # 不是调插件自己的内部函数——验的就是「别人来问，能不能问到」。
+            r.js("""() => {
+                const s = SillyTavern.getContext().extensionSettings.chatfilesys;
+                const parts = 'compat.serve_chat_listing'.split('.');
+                let o = s; for (const p of parts.slice(0, -1)) { o[p] = o[p] || {}; o = o[p]; }
+                o[parts[parts.length - 1]] = true;
+                return 'on';
+            }""")
+            r.settle(800)
+            listing = r.js("""async ([fixture]) => {
+                const c = SillyTavern.getContext();
+                const ch = c.characters[c.characterId];
+                const res = await fetch('/api/chats/search', {
+                    method: 'POST', headers: c.getRequestHeaders(),
+                    body: JSON.stringify({ query: '', avatar_url: ch?.avatar }),
+                });
+                const rows = res.ok ? await res.json() : [];
+                const names = (Array.isArray(rows) ? rows : []).map((x) => String(x.file_name || ''));
+                return { status: res.status, n: names.length,
+                         hasFixture: names.some((n) => n.includes('孤独摇滚夹具')),
+                         sample: names.slice(0, 6) };
+            }""", [FIXTURE_NAME])
+            report("R5 纯库模式下「列出聊天」也能看到库里的聊天（兼容 14 个列举类插件）",
+                   listing.get('hasFixture'),
+                   f"{json.dumps(listing, ensure_ascii=False)[:200]}")
+
             errs = [e for e in r.errors if 'chatfilesys' in str(e)]
             report("全程零 chatfilesys 归因 pageerror", not errs, f"{errs[:2]}")
             return 0 if all(results) else 1

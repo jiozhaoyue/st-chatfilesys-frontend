@@ -13,6 +13,7 @@
 import argparse
 import pathlib
 import subprocess
+import tempfile
 import sys
 import time
 
@@ -44,20 +45,23 @@ def run_one(short: str, script: str, why: str) -> tuple[str, bool, float, str]:
         return short, False, 0.0, "脚本不存在"
     t0 = time.time()
     print(f"\n{'=' * 70}\n▶ {short} — {why}\n  {script}\n{'=' * 70}", flush=True)
+    # **必须把子进程输出写文件，不要用 `capture_output=True`（管道）**：
+    # 管道缓冲区满时子进程会**阻塞在写 stdout 上**，而父进程在等它结束 ⇒ 死锁。
+    # 2026-09-28 实测：同一条用例单跑 3.5 分钟，经管道跑批却卡了 35 分钟没结束。
+    log_path = pathlib.Path(tempfile.gettempdir()) / f"cfsys-suite-{short}.log"
     try:
-        p = subprocess.run(
-            [sys.executable, "-u", str(path)],
-            cwd=str(HERE), capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=1800,
-        )
-        out = (p.stdout or "") + (p.stderr or "")
-    except subprocess.TimeoutExpired as e:
-        out = ((e.stdout or "") + (e.stderr or "")) if isinstance(e.stdout, str) else ""
+        with open(log_path, "w", encoding="utf-8", errors="replace") as fh:
+            p = subprocess.run([sys.executable, "-u", str(path)], cwd=str(HERE),
+                               stdout=fh, stderr=subprocess.STDOUT, timeout=1800)
+        out = log_path.read_text(encoding="utf-8", errors="replace")
+        rc = p.returncode
+    except subprocess.TimeoutExpired:
+        out = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
         print(out[-4000:], flush=True)
         return short, False, time.time() - t0, "超时（30 分钟）"
     print(out[-6000:], flush=True)
     tail = [ln for ln in out.strip().splitlines() if ln.strip()][-3:]
-    ok = p.returncode == 0
+    ok = rc == 0
     return short, ok, time.time() - t0, " / ".join(tail)[:160]
 
 

@@ -26,6 +26,9 @@ import { OWN_EXTENSION_KEY, splitChatMetadata, mergeHostMetadata, stripKeyOwnedM
 const ROUTES = [
     'chats/get', 'chats/save', 'chats/append', 'chats/patch', 'chats/rename', 'chats/delete',
     'chats/meta', 'chats/meta/patch', 'chats/get-delta',
+    // 列举类：**只读**，且只做「追加库内条目」（见 `handleSearch` 的三条不变量）。
+    // 它属于「别人列不全 → 本插件补上」，不改变任何按键寻址的语义。
+    'chats/search',
 ];
 
 /**
@@ -265,6 +268,12 @@ export function installSeam(adapter, opts = {}) {
      * 传**函数**而不是值：用户在设置里改完要立刻生效，不能等到下次装接缝。
      */
     const takeoverGate = typeof opts.takeoverGate === 'function' ? opts.takeoverGate : null;
+    /**
+     * 列举合并（见 `handleSearch`）：`serveListingOf` 取值器 + 库内条目取值器。
+     * **每次请求现取**（不是装接缝时取一次）——设置改了立刻生效，不必重装接缝。
+     */
+    const serveListingOf = typeof opts.serveListing === 'function' ? opts.serveListing : () => false;
+    const listLibraryChats = typeof opts.listLibraryChats === 'function' ? opts.listLibraryChats : null;
     const originalFetch = globalThis.fetch;
     // 成功写回调（T2 双写模式用）：参数 { familyId, chatKey }，只做通知、不改写结果
     const onWrote = typeof opts.onWrote === 'function' ? opts.onWrote : null;
@@ -659,10 +668,58 @@ export function installSeam(adapter, opts = {}) {
         });
     }
 
+    /**
+     * `chats/search`（**列举**）：把「库内家族」并进磁盘结果。
+     *
+     * ── 为什么需要它（真机实测的兼容缺口）──
+     * 接缝此前拦的是九条**按聊天键寻址**的路由；而**列举类**问的不是「这个聊天怎么样」
+     * 而是「有哪些聊天」，天然需要另一套实现（库内家族枚举），故当初没被纳入。
+     * 后果：纯库模式下源 jsonl 已移入回收站 ⇒ 磁盘列举为空 ⇒ 任何**列举/搜索聊天**的
+     * 第三方插件（聊天备份、聊天仓库、聊天合并、按聊天统计…）会看到「零个聊天」，
+     * 表现为「它什么都找不到」。
+     *
+     * ── 三条不变量（把风险压到最低）──
+     * 1. **只增不减**：磁盘侧的结果原样保留，只**追加**库里独有的条目（按文件名去重）。
+     * 2. **出错即退回磁盘事实**：任何一步失败都返回原生响应，宿主与插件看到的与今天一致。
+     * 3. **可由设置关掉**：关掉就完全不接管（与今天完全一致）。
+     *
+     * @param {object} body 请求体（`{query, avatar_url}`）
+     * @param {RequestInfo} input 原始 input（要**重发**一次原生请求拿磁盘侧结果）
+     * @param {RequestInit} init 原始 init
+     * @returns {Promise<Response|null>} `null` = 让外层走原生（未接管）
+     */
+    async function handleSearch(body, input, init) {
+        if (!serveListingOf()) return null;
+        if (typeof listLibraryChats !== 'function') return null;
+        let native = null;
+        try {
+            native = await originalFetch(input, init);
+        } catch {
+            return null;                       // 连原生都拿不到 → 交给外层按原样处理
+        }
+        try {
+            const raw = native?.ok ? await native.clone().json() : [];
+            const list = Array.isArray(raw) ? raw : [];
+            const lib = await listLibraryChats(body || {});
+            if (!Array.isArray(lib) || !lib.length) return native;
+            const bare = (s) => String(s || '').toLowerCase().replace(/\.jsonl$/i, '');
+            const seen = new Set(list.map((x) => bare(x?.file_name)));
+            const extra = lib.filter((x) => x?.file_name && !seen.has(bare(x.file_name)));
+            if (!extra.length) return native;
+            return jsonResponse([...list, ...extra]);
+        } catch (e) {
+            // **不变量 2**：合并失败就按磁盘事实返回——不许因为「想帮忙」而弄坏宿主的列表
+            log('[chatfilesys-seam] 列举合并失败，按磁盘事实返回（不影响宿主）:', e);
+            return native;
+        }
+    }
+
     const handlers = {
         'chats/get': handleGet, 'chats/save': handleSave, 'chats/append': handleAppend,
         'chats/patch': handlePatch, 'chats/rename': handleRename, 'chats/delete': handleDelete,
         'chats/meta': handleMeta, 'chats/meta/patch': handleMetaPatch, 'chats/get-delta': handleGetDelta,
+        // 列举类（只读；见 handleSearch 的三条不变量）
+        'chats/search': handleSearch,
     };
 
     async function interceptingFetch(input, init) {
@@ -680,7 +737,9 @@ export function installSeam(adapter, opts = {}) {
         try {
             const body = await bodyOf(input, init);
             const handler = handlers[route];
-            const response = await handler(body);
+            // 把原始 `input` / `init` 也交给处理器：`chats/search` 需要**重发一次原生请求**
+            // 拿到磁盘侧结果再合并（其余处理器用不到，忽略即可）
+            const response = await handler(body, input, init);
             if (response) return response;
             return originalFetch(input, init); // 未接管聊天：透传
         } catch (e) {
