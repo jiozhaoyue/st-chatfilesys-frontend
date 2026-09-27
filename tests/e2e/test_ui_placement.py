@@ -239,8 +239,12 @@ def main():
             results.append(report("③ 弹窗内无逐层列举（废除类名 0 命中 + 无连续楼层行枚举）",
                                   ok3a, f"banned={ps.get('bannedHits')} enumerate={ps.get('enumerateHosts')}"))
             tabs = ps.get("tabs") or []
-            ok3b = set(tabs) == {'当前聊天', '角色卡的聊天', '设置', '回收站'}
-            results.append(report("③ 弹窗四页签 = 当前聊天/角色卡的聊天/设置/回收站", ok3b, str(tabs)))
+            # 页签集合是**契约**，要精确相等（多一个少一个都算变）。2026-09-28 加了「结构图」
+            # （B4 消息级图视图），这条写死四个的断言当场变红——**过时断言比缺失断言更危险**：
+            # 它会让真实回归以「本来就红」的形式被忽略。
+            want_tabs = {'当前聊天', '结构图', '角色卡的聊天', '设置', '回收站'}
+            ok3b = set(tabs) == want_tabs
+            results.append(report("③ 弹窗五页签 = 当前聊天/结构图/角色卡的聊天/设置/回收站", ok3b, str(tabs)))
             results.append(report("③ 旧页签「楼层 / 批量操作」未复活",
                                   '楼层' not in tabs and '批量操作' not in tabs and '分支树' not in tabs, str(tabs)))
             # 结构树只显结构：树节点文本里不得出现任何消息内容
