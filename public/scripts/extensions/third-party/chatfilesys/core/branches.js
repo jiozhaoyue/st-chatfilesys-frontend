@@ -265,7 +265,12 @@ export function deleteBranch(model, id) {
     const ref = (gid) => model.branches.some((x) => Object.values(x.path).includes(gid));
     for (const gid of Object.values(b.path)) {
         const g = model.groups[gid];
-        if (g && g.owner === b.id && !ref(gid)) delete model.groups[gid];
+        // 归属按「引用关系」**现算**，不读 `g.owner`（2026-09-27 定性）：
+        // owner 是投影折叠时按**当时的** is_default 写下的快照（见 projection.js 的折叠段），
+        // 而 is_default 会随普通切换迁移（index.js 的 alignMainBranchOnSwitch，N1）
+        // ⇒ 快照会过期，`g.owner === b.id` 恒假 ⇒ 私有组永不回收（删分支后 groups 残留）。
+        // 上一行已摘掉被删分支，故 `!ref(gid)` 恰为「无其他分支引用」= 它就是这个分支的私有组。
+        if (g && !ref(gid)) delete model.groups[gid];
     }
     return b;
 }
