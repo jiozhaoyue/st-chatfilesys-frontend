@@ -2,7 +2,15 @@
 .trellis/
 .claude/
 .cursor/
-.github/
+# .github 整体仍不入库；**只放行文档站的部署工作流**（2026-09-27）
+# 写法有讲究：Git 不进入被整目录排除的目录，故必须先 `/*` 再逐级反选——
+# 只写 `!.github/workflows/docs.yml` 是**失效**的。
+# 判定方式用 `git ls-files .github`（须恰为该一个文件）；
+# 不要用 `git check-ignore` 的退出码：反选规则也会匹配、退出码同样是 0（看着像"被忽略"）。
+.github/*
+!.github/workflows/
+.github/workflows/*
+!.github/workflows/docs.yml
 .history/
 .archive/
 .agents/
@@ -15,6 +23,11 @@ tests/e2e/__pycache__/
 tests/e2e/shots/
 __pycache__/
 *.pyc
+
+# 文档站（docs/）的依赖与构建产物——可再生成；扩展本体不依赖它们
+docs/node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
 
 # 本地杂项
 *.log

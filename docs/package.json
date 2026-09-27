@@ -1,0 +1,16 @@
+{
+  "name": "chatfilesys-docs",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ChatFilesys 文档站（VitePress）——注意：本目录的依赖只服务于文档构建，与扩展本体无关（扩展安装不需要任何构建步骤）",
+  "scripts": {
+    "dev": "vitepress dev --host 127.0.0.1",
+    "build": "vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.3",
+    "vue": "^3.5.13"
+  }
+}
