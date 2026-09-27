@@ -32,11 +32,34 @@ export default defineConfig({
                     text: '指南',
                     items: [{ text: '总览', link: '/guide/' }],
                 },
+                {
+                    text: '基础',
+                    items: [
+                        { text: '安装与入口', link: '/guide/install' },
+                        { text: '三种模式', link: '/guide/modes' },
+                        { text: '三档存储与降级', link: '/guide/storage-tiers' },
+                    ],
+                },
+                {
+                    text: '分支与版本',
+                    items: [
+                        { text: '每层版本', link: '/guide/versions' },
+                    ],
+                },
+                {
+                    text: '重要边界',
+                    items: [
+                        { text: '隐私边界（如实）', link: '/guide/privacy' },
+                    ],
+                },
             ],
             '/dev/': [
                 {
                     text: '开发',
-                    items: [{ text: '总览', link: '/dev/' }],
+                    items: [
+                        { text: '总览', link: '/dev/' },
+                        { text: '路线图（计划公开）', link: '/dev/roadmap' },
+                    ],
                 },
             ],
             '/': [
