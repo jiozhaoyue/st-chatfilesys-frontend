@@ -280,7 +280,13 @@ export function installSeam(adapter, opts = {}) {
     const notifyWrote = (family, chatKey) => {
         if (!onWrote) return;
         try { onWrote({ familyId: family?.familyId, chatKey }); }
-        catch (e) { log('[chatfilesys-seam] onWrote 回调异常（忽略，不影响本次写）:', e); }
+        catch (e) {
+            // **原因并进消息本身**，而不是只当第二个参数传：很多日志消费者只取第一个参数
+            // （本仓 e2e 的 seamLog 就是 `log: (m) => ...`），只传第二个等于把原因丢了——
+            // 实测形态是一条以冒号结尾、后面什么都没有的日志，看着像「没原因」（2026-09-28）。
+            // 与「降级必须带原因」同一条纪律：**原因要落在最不可能被丢的那个位置上。**
+            log(`[chatfilesys-seam] onWrote 回调异常（忽略，不影响本次写）：${e?.message || e}`, e);
+        }
     };
 
     /**
