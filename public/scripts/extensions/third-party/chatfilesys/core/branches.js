@@ -202,8 +202,48 @@ export function createBranch(model, { name, forkFloor, activate = true }) {
     return b;
 }
 
-export function renameBranch(model, id, name) {
-    const b = getBranch(model, id);
+/**
+ * 用**给定的 path** 建一条新分支（合并结果的落点）。
+ *
+ * 为什么不让调用方自己 `model.branches.push(...)`：建分支有三件不能忘的事
+ * ——发 id、校验 path 连续、维护 `active_branch`。散在调用方就会漏。
+ *
+ * **只引用既有组，不新建组**（`core/branch-merge.js` 的契约）：合并是「重新组织引用」，
+ * 不是「复制内容」。要复制内容那是另一件事。
+ *
+ * @param {object} model
+ * @param {{name: string, path: Object<number,string>, activate?: boolean, forkBase?: number}} opts
+ * @returns 新分支对象
+ * @throws path 不连续（键必须是 1..N）或引用了不存在的组时抛错——**宁可不建，不建一条坏的**
+ */
+export function createBranchWithPath(model, { name, path, activate = false, forkBase = 0 }) {
+    const floors = Object.keys(path || {}).map(Number).sort((a, b) => a - b);
+    for (let i = 0; i < floors.length; i++) {
+        if (floors[i] !== i + 1) {
+            throw new Error(`createBranchWithPath: path 楼层号不连续（[${floors}] 应为 1..${floors.length}）`);
+        }
+    }
+    const known = new Set();
+    for (const b of model.branches) for (const g of Object.values(b.path)) known.add(g);
+    for (const g of Object.values(path || {})) {
+        // 组可能只存在于 `model.groups`（未激活分支的私有组）——两处合起来才是全集
+        if (!known.has(g) && !model.groups?.[g]) {
+            throw new Error(`createBranchWithPath: path 引用了不存在的组 ${g}`);
+        }
+    }
+    const b = {
+        id: nextBranchId(model),
+        name: String(name),
+        is_default: false,
+        fork_base: Number(forkBase) || 0,
+        path: { ...path },
+    };
+    model.branches.push(b);
+    if (activate) model.active_branch = b.id;
+    return b;
+}
+
+export function renameBranch(model, id, name) {    const b = getBranch(model, id);
     if (!b) throw new Error(`renameBranch: 分支 "${id}" 不存在`);
     b.name = String(name);
     return b;

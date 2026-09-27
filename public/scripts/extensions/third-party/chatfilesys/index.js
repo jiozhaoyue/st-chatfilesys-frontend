@@ -27,7 +27,8 @@ import { extension_settings, getContext } from '../../../extensions.js';
 import { event_types, eventSource, clearChat, printMessages, saveSettingsDebounced } from '../../../../script.js';
 import { Popup, callGenericPopup, POPUP_RESULT, POPUP_TYPE } from '../../../popup.js';
 
-import { enableForChat, registerAppendedGroup, renameBranch, deleteBranch, deleteFloorEverywhere, getBranch, getActive, maxFloor, adoptNativeCopy, setMainBranch, setDefaultBranch } from './core/branches.js';
+import { enableForChat, registerAppendedGroup, renameBranch, deleteBranch, deleteFloorEverywhere, getBranch, getActive, maxFloor, adoptNativeCopy, setMainBranch, setDefaultBranch, createBranchWithPath } from './core/branches.js';
+import { describeMerge } from './core/branch-merge.js';
 import { planSwitch, groupFromLine } from './core/projection.js';
 import { createChatWriter, bodyPath } from './core/chat-writer.js';
 import {
@@ -41,6 +42,10 @@ import { dropBindingsOfBranch, setBindingBranch } from './core/key-bindings.js';
 import { alignHostFileName } from './core/rename-align.js';
 import { createMirror } from './core/mirror.js';
 import { normMode, isPureLike, isMirror, STORAGE_MODES, STORAGE_MODE_LABELS } from './core/mode.js';
+import {
+    APPLY, SETTINGS, grouped, ensureAll, readSetting, writeSetting,
+    exportRegistry, resetAll, resetSetting, BY_KEY,
+} from './core/settings-registry.js';
 import { createStorageAdapter } from './core/storage/adapter.js';
 import { modelFromStore, storeFromModel } from './core/store-bridge.js';
 import { createTrash } from './core/trash.js';
@@ -49,11 +54,14 @@ import {
     IMPORT_PROMPT_MODE, normImportPrompt, shouldPromptImport, withImportPromptMutes,
 } from './core/import-prompt.js';
 import { esc, getActiveBranch, assembleBranchLines } from './ui/common.js';
+import { parentsOf, childrenOf } from './core/graph/graph.js';
+import { DEGRADE_DEFAULTS } from './ui/graph/degrade.js';
 import { createPopupContent } from './ui/popup.js';
 import { renderTree } from './ui/tree.js';
 import { injectMessageTools, injectAllMessages } from './ui/marker.js';
 import { openVersionsPopup } from './ui/versions.js';
 import { openImportPrompt } from './ui/import-prompt.js';
+import { openMergePopup } from './ui/merge.js';
 
 const MODULE_NAME = 'chatfilesys';
 
@@ -89,19 +97,137 @@ function detectCapabilities() {
 
 /* ---------------- 设置 ---------------- */
 
+/**
+ * 设置中枢（`core/settings-registry.js` 是**全部可调项的单一事实源**）。
+ *
+ * 纪律：**别处不许再直接读写 `extension_settings.chatfilesys.xxx`** ——
+ * 一律走这里的 `getSetting` / `setSetting`。否则「表里有、代码里没人读」和
+ * 「代码里读了、表里没有」这两种漂移会同时出现，而这正是本轮要消灭的东西。
+ */
+function settingsTree() {
+    extension_settings[MODULE_NAME] = extension_settings[MODULE_NAME] || {};
+    return extension_settings[MODULE_NAME];
+}
+
+/** 读一项（值非法/缺失 → 默认值；见 registry 的 `normalize`） */
+function getSetting(key) {
+    return readSetting(settingsTree(), key);
+}
+
+/**
+ * 设置变更后要做的事（`apply` 声明的执行处）。
+ * 表里声明了什么动作，这里就必须有一条分支——**没有执行者的 apply 就是缺陷**。
+ * @returns {boolean} 是否真的做了重活（调用方据此决定要不要落盘/重绘）
+ */
+function applySetting(apply) {
+    switch (apply) {
+        case APPLY.STORAGE:
+            // 换存储模式：重装/卸载接缝与适配器（异步，不阻塞调用方）
+            (pureDbMode() ? enablePureDb() : Promise.resolve(disablePureDb()))
+                .then(() => renderAll())
+                .catch((e) => console.warn('[chatfilesys] 切换存储模式失败（保持原状）:', e));
+            return true;
+        case APPLY.GRAPH:
+            invalidateGraph();
+            return true;
+        case APPLY.UI:
+            renderAll();
+            return true;
+        default:
+            return false;
+    }
+}
+
+/**
+ * 写一项（**唯一写入口**）。返回规范化后的值。
+ *
+ * 值没变就不跑 `apply`——`storage_mode` 的 apply 是「重装接缝」这种重活，
+ * 每次碰一下控件都重装一遍是不可接受的（`writeSetting` 的 `changed` 就是为这个存在的）。
+ *
+ * `opts.runApply=false` 只给**一个**调用方用：`setStorageMode` 自己做了带安全动作的切换
+ * （先落文件、失败即中止、按顺序装/卸），重活它已经干完了，再让 apply 兜一遍会重复执行。
+ * 这是**有意的例外**，不是「apply 声明可以随便跳过」——其余任何地方都不许传它。
+ */
+function setSetting(key, value, { persist = true, runApply = true } = {}) {
+    const r = writeSetting(settingsTree(), key, value);
+    if (r.changed) {
+        if (persist) saveSettingsDebounced();
+        if (runApply) applySetting(r.apply);
+    }
+    return r.value;
+}
+
 function loadSettings() {
-    extension_settings[MODULE_NAME] = extension_settings[MODULE_NAME] || { auto_export: false };
-    if (typeof extension_settings[MODULE_NAME].auto_export !== 'boolean') {
-        extension_settings[MODULE_NAME].auto_export = false;
+    settingsTree();
+    // 补齐 + 纠正（**这就是迁移**）：老版本写下的非法形状在这一步被修正并报到控制台
+    const { fixed } = ensureAll(settingsTree(), { log: console.warn });
+    if (fixed.length) saveSettingsDebounced();
+    // 入库提醒的压制记录不是标量项（是 `{never, mutedKeys}` 结构），留在表外单独管
+    settingsTree().import_prompt = normImportPrompt(settingsTree().import_prompt);
+}
+
+/** 回收站保留天数（设置项 `trash.retention_days`；策略层收毫秒） */
+function trashRetentionMs() {
+    const days = Number(getSetting('trash.retention_days'));
+    return Number.isFinite(days) && days > 0 ? days * 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
+}
+
+/** 双写：改动即落文件（设置项 `mirror_sync_on_write`） */
+function mirrorSyncOnWrite() {
+    return Boolean(getSetting('mirror_sync_on_write'));
+}
+
+/**
+ * 「恢复全部默认」：**先问再改**（它会覆盖用户所有调过的项，属于破坏性操作）。
+ * 改完只重绘——不触发 `storage_mode` 的重装接缝（模式若被改回默认，下次进入聊天自然生效；
+ * 强行在这个时刻热切换接缝，反而可能在用户没预期的时候卸掉正在服务的接缝）。
+ */
+async function resetAllSettingsFlow() {
+    const ok = await popupConfirm('把全部设置恢复为出厂默认？你改过的每一项都会被覆盖。');
+    if (!ok) return;
+    const { changed } = resetAll(settingsTree());
+    if (changed.length) saveSettingsDebounced();
+    invalidateGraph();
+    renderAll();
+    if (getSetting('ui.toast')) {
+        toastr.success(changed.length ? `已恢复 ${changed.length} 项设置` : '本来就是默认值', '聊天文件系统');
     }
-    // 存储模式（T2/R1：'off' JSONL 增强 | 'pure' 纯数据库 | 'mirror' 双写；默认 off）
-    extension_settings[MODULE_NAME].storage_mode = normMode(extension_settings[MODULE_NAME].storage_mode);
-    // 双写：与库同步一次的开关（T2.5 的「文件落后」提示数据源在 mirror.state）
-    if (typeof extension_settings[MODULE_NAME].mirror_sync_on_write !== 'boolean') {
-        extension_settings[MODULE_NAME].mirror_sync_on_write = true;
+}
+
+/**
+ * 「导出设置清单 JSON」：把**全部可调项**（类型、默认值、范围、为什么）连同**当前值**导出。
+ *
+ * 为什么要有它（用户要求「该审查的审查、agent 友好」）：
+ * 用户报障时不必复述现象，把这个 JSON 贴出来，agent 就能看到「他装了哪个版本、哪一项被改成什么」。
+ * 它是**机器可读**的，所以也能直接喂给脚本做回归。
+ */
+async function exportSettingsFlow() {
+    const reg = exportRegistry();
+    const payload = {
+        extension: 'chatfilesys',
+        version: EXT_VERSION,
+        exportedAt: new Date().toISOString(),
+        storageMode: storageMode(),
+        tier: storageState?.tier ?? null,
+        registry: reg,
+        current: Object.fromEntries(SETTINGS.map((s) => [s.key, getSetting(s.key)])),
+    };
+    const text = JSON.stringify(payload, null, 2);
+    try {
+        await callGenericPopup(
+            `<div class="chatfilesys-note">下面是全部 ${reg.count} 项可调设置与它们的当前值（含类型、默认值、取值范围和「为什么」）。全选复制即可。</div>
+             <textarea class="text_pole chatfilesys-export-json" readonly rows="14">${esc(text)}</textarea>`,
+            POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true, okButton: '关闭' },
+        );
+    } catch (e) {
+        console.warn('[chatfilesys] 导出设置清单弹窗失败，改为复制到剪贴板:', e);
+        try {
+            await globalThis.navigator?.clipboard?.writeText?.(text);
+            toastr.success('设置清单已复制到剪贴板', '聊天文件系统');
+        } catch {
+            toastr.error('导出失败（弹窗与剪贴板都不可用）', '聊天文件系统');
+        }
     }
-    // 入库提醒的压制记录（T8/R8.1：{ never, mutedKeys }）——本机偏好，不写进聊天记录
-    extension_settings[MODULE_NAME].import_prompt = normImportPrompt(extension_settings[MODULE_NAME].import_prompt);
 }
 
 /** 回收站不可用时的说明（N15：不假装有空列表） */
@@ -110,32 +236,44 @@ function trashUnavailableNote() {
     return '当前存储档位不支持枚举回收站条目（只有档1 Authority 能列目录）；已经快照的条目不会被自动删除。';
 }
 
-/** 分支树展开方向（N13：可切「向下 / 向右」；持久化到设置） */
+/** 分支树展开方向（设置项 `tree_direction`；N13：可切「向下 / 向右」） */
 function treeDirection() {
-    return extension_settings[MODULE_NAME]?.tree_direction === 'right' ? 'right' : 'down';
+    return getSetting('tree_direction') === 'right' ? 'right' : 'down';
 }
 
-/** AI 总结能力检测（N13：生成链路不可用时按钮隐藏并降级） */
+/**
+ * AI 总结能力检测（N13：生成链路不可用时按钮隐藏并降级）。
+ * 两层门：**用户开关**（`ai.enabled`）+ **宿主能力**（有没有生成链路）——两者都过才可用。
+ */
 function canSummarize() {
+    if (!getSetting('ai.enabled')) return false;
     const c = ctx();
     return typeof c.generateQuietPrompt === 'function' || typeof c.generateRaw === 'function';
 }
 
+/**
+ * 让模型概括一段对话。
+ *
+ * 摘要长度、总字数、每层字数**全部走设置**（`ai.max_summary_len` / `ai.max_chars` /
+ * `ai.chars_per_floor`）——此前的 20 / 4000 / 200 是写死在两个文件里的三个魔数，
+ * 用户既看不见也改不了（本轮「全部用户可调」的整治对象之一）。
+ */
 async function generateSummary(text) {
     const c = ctx();
-    const prompt = `请用不超过 20 个字概括下面这段对话的走向，只输出概括本身，不要引号、不要解释：\n\n${text}`;
+    const maxLen = Number(getSetting('ai.max_summary_len')) || 60;
+    const prompt = `请用不超过 ${maxLen} 个字概括下面这段对话的走向，只输出概括本身，不要引号、不要解释：\n\n${text}`;
     if (typeof c.generateQuietPrompt === 'function') return String(await c.generateQuietPrompt({ quietPrompt: prompt }) ?? '');
     if (typeof c.generateRaw === 'function') return String(await c.generateRaw({ prompt }) ?? '');
     throw new Error('宿主无可用生成链路');
 }
 
 function autoExportEnabled() {
-    return Boolean(extension_settings[MODULE_NAME]?.auto_export);
+    return Boolean(getSetting('auto_export'));
 }
 
-/** 当前存储模式（单点判定走 core/mode.js） */
+/** 当前存储模式（单点判定走 core/mode.js；值来自设置表） */
 function storageMode() {
-    return normMode(extension_settings[MODULE_NAME]?.storage_mode);
+    return normMode(getSetting('storage_mode'));
 }
 
 /** 是否走库的模式（pure / mirror 都装接缝） */
@@ -155,7 +293,8 @@ let storageState = null; // { tier, adapter, dispose, seam, trash, mirror }
 /** 回收站实例（纯库模式启用后可用；backend = adapter 本身即契约实现者） */
 function getTrash() {
     if (!storageState) return null;
-    if (!storageState.trash) storageState.trash = createTrash({ backend: storageState.adapter });
+    // 保留天数走设置（`trash.retention_days`）；策略层收毫秒，换算是单点
+    if (!storageState.trash) storageState.trash = createTrash({ backend: storageState.adapter, maxAgeMs: trashRetentionMs() });
     return storageState.trash;
 }
 
@@ -235,8 +374,13 @@ async function enablePureDb() {
         // 双写模式：成功写标脏 → 1.5s 防抖落标准聊天文件（§4；失败只 warn 不阻断）
         const seam = installSeam(adapter, {
             log: console.warn,
-            // 只在双写模式下标脏（切回纯库模式后即时停写，磁盘文件保留为快照）
-            onWrote: (evt) => { if (mirrorMode()) storageState?.mirror?.markDirty(evt); },
+            // 只在双写模式**且用户没关「改动即落文件」**时标脏（切回纯库模式后即时停写，
+            // 磁盘文件保留为快照）。
+            // 2026-09-27 修：此前这里只看模式、没看 `mirror_sync_on_write` ——
+            // 那个设置项**只被读进来、从没被消费**（一个「看着有、实际无效」的死设置）。
+            onWrote: (evt) => {
+                if (mirrorMode() && mirrorSyncOnWrite()) storageState?.mirror?.markDirty(evt);
+            },
         });
         const mirror = createMirror({
             adapter,
@@ -266,8 +410,280 @@ function disablePureDb() {
     storageState = null;
 }
 
-/* ---------------- 模型读写 ---------------- */
+/* ---------------- 结构图（B4）：B1 数据源 → B2 图引擎 → B3 布局 → ui/graph 渲染 ---------------- */
 
+/**
+ * 图面板 = 控制器（`ui/graph/controller.js`）+ 视图（`ui/graph/view.js`）的单例。
+ * **懒建**：用户不点「结构图」页签就不建视图、不建 worker（不替不用它的人付代价）。
+ */
+let graphPanel = null;    // { controller, view, host }
+/** 图上选中的节点（`ui/graph/view.js` 点击回调写入；`currentView` 读它渲染详情） */
+let graphSelectedNodeId = null;
+/** 上一次 refresh 的摘要（详情面板与自述都要用） */
+let graphSummary = null;
+/** 结构图的重算令牌（递增 → 弹窗那边重挂渲染） */
+let graphToken = 0;
+function bumpGraph() { graphToken += 1; }
+
+/**
+ * 给 B1 数据源准备依赖（`ChatSourceDeps`）。
+ *
+ * **两处易错、都写在这里说清**：
+ * ① 库模式下**必须显式注入 `nativeFetch`**（`seam.native`）——那时缺省的 `fetch` 就是接缝本身，
+ *    文件源会读到「本键所在分支的投影」而不是磁盘事实（`core/source/jsonl-source.js` 文件头）；
+ * ② 库模式下**没有适配器就不给源**（返回 `null`）——让上层报一条明确错误，
+ *    而不是拿一个读不出东西的源去建一张空图（「图是空的」和「库没就绪」是两件事）。
+ *
+ * @returns {object|null}
+ */
+function graphSourceDeps() {
+    const c = ctx();
+    const characters = Array.isArray(c.characters) ? c.characters : [];
+    const ch = characters[Number(c.characterId)] ?? characters.find((x) => String(x?.avatar) === String(c.characterId));
+    if (!ch && !c.groupId) return null;
+
+    const deps = {
+        mode: storageMode(),
+        character: () => ({
+            avatarUrl: ch?.avatar || String(c.characterId || ''),
+            characterId: c.characterId,
+            name: ch?.name,
+            groupId: c.groupId || null,
+        }),
+        headers: () => (typeof c.getRequestHeaders === 'function' ? c.getRequestHeaders() : {}),
+        log: console.warn,
+    };
+    if (pureDbMode()) {
+        if (!storageState?.adapter) return null;
+        deps.adapter = storageState.adapter;
+        // 显式原生通道（见上 ①）
+        deps.nativeFetch = (...args) => storageState.seam.native(...args);
+    }
+    return deps;
+}
+
+/** 环境事实（喂给 `ui/graph/degrade.js`；判定本身在那边，这里只负责「采」） */
+function graphEnvironment() {
+    const nav = globalThis.navigator || {};
+    let reducedMotion = false;
+    try {
+        reducedMotion = Boolean(globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
+    } catch { /* 老浏览器：当作没开 */ }
+    const host = graphPanel?.host;
+    const rect = host?.getBoundingClientRect?.();
+    return {
+        viewportWidth: Math.max(0, Math.round(rect?.width || 0)),
+        viewportHeight: Math.max(0, Math.round(rect?.height || 0)),
+        reducedMotion,
+        // `deviceMemory` 是 Chromium 专有；拿不到就不传（degrade.js 只在「有值且小」时才用）
+        deviceMemory: Number(nav.deviceMemory) || undefined,
+        // 「强制最小档」是**诊断开关**（设置里可开）：用来验证降级路径本身是好的
+        forcedMinimal: Boolean(getSetting('graph.force_minimal')),
+    };
+}
+
+/** 懒建图面板 */
+async function ensureGraphPanel(host) {
+    if (!graphPanel) {
+        const { createGraphView } = await import('./ui/graph/view.js');
+        const { createGraphController } = await import('./ui/graph/controller.js');
+        const view = createGraphView({
+            log: console.warn,
+            measure: () => {
+                const r = graphPanel?.host?.getBoundingClientRect?.();
+                return { width: Math.max(1, r?.width || 640), height: Math.max(1, r?.height || 320) };
+            },
+            onAction: (action, payload) => {
+                if (action === 'graph-node' && payload?.nodeId) {
+                    graphSelectedNodeId = payload.nodeId;
+                    bumpGraph();
+                    renderAll();
+                }
+            },
+        });
+        const controller = createGraphController({
+            getSourceDeps: graphSourceDeps,
+            environment: graphEnvironment,
+            // 阈值与布局参数**都现取设置**（`core/settings-registry.js` 是唯一事实源）：
+            // 用户改完立刻生效，不在别处再存一份
+            degradeOptions: () => ({
+                minimapNodeBudget: Number(getSetting('graph.minimap_budget')),
+                edgeLabelNodeBudget: Number(getSetting('graph.edge_label_budget')),
+                chunkNodeBudget: Number(getSetting('graph.chunk_budget')),
+                chunkSize: Number(getSetting('graph.chunk_size')),
+                smallViewportArea: DEGRADE_DEFAULTS.smallViewportArea,
+            }),
+            layoutOptions: () => ({ direction: getSetting('graph.direction') }),
+            log: console.warn,
+        });
+        graphPanel = { controller, view, host: null };
+    }
+    graphPanel.host = host || graphPanel.host;
+    return graphPanel;
+}
+
+/**
+ * 弹窗「结构图」页签的渲染入口（由 `ui/popup.js` 在 token 变化时调用）。
+ * **任何失败都写进状态行，不抛**（L0-11）——图坏掉不该让整个弹窗打不开。
+ */
+async function renderGraphInto(host, graphBody) {
+    const statusEl = graphBody?.querySelector?.('[data-role="graph-status"]');
+    const setStatus = (t) => { if (statusEl) statusEl.textContent = t || ''; };
+    if (!host) return;
+    try {
+        const panel = await ensureGraphPanel(host);
+        if (panel.view.el.parentElement !== host) panel.view.mount(host);
+        setStatus('正在读取数据并建图…');
+        const summary = await panel.controller.refresh({ view: panel.view });
+        graphSummary = summary;
+        panel.view.fit();
+
+        const bits = [
+            `${summary.nodeCount} 节点 / ${summary.edgeCount} 边 / ${summary.sessionCount} 条会话`,
+            summary.layout ? `布局 ${summary.layout.via === 'worker' ? 'Worker' : '主线程'}·${summary.layout.kind}` : '',
+            summary.changed ? '已重建' : '复用缓存',
+            `${summary.timing.graphMs}ms 建图 + ${summary.timing.layoutMs}ms 布局`,
+        ].filter(Boolean);
+        setStatus(bits.join(' · '));
+
+        // **降级原因必须让用户看得见**（B3 的教训）：有降级就在状态行下方补一行
+        const reasons = summary.degrade?.reasons || [];
+        if (reasons.length) {
+            const line = document.createElement('div');
+            line.className = 'chatfilesys-note chatfilesys-graph-degrade';
+            line.textContent = `已降级（${summary.degrade.tier}）：${reasons.join('；')}`;
+            statusEl?.after?.(line);
+        }
+        if (summary.layoutFailedReason) {
+            const line = document.createElement('div');
+            line.className = 'chatfilesys-note chatfilesys-graph-degrade';
+            line.textContent = `布局不可用：${summary.layoutFailedReason}`;
+            statusEl?.after?.(line);
+        }
+    } catch (e) {
+        setStatus(`结构图不可用：${e?.message || e}`);
+        console.warn('[chatfilesys] 结构图渲染失败:', e);
+    }
+}
+
+/** 图上选中节点的详情（`ui/popup.js#graphSelectionHtml` 消费；只给结构，不给正文） */
+function graphSelection() {
+    const id = graphSelectedNodeId;
+    if (!id || !graphSummary) return null;
+    const graph = graphPanel?.view?.state?.graph;
+    if (!graph) return null;
+    const node = graph.nodes?.find((n) => n.id === id);
+    if (!node) return null;
+    // 邻接一律走 B2 查询面（不在这里自己扫 edges——父/子/多父口径只有一处）
+    const brief = (nid) => {
+        const n = graph.nodes?.find((x) => x.id === nid);
+        return n ? { id: n.id, floor: n.floor, isUser: Boolean(n.isUser) } : null;
+    };
+    const parents = parentsOf(graph, id).map(brief).filter(Boolean);
+    const children = childrenOf(graph, id).map(brief).filter(Boolean);
+    return {
+        nodeId: id,
+        floor: node.floor,
+        isUser: Boolean(node.isUser),
+        sessionCount: node.sessions?.length || 0,
+        parents,
+        children,
+        isFork: children.length >= 2,
+    };
+}
+
+/**
+ * 切到某个图上节点：把视口移过去（`graph-goto` 动作用）。
+ * 只移动视口，**不碰聊天内容**——图是结构视图，点节点不该有副作用。
+ */
+function graphGotoNode(nodeId) {
+    const panel = graphPanel;
+    const pos = panel?.view?.state?.positions?.[nodeId];
+    if (!pos) return;
+    graphSelectedNodeId = nodeId;
+    panel.view.setActive(nodeId);
+    panel.view.centerOn({ x: pos.x, y: pos.y });
+    bumpGraph();
+    renderAll();
+}
+
+/**
+ * 「重算」：丢掉两层缓存（图 + 坐标）后重跑一次（用户手动要求忽略缓存时用）。
+ * 与自动刷新走的**同一段编排**，不另写一条路径——否则两条路的差异会在真机上显形。
+ */
+async function graphReloadFlow() {
+    if (!graphPanel) { bumpGraph(); renderAll(); return; }
+    try {
+        const summary = await graphPanel.controller.refresh({ view: graphPanel.view, force: true });
+        graphSummary = summary;
+        graphPanel.view.fit();
+    } catch (e) {
+        console.warn('[chatfilesys] 结构图重算失败:', e);
+    }
+    bumpGraph();
+    renderAll();
+}
+
+/**
+ * 让结构图缓存失效（宿主事件到达时调）。
+ *
+ * 不在这里立刻重算——重算是**弹窗里**的事（用户没开着图就不该为它读盘）。
+ * 只递增 token：下次弹窗刷新时会带着新 token 重挂渲染。
+ */
+function invalidateGraph() {
+    graphPanel?.controller?.invalidate?.();
+    graphSelectedNodeId = null;
+    graphSummary = null;
+    bumpGraph();
+}
+
+/**
+ * 「合并分支」：把两条分支逐层取并集，落成**第三条新分支**（不改原来两条）。
+ *
+ * 分配（谁算什么）：
+ * - **算法** = `core/branch-merge.js`（纯函数，有单测）
+ * - **界面** = `ui/merge.js`（官方 Popup，冲突逐层可选）
+ * - **落盘** = 这里：`createBranchWithPath` + `saveMetadata`（走既有写路径，不自造）
+ *
+ * 合并完**不自动切过去**——切分支会改动正在看的聊天内容，那是用户自己的决定；
+ * 这里只建好并提示「在分支选择器里能看到它」。
+ */
+async function mergeBranchesFlow(aId) {
+    const model = getModel();
+    if (!model || (model.branches?.length || 0) < 2) {
+        toastr.warning('至少要有两条分支才能合并。', '聊天文件系统');
+        return;
+    }
+    const chat = ctx().chat || [];
+    // 字数取值：当前键所在分支引用的组在 body 里，其余折在 model.groups（与 assembleBranchLines 同口径）
+    const activeGids = new Set(Object.values(getActiveBranch(model, currentBranchId)?.path || {}));
+    const charsOf = (floor, gid) => {
+        if (activeGids.has(gid)) return String(chat?.[floor - 1]?.mes ?? '').length;
+        const g = model.groups?.[gid];
+        return String(g?.variants?.[g?.active ?? 0]?.mes ?? '').length;
+    };
+
+    openMergePopup({
+        model,
+        aId: aId || currentBranchId || model.active_branch,
+        charsOf,
+        // 「看 A/B」= 用既有的**版本展示层**打开那一层（不在这里新造阅读界面）
+        onPeek: async ({ floor }) => { await openVersionsForFloor(floor); },
+        onApply: async ({ plan, name }) => {
+            const b = createBranchWithPath(model, { name, path: plan.path, activate: false });
+            setModel(model);
+            await ctx().saveMetadata();
+            invalidateGraph();
+            bumpChatList();
+            renderAll();
+            if (getSetting('ui.toast')) {
+                toastr.success(`已合并为「${b.name}」：${describeMerge(plan)}`, '聊天文件系统');
+            }
+        },
+    });
+}
+
+/* ---------------- 模型读写 ---------------- */
 function getModel() {
     return ctx().chatMetadata?.extensions?.chatfilesys || null;
 }
@@ -354,6 +770,14 @@ function currentView() {
         listChats: () => listChatsForCharacter(),
         chatsNote: storageState ? '' : '库模式未启用——下面只列磁盘上的聊天文件。',
         chatsToken: chatListToken,
+        // 结构图（B4）：token 变才重挂渲染；详情走 graphSelection（只给结构，不给正文）
+        graphToken: graphToken,
+        renderGraph: renderGraphInto,
+        graphSelection: graphSelection(),
+        graphEnabled: Boolean(getSetting('graph.enabled')),
+        // 设置页签**由表生成**（`core/settings-registry.js` 是唯一事实源）
+        settingsGroups: grouped(),
+        settingsValues: Object.fromEntries(SETTINGS.map((s) => [s.key, getSetting(s.key)])),
     };
 }
 
@@ -495,6 +919,7 @@ async function switchBranch(branchId) {
 
     // 该键的绑定已随这次切换跟到新分支（接缝 followKeyBinding）→ 重取，UI 与读路径保持一致
     await syncCurrentBranchId();
+    invalidateGraph();              // 切分支 ⇒ 图上的「当前」与可见内容都变了
     await renderChat();
     renderAll();
     maybeAutoExport();
@@ -673,7 +1098,11 @@ async function deleteBranchFlow(branchId) {
     const model = getModel();
     const b = getBranch(model, branchId);
     if (!b) return;
-    if (!(await popupConfirm(`删除分支「${b.name}」？其私有组（仅它引用的楼层）将一并回收，共享楼层不受影响。`))) return;
+    // 二次确认走设置（`ui.confirm_delete_branch`，默认开）：删分支会连带回收它独占的楼层，
+    // 是**破坏性且不可逆**的（回收站只覆盖「聊天源文件」，不覆盖分支楼层）——默认必须问一次。
+    if (getSetting('ui.confirm_delete_branch')) {
+        if (!(await popupConfirm(`删除分支「${b.name}」？其私有组（仅它引用的楼层）将一并回收，共享楼层不受影响。`))) return;
+    }
     try {
         deleteBranch(model, branchId);
         setModel(model);
@@ -682,8 +1111,9 @@ async function deleteBranchFlow(branchId) {
         const un = await unbindKeysOfBranch(branchId);
         if (un.ok) console.log(`[${MODULE_NAME}] 分支 ${branchId} 的绑定键已清掉`);
         else if (un.reason !== 'no-binding') console.warn(`[${MODULE_NAME}] 分支 ${branchId} 解绑失败（可能留下悬挂绑定）:`, un.reason);
+        invalidateGraph();
         renderAll();
-        toastr.success(`分支「${b.name}」已删除`);
+        if (getSetting('ui.toast')) toastr.success(`分支「${b.name}」已删除`);
     } catch (e) {
         toastr.error(`删除失败: ${e.message}`);
     }
@@ -1281,6 +1711,7 @@ async function onChatChanged() {
     captureBodyBaseline();          // 聊天刚整载：模型与 body 同源，是「一致」的时刻
     await syncCurrentBranchId();    // W3：本键在库内绑到哪条分支（按绑定键解析）
     syncAppendedFloors();
+    invalidateGraph();              // 换了聊天 ⇒ 图必须重算（图缓存是「按内容」的，跨聊天不通用）
     bumpChatList();
     renderAll();
     // T8：打开一个尚未入库的聊天 → 提醒装库流程
@@ -1846,9 +2277,9 @@ async function renderChatTreeInto(container, fileName) {
 /** 切换分支树展开方向（N13；持久化 + 重绘） */
 function toggleTreeDirection() {
     const next = treeDirection() === 'right' ? 'down' : 'right';
-    extension_settings[MODULE_NAME].tree_direction = next;
+    setSetting('tree_direction', next);
     renderAll();
-    toastr.info(`结构树：${next === 'right' ? '向右展开' : '向下展开'}`, '聊天文件系统');
+    if (getSetting('ui.toast')) toastr.info(`结构树：${next === 'right' ? '向右展开' : '向下展开'}`, '聊天文件系统');
 }
 
 /**
@@ -1862,10 +2293,15 @@ async function summarizeBranch(branchId) {
     if (!canSummarize()) { toastr.warning('当前宿主没有可用的生成链路，AI 总结不可用。', '聊天文件系统'); return; }
     const lines = assembleBranchLines(model, ctx().chat || [], b, currentBranchId);
     if (!lines.length) { toastr.warning('这条分支没有可总结的内容。', '聊天文件系统'); return; }
-    const text = lines.map((l) => `${l.name || (l.is_user ? '用户' : 'AI')}: ${String(l.mes || '').slice(0, 200)}`).join('\n').slice(0, 4000);
+    // 三个数字全部来自设置（`ai.chars_per_floor` / `ai.max_chars` / `ai.max_summary_len`）
+    const perFloor = Number(getSetting('ai.chars_per_floor')) || 200;
+    const maxChars = Number(getSetting('ai.max_chars')) || 4000;
+    const maxSummary = Number(getSetting('ai.max_summary_len')) || 60;
+    const text = lines.map((l) => `${l.name || (l.is_user ? '用户' : 'AI')}: ${String(l.mes || '').slice(0, perFloor)}`)
+        .join('\n').slice(0, maxChars);
     toastr.info('正在生成摘要…', '聊天文件系统', { timeOut: 1500 });
     try {
-        const summary = (await generateSummary(text)).trim().replace(/^[「"']|[」"']$/g, '').slice(0, 60);
+        const summary = (await generateSummary(text)).trim().replace(/^[「"']|[」"']$/g, '').slice(0, maxSummary);
         if (!summary) { toastr.warning('生成结果为空，未写入摘要。', '聊天文件系统'); return; }
         b.summary = summary;
         setModel(model);
@@ -1932,6 +2368,33 @@ async function handleAction(action, el) {
         case 'sync-mirror': return await syncMirrorNow();
         case 'tree-direction': return toggleTreeDirection();
         case 'ai-summary': return await summarizeBranch(branchId);
+        case 'merge-branches': return await mergeBranchesFlow(branchId);
+        /* 结构图（B4）：重算 / 适应窗口 / 缩放 / 跳到节点。全部**只动视图**，不写任何数据 */
+        case 'graph-reload': {
+            await graphReloadFlow();
+            return;
+        }
+        case 'graph-fit': {
+            graphPanel?.view?.fit();
+            return;
+        }
+        case 'graph-zoom-in': {
+            graphPanel?.view?.zoom(1.2);
+            return;
+        }
+        case 'graph-zoom-out': {
+            graphPanel?.view?.zoom(1 / 1.2);
+            return;
+        }
+        case 'graph-goto': return graphGotoNode(el.dataset.node);
+        /* 设置中枢：恢复默认 / 导出清单 / 一键开图 */
+        case 'settings-reset-all': return await resetAllSettingsFlow();
+        case 'settings-export': return await exportSettingsFlow();
+        case 'settings-enable-graph': {
+            setSetting('graph.enabled', true);
+            bumpGraph();
+            return;
+        }
         case 'trash-restore': return await restoreTrashEntry(el.dataset.trash);
         case 'trash-purge': return await purgeTrashEntry(el.dataset.trash);
         case 'chat-list-reload': {
@@ -1969,13 +2432,27 @@ function bindPopupEvents(rootEl) {
     rootEl.addEventListener('change', async (evt) => {
         const el = evt.target;
         if (el?.dataset?.role === 'auto-export') {
-            extension_settings[MODULE_NAME].auto_export = Boolean(el.checked);
-            toastr.info(`保存后自动导出已${el.checked ? '开启' : '关闭'}`, '聊天文件系统');
+            const on = Boolean(el.checked);
+            setSetting('auto_export', on);
+            if (getSetting('ui.toast')) toastr.info(`保存后自动导出已${on ? '开启' : '关闭'}`, '聊天文件系统');
             return;
         }
         if (el?.dataset?.role === 'storage-mode') {
             const ok = await setStorageMode(String(el.value || 'off'));
             if (!ok) el.value = storageMode(); // 切换被安全动作中止 → 控件回位
+        }
+        // 设置表生成的控件（**唯一入口** `setSetting`；值非法会被规范化后回填到控件上，
+        // 用户能看到「我输的东西被改了」而不是静默接受）
+        if (el?.dataset?.role === 'setting' && el.dataset.key) {
+            const type = el.dataset.type;
+            const raw = type === 'boolean' ? Boolean(el.checked) : el.value;
+            const before = getSetting(el.dataset.key);
+            const after = setSetting(el.dataset.key, raw);
+            if (String(after) !== String(raw)) el.value = after;   // 被夹住/回落 → 控件跟上真值
+            if (before !== after) {
+                toastr.info(`${BY_KEY.get(el.dataset.key)?.label || el.dataset.key} → ${
+                    type === 'boolean' ? (after ? '开' : '关') : String(after)}`, '聊天文件系统', { timeOut: 1500 });
+            }
         }
     });
 }
@@ -2001,7 +2478,8 @@ async function setStorageMode(next) {
             return false;
         }
     }
-    extension_settings[MODULE_NAME].storage_mode = target;
+    // 重活（安全动作 + 装/卸）上面已经做完 → 这里只落值，不再触发 apply（见 setSetting 的说明）
+    setSetting('storage_mode', target, { runApply: false });
     if (target === 'off') {
         if (cur === 'mirror') toastr.info('磁盘上的聊天文件保留为快照，不再同步。', '聊天文件系统');
         disablePureDb();

@@ -512,3 +512,291 @@
 .chatfilesys-import-prompt .chatfilesys-ip-checks .checkbox_label input[type="checkbox"] {
     margin-right: 5px;
 }
+
+/* ---------- 结构图（B4：消息级图视图） ----------
+   ⚠ 与「结构树」（.chatfilesys-tree-*）不是一回事：
+   结构树是**分支级**（节点 = 一条分支），结构图是**消息级**（节点 = 一条消息）。
+   两者都在界面上，别把它们混成一个概念。 */
+
+.chatfilesys-graph {
+    position: relative;
+}
+
+.chatfilesys-popup .chatfilesys-graph-stage {
+    height: 320px;
+    overflow: hidden;
+    border: 1px solid var(--SmartThemeBorderColor, #30363d);
+    border-radius: 8px;
+    background: rgba(0, 0, 0, .22);
+    cursor: grab;
+    position: relative;
+}
+
+.chatfilesys-popup .chatfilesys-graph-stage.panning {
+    cursor: grabbing;
+}
+
+.chatfilesys-graph-svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.chatfilesys-graph-edges,
+.chatfilesys-graph-nodes {
+    transform-origin: 0 0;
+}
+
+.chatfilesys-graph .chatfilesys-gedge {
+    fill: none;
+    stroke: var(--SmartThemeBorderColor, #4a5568);
+    stroke-width: 1.2;
+    opacity: .7;
+}
+
+.chatfilesys-graph .chatfilesys-gnode {
+    cursor: pointer;
+}
+
+.chatfilesys-graph .chatfilesys-gnode:hover rect {
+    filter: brightness(1.35);
+}
+
+.chatfilesys-graph .chatfilesys-gnode-id {
+    fill: #e6edf3;
+    font-size: 11px;
+    font-weight: 600;
+    dominant-baseline: middle;
+}
+
+.chatfilesys-graph .chatfilesys-gnode-meta {
+    fill: rgba(230, 237, 243, .72);
+    font-size: 10px;
+    dominant-baseline: middle;
+}
+
+/* HUD：节点/边计数 + 布局走的是哪条路（TL 的 worker 全没生效却没人知道，
+   我们把「走哪条路」直接印在界面上——看得见才守得住） */
+.chatfilesys-graph-hud {
+    position: absolute;
+    left: 8px;
+    top: 8px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, .55);
+    border: 1px solid var(--SmartThemeBorderColor, #30363d);
+    font-size: 10.5px;
+    opacity: .9;
+    pointer-events: none;
+    z-index: 2;
+}
+
+.chatfilesys-graph-note {
+    font-size: 11px;
+    opacity: .6;
+    margin-top: 4px;
+}
+
+.chatfilesys-graph-minimap {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    border: 1px solid var(--SmartThemeBorderColor, #30363d);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, .5);
+    z-index: 2;
+    cursor: crosshair;
+}
+
+.chatfilesys-graph-minimap .chatfilesys-mini-box {
+    fill: rgba(88, 166, 255, .14);
+    stroke: #58a6ff;
+    stroke-width: 1;
+}
+
+/* 结构图的节点详情（只显结构；邻接节点是可点的小块） */
+.chatfilesys-popup .chatfilesys-gsel-head {
+    margin-bottom: 6px;
+}
+
+.chatfilesys-popup .chatfilesys-gsel-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 3px 0;
+    font-size: 11.5px;
+}
+
+.chatfilesys-popup .chatfilesys-gsel-row .k {
+    flex: 0 0 56px;
+    opacity: .6;
+}
+
+.chatfilesys-popup .chatfilesys-gsel-row .v {
+    flex: 1 1 auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.chatfilesys-popup .chatfilesys-gchip {
+    padding: 1px 6px;
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+/* ---------- 设置（控件由 core/settings-registry.js 生成） ---------- */
+
+.chatfilesys-popup .chatfilesys-settings-groups {
+    max-height: 46vh;
+    overflow-y: auto;
+    padding-right: 4px;
+    margin-bottom: 8px;
+}
+
+.chatfilesys-popup .chatfilesys-set-group h5 {
+    margin: 10px 0 4px;
+    font-size: 11.5px;
+    opacity: .55;
+    font-weight: 600;
+    letter-spacing: .04em;
+}
+
+.chatfilesys-popup .chatfilesys-set-row {
+    display: grid;
+    grid-template-columns: minmax(120px, 34%) minmax(90px, 1fr) minmax(0, 1.25fr);
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    font-size: 11.5px;
+    border-bottom: 1px solid rgba(255, 255, 255, .04);
+}
+
+.chatfilesys-popup .chatfilesys-set-label {
+    opacity: .9;
+}
+
+.chatfilesys-popup .chatfilesys-set-ctl {
+    display: flex;
+    align-items: center;
+}
+
+.chatfilesys-popup .chatfilesys-set-ctl .text_pole {
+    width: 100%;
+    padding: 2px 6px;
+    font-size: 11.5px;
+}
+
+.chatfilesys-popup .chatfilesys-set-num {
+    max-width: 120px;
+}
+
+/* 「为什么」用低对比小字——它在界面上是**解释**，不是主信息，但不许没有 */
+.chatfilesys-popup .chatfilesys-set-why {
+    opacity: .5;
+    font-size: 10.5px;
+    line-height: 1.35;
+}
+
+.chatfilesys-popup .chatfilesys-export-json {
+    width: 100%;
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 11px;
+}
+
+/* ---------- 分支合并弹窗（ui/merge.js） ---------- */
+
+.chatfilesys-merge-pick {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 8px;
+    align-items: center;
+}
+
+.chatfilesys-merge-pick label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+}
+
+.chatfilesys-merge-pick select,
+.chatfilesys-merge-pick input {
+    min-width: 150px;
+    padding: 2px 6px;
+    font-size: 12px;
+}
+
+.chatfilesys-merge-summary {
+    font-size: 12.5px;
+    margin: 6px 0;
+    opacity: .9;
+}
+
+/* 逐层来源：一条色带，一眼看出「哪几层来自哪边」 */
+.chatfilesys-merge-steps {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    margin: 6px 0;
+}
+
+.chatfilesys-merge-step {
+    font-size: 10.5px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--SmartThemeBorderColor, #30363d);
+    opacity: .9;
+}
+
+.chatfilesys-merge-step.chatfilesys-side-shared {
+    opacity: .5;
+}
+
+.chatfilesys-merge-step.chatfilesys-side-a {
+    border-color: #58a6ff;
+}
+
+.chatfilesys-merge-step.chatfilesys-side-b {
+    border-color: #d29922;
+}
+
+.chatfilesys-merge-conflicts h5 {
+    margin: 10px 0 4px;
+    font-size: 11.5px;
+    opacity: .6;
+}
+
+.chatfilesys-merge-conflict {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 6px;
+    border-left: 2px solid var(--SmartThemeBorderColor, #30363d);
+    margin-bottom: 3px;
+    font-size: 11.5px;
+}
+
+.chatfilesys-merge-conflict.picked-a {
+    border-left-color: #58a6ff;
+}
+
+.chatfilesys-merge-conflict.picked-b {
+    border-left-color: #d29922;
+}
+
+.chatfilesys-merge-conflict .side {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.chatfilesys-merge-conflict label {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    cursor: pointer;
+}

@@ -6,12 +6,17 @@
  * 降级为内置轻量 Tab（能力检测+优雅降级）。
  * Tab 内容体带 data-tabbody 标记，刷新时只重填内容、不重建外壳（保留 tab 选择态）。
  *
- * 四个页签（旧「分支树 / 楼层 / 批量操作 / 导出」四页签已废除——不留兼容包袱）：
- *   当前聊天 / 角色卡的聊天 / 设置 / 回收站
+ * 五个页签（旧「分支树 / 楼层 / 批量操作 / 导出」四页签已废除——不留兼容包袱）：
+ *   当前聊天 / 结构图 / 角色卡的聊天 / 设置 / 回收站
+ *
+ * **「结构树」与「结构图」是两种粒度，不要混**：
+ *   · 结构树 = 分支级（节点 = 一条分支）——「我有哪几条分支」
+ *   · 结构图 = 消息级（节点 = 一条消息）——「这几条分支在哪里分、在哪里合」
  *
  * 铁律：
  *   · **绝不逐层列举楼层**——弹窗内任何位置都不得逐层列出楼层（旧「楼层」页签不得重新引入）
- *   · **结构树只显结构**（节点 = 序号 / 分支名 + 层数），不含任何消息内容
+ *   · **结构视图只显结构**（节点 = 序号 / 分支名 + 层数 / 谁说的），不含任何消息内容
+ *     （结构图的节点只写 `#N · 用户/角色`，正文要用户主动点开才走 ui/versions.js 展示层）
  */
 
 import { esc, nodeLabel, getActiveBranch, branchMaxFloor, renderInactiveContent } from './common.js';
@@ -19,6 +24,7 @@ import { renderTree } from './tree.js';
 
 const TABS = [
     { key: 'chat', label: '当前聊天' },
+    { key: 'graph', label: '结构图' },   // B4：消息级图视图（与「结构树」不同粒度，见 ui/graph/view.js 文件头）
     { key: 'character', label: '角色卡的聊天' },
     { key: 'settings', label: '设置' },
     { key: 'trash', label: '回收站' }, // N15：列出 / 还原 / 立刻清理
@@ -167,6 +173,7 @@ export function createPopupContent(ctx, view) {
                         <button class="menu_button" data-action="rename" data-branch="" title="改分支名（磁盘上真有该文件时同步改宿主文件名）"><i class="fa-solid fa-pencil"></i> 改名</button>
                         <button class="menu_button" data-action="delete-branch" data-branch="" title="删除该分支（其私有组一并回收）"><i class="fa-solid fa-trash"></i> 删除分支</button>
                         <button class="menu_button" data-action="ai-summary" data-branch="" title="用 AI 总结这条分支（手动触发）"><i class="fa-solid fa-wand-magic-sparkles"></i> AI 总结</button>
+                        <button class="menu_button" data-action="merge-branches" data-branch="" title="把这条分支与另一条合成一条新分支（原分支不动）"><i class="fa-solid fa-code-merge"></i> 合并…</button>
                     </div>
                 </div>
                 <div class="chatfilesys-section">
@@ -204,6 +211,8 @@ export function createPopupContent(ctx, view) {
 
     function ensureSettingsTab(body) {
         if (!body || body.querySelector('.chatfilesys-tab-inner')) return;
+        // 静态骨架建一次；**控件由设置表生成**（见 renderSettingsInto），
+        // 于是「加一项设置」只改 `core/settings-registry.js` 一处，不动这里
         body.innerHTML = `
             <div class="chatfilesys-tab-inner">
                 <div class="chatfilesys-storage-status" data-role="storage-status"></div>
@@ -214,11 +223,104 @@ export function createPopupContent(ctx, view) {
                     </label>
                     <span class="chatfilesys-entry-hint">切到库模式后，用「当前聊天 → 转库」把旧聊天录进库</span>
                 </div>
-                <div class="chatfilesys-export-row">
-                    <label><input type="checkbox" data-role="auto-export"> 保存后自动导出</label>
+                <div class="chatfilesys-settings-groups" data-role="settings-groups"></div>
+                <div class="chatfilesys-btnrow">
+                    <button class="menu_button" data-action="settings-reset-all"
+                            title="把下面全部设置恢复为出厂默认">恢复全部默认</button>
+                    <button class="menu_button" data-action="settings-export"
+                            title="把全部可调项（含类型、默认值、取值范围、为什么）导成 JSON 复制走——排障与自动化脚本用">导出设置清单 JSON</button>
                 </div>
                 <div class="chatfilesys-note">
                     界面入口：输入框上方工具图标排里的插件按钮，或快捷键 Alt+B。
+                </div>
+            </div>`;
+    }
+
+    /**
+     * 由设置表生成控件（**每次 refresh 重填**：值是活的，控件要为最新值）。
+     * @param {HTMLElement} host
+     * @param {object} v currentView 的产物
+     */
+    function renderSettingsInto(host, v) {
+        if (!host) return;
+        const groups = v.settingsGroups || [];
+        if (!groups.length) {
+            host.innerHTML = '<div class="chatfilesys-note">设置表未加载。</div>';
+            return;
+        }
+        const values = v.settingsValues || {};
+        // 保留用户正在编辑的焦点：重填会让输入框失焦（数字框尤其明显）。
+        // 记下 key+光标位置，重填后恢复——不这么做，调一个数字就要重新点一次。
+        const ae = document.activeElement;
+        const focusKey = ae?.dataset?.key || null;
+        const selStart = typeof ae?.selectionStart === 'number' ? ae.selectionStart : null;
+
+        host.innerHTML = groups.map((g) => `
+            <div class="chatfilesys-set-group">
+                <h5>${esc(g.name)}</h5>
+                ${g.items.map((it) => itemHtml(it, values[it.key])).join('')}
+            </div>`).join('');
+
+        if (focusKey) {
+            const back = host.querySelector(`[data-key="${focusKey}"]`);
+            if (back) {
+                back.focus();
+                if (selStart !== null && typeof back.setSelectionRange === 'function') {
+                    try { back.setSelectionRange(selStart, selStart); } catch { /* 非文本控件忽略 */ }
+                }
+            }
+        }
+    }
+
+    /** 一项设置 → 一行（标签 + 控件 + 「为什么」） */
+    function itemHtml(it, value) {
+        const key = esc(it.key);
+        const title = esc(it.describe || '');
+        let control = '';
+        if (it.type === 'boolean') {
+            control = `<input type="checkbox" data-role="setting" data-key="${key}"
+                data-type="boolean" ${value ? 'checked' : ''}>`;
+        } else if (it.type === 'enum') {
+            control = `<select class="text_pole" data-role="setting" data-key="${key}" data-type="enum">
+                ${(it.values || []).map((v) => `<option value="${esc(v)}" ${v === value ? 'selected' : ''}>${
+                    esc((it.valueLabels || {})[v] || v)}</option>`).join('')}</select>`;
+        } else if (it.type === 'number') {
+            control = `<input type="number" class="text_pole chatfilesys-set-num" data-role="setting"
+                data-key="${key}" data-type="number" value="${esc(String(value))}"
+                min="${esc(String(it.min))}" max="${esc(String(it.max))}" step="${esc(String(it.step))}"
+                title="范围 ${esc(String(it.min))} – ${esc(String(it.max))}">`;
+        } else {
+            control = `<input type="text" class="text_pole" data-role="setting" data-key="${key}"
+                data-type="text" value="${esc(String(value ?? ''))}">`;
+        }
+        return `
+            <div class="chatfilesys-set-row">
+                <label class="chatfilesys-set-label" title="${title}">${esc(it.label)}</label>
+                <span class="chatfilesys-set-ctl">${control}</span>
+                <span class="chatfilesys-set-why" title="${title}">${esc(it.why || it.describe || '')}</span>
+            </div>`;
+    }
+
+    function ensureGraphTab(body) {
+        if (!body || body.querySelector('.chatfilesys-tab-inner')) return;
+        body.innerHTML = `
+            <div class="chatfilesys-tab-inner">
+                <div class="chatfilesys-section">
+                    <h4>结构图 <span class="chatfilesys-badge chatfilesys-badge-dim">消息级</span></h4>
+                    <div class="chatfilesys-btnrow">
+                        <button class="menu_button" data-action="graph-reload" title="重新读数据源并重建图（忽略缓存）"><i class="fa-solid fa-rotate"></i> 重算</button>
+                        <button class="menu_button" data-action="graph-fit" title="把整张图装进视口"><i class="fa-solid fa-expand"></i> 适应窗口</button>
+                        <button class="menu_button" data-action="graph-zoom-in" title="放大"><i class="fa-solid fa-magnifying-glass-plus"></i></button>
+                        <button class="menu_button" data-action="graph-zoom-out" title="缩小"><i class="fa-solid fa-magnifying-glass-minus"></i></button>
+                    </div>
+                    <div class="chatfilesys-graph-host" data-role="graph-host"></div>
+                    <div class="chatfilesys-note" data-role="graph-status"></div>
+                </div>
+                <div class="chatfilesys-section">
+                    <h4>节点</h4>
+                    <div class="chatfilesys-graph-selection" data-role="graph-selection">
+                        <div class="chatfilesys-note">点图上的节点看它的来龙去脉。</div>
+                    </div>
                 </div>
             </div>`;
     }
@@ -233,7 +335,8 @@ export function createPopupContent(ctx, view) {
             model, chat, familyName, warning = '', isGroupChat = false, autoExport = false,
             treeDirection = 'down', canSummarize = false, listTrash = null, trashNote = '',
             listChats = null, chatsNote = '', storage = {}, pureLike = false, chatsToken = 0,
-            branchId = null,
+            branchId = null, graphToken = 0, renderGraph = null, graphSelection = null,
+            graphEnabled = true, settingsGroups = [], settingsValues = {},
         } = v;
         // W3：本聊天键绑定的分支优先，无绑定才回落家族活跃分支（绑定键上的 body 是它自己的投影）
         const active = model ? getActiveBranch(model, branchId) : null;
@@ -262,6 +365,7 @@ export function createPopupContent(ctx, view) {
             const body = bodyOf(t.key);
             if (!body) continue;
             if (t.key === 'chat') ensureChatTab(body);
+            else if (t.key === 'graph') ensureGraphTab(body);
             else if (t.key === 'character') ensureCharacterTab(body);
             else if (t.key === 'settings') ensureSettingsTab(body);
             else ensureTrashTab(body);
@@ -290,6 +394,14 @@ export function createPopupContent(ctx, view) {
             if (syncBtn) syncBtn.disabled = !storage.mirror;
             const sumBtn = chatBody.querySelector('[data-action="ai-summary"]');
             if (sumBtn) sumBtn.hidden = !canSummarize;
+            // 只有一条分支时「合并」无从下手 → 置灰（不是藏起来：藏了用户不知道有这个功能）
+            const mergeBtn = chatBody.querySelector('[data-action="merge-branches"]');
+            if (mergeBtn) {
+                const can = model.branches.length >= 2;
+                mergeBtn.disabled = !can;
+                mergeBtn.title = can ? '把这条分支与另一条合成一条新分支（原分支不动）'
+                    : '只有一条分支，没有可合并的对象';
+            }
         }
 
         /* ---------- 角色卡的聊天：列表（token 变了才重拉；「刷新列表」与导入后由 index.js 递增） ---------- */
@@ -303,7 +415,7 @@ export function createPopupContent(ctx, view) {
             }
         }
 
-        /* ---------- 设置 ---------- */
+        /* ---------- 设置（控件由设置表生成；值每次都重填） ---------- */
         const setBody = bodyOf('settings');
         if (setBody) {
             const status = setBody.querySelector('[data-role="storage-status"]');
@@ -316,8 +428,35 @@ export function createPopupContent(ctx, view) {
                 }
                 if (sel.value !== storage.mode) sel.value = storage.mode;
             }
-            const cb = setBody.querySelector('[data-role="auto-export"]');
-            if (cb) cb.checked = Boolean(autoExport);
+            renderSettingsInto(setBody.querySelector('[data-role="settings-groups"]'), v);
+        }
+
+        /* ---------- 结构图（B4）：宿主元素在这里，数据编排在 index.js ----------
+           用 token 控制：token 没变就不重算（图数据没动时，重算纯属浪费——控制器那层虽有缓存，
+           但每次 refresh 都可能带一次 `measure()` 与 DOM 写入）。 */
+        const graphBody = bodyOf('graph');
+        if (graphBody) {
+            const gtoken = String(graphToken ?? 0);
+            const host = graphBody.querySelector('[data-role="graph-host"]');
+            if (graphEnabled === false) {
+                // 关掉了就说清楚「为什么这儿是空的」并给一键开启——空着比说清楚更糟
+                const sel = graphBody.querySelector('[data-role="graph-selection"]');
+                if (host) host.innerHTML = '';
+                if (sel) {
+                    sel.innerHTML = `<div class="chatfilesys-note">结构图已在设置里关闭（它会给长聊天带来额外开销）。</div>
+                        <div class="chatfilesys-btnrow"><button class="menu_button" data-action="settings-enable-graph">
+                        <i class="fa-solid fa-toggle-on"></i> 开启结构图</button></div>`;
+                }
+            } else if (graphBody.dataset.graphToken !== gtoken) {
+                graphBody.dataset.graphToken = gtoken;
+                if (host && typeof renderGraph === 'function') renderGraph(host, graphBody);
+                const sel = graphBody.querySelector('[data-role="graph-selection"]');
+                if (sel) sel.innerHTML = graphSelectionHtml(graphSelection);
+            } else {
+                // 图没变，但选中项可能变了（点节点会 bumpGraph，所以一般也走上面那支）
+                const sel = graphBody.querySelector('[data-role="graph-selection"]');
+                if (sel) sel.innerHTML = graphSelectionHtml(graphSelection);
+            }
         }
 
         /* ---------- 回收站（每次打开拉一次；档位不支持时明说） ---------- */
@@ -344,7 +483,7 @@ export function createPopupContent(ctx, view) {
      * 所以「按钮看起来能点、点下去却报错」不会出现。
      */
     function syncBranchRefs(scope, branchId, model = null) {
-        scope.querySelectorAll('[data-action="rename"], [data-action="delete-branch"], [data-action="ai-summary"], [data-action="set-main-branch"]')
+        scope.querySelectorAll('[data-action="rename"], [data-action="delete-branch"], [data-action="ai-summary"], [data-action="set-main-branch"], [data-action="merge-branches"]')
             .forEach((b) => { b.dataset.branch = branchId || ''; });
         const cur = model?.branches?.find((b) => b.id === branchId) || null;
         const isMain = Boolean(cur?.is_default);
@@ -362,6 +501,33 @@ export function createPopupContent(ctx, view) {
                 ? '已经是主分支'
                 : '把选中的分支设为主分支（主分支 = 打开这个聊天看到的内容）';
         }
+    }
+
+    /**
+     * 结构图的「节点详情」（**只显结构，正文一个字都不放**——弹窗铁律）。
+     * 邻接节点做成可点的小块（`data-action="graph-goto"`），点一下把视口挪过去。
+     * @param {object|null} s 见 index.js 的 `graphSelection()` 产物；缺省/空 → 占位文案
+     */
+    function graphSelectionHtml(s) {
+        if (!s) return '<div class="chatfilesys-note">点图上的节点看它的来龙去脉。</div>';
+        const chip = (n) => `<button class="menu_button chatfilesys-gchip" data-action="graph-goto"
+            data-node="${esc(n.id)}" title="把视口移到这个节点">#${esc(String(n.floor))}</button>`;
+        const row = (label, list, empty) => `
+            <div class="chatfilesys-gsel-row">
+                <span class="k">${label}</span>
+                <span class="v">${list.length ? list.map(chip).join('') : `<span class="chatfilesys-note">${empty}</span>`}</span>
+            </div>`;
+        return `
+            <div class="chatfilesys-gsel">
+                <div class="chatfilesys-gsel-head">
+                    <span class="chatfilesys-badge">#${esc(String(s.floor))}</span>
+                    <span class="chatfilesys-badge chatfilesys-badge-dim">${s.isUser ? '用户' : '角色'}</span>
+                    ${s.sessionCount > 1 ? `<span class="chatfilesys-badge chatfilesys-badge-dim">被 ${s.sessionCount} 条会话共享</span>` : ''}
+                    ${s.isFork ? `<span class="chatfilesys-badge">分叉点：这里分出去 ${s.children.length} 条</span>` : ''}
+                </div>
+                ${row('上一节点', s.parents, '这是起点')}
+                ${row('下一节点', s.children, '这是末端')}
+            </div>`;
     }
 
     /** 存储档位与模式徽章（原扩展设置页那份内容，R5 起搬进弹窗「设置」页签） */

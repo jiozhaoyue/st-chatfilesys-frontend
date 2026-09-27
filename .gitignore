@@ -32,3 +32,7 @@ docs/.vitepress/cache/
 # 本地杂项
 *.log
 /tmp/
+
+# 仓根的空 node_modules（非本扩展所需——单测用 `node --test`，零依赖；
+# 它是一次误跑的 `npm install` 留下的空目录，只污染 `git status`）
+/node_modules/
