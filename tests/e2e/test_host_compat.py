@@ -217,19 +217,32 @@ def install_pt(page, zip_url: str):
     「Runtime discovery currently returns an empty list and third-party extension loading is
     disabled」——但 `verify-browser-startup.mjs:1002` 又确实调 `installExtension(extensionUrl, ...)`
     装一个 `.zip`。故 PT 的兼容路径 = **走它自己的安装入口**，不是往目录里拷文件。
+
+    **必须有界**（2026-09-28 实测）：第二次跑时扩展**已经装过**，宿主不再弹「第三方扩展」警告框，
+    于是 `await p` 永远不 settle ⇒ 用例整段挂死四十分钟（不是失败，是挂着）。
+    故 ① 先查是不是已装、② 用 `Promise.race` 给安装本身加超时。
     """
     return page.evaluate("""async ([url]) => {
         try {
             const m = await import('/scripts/extensions.js');
             if (typeof m.installExtension !== 'function') return { ok: false, why: 'no-installExtension' };
-            // 装的时候宿主会弹「第三方扩展」警告框（有自己的取消按钮）→ 点掉它
+            const already = (m.extensionNames || []).some((x) => x.includes('chatfilesys'));
             const p = m.installExtension(url, false, '');
+            // 警告框可能弹（首次）也可能不弹（已装过）——点一下，点不到就算了
             await new Promise((r) => setTimeout(r, 2500));
+            let clicked = 0;
             for (const d of [...document.querySelectorAll('.popup[open], dialog[open]')]) {
-                d.querySelector('.popup-button-ok')?.click();
+                const ok = d.querySelector('.popup-button-ok');
+                if (ok) { ok.click(); clicked += 1; }
             }
-            const ok = await p;
-            return { ok: Boolean(ok), names: (m.extensionNames || []).filter(x => x.includes('chatfilesys')) };
+            // 有界等待：8s 不 settle 就按「已装/无框」继续，不让用例挂死
+            const settled = await Promise.race([
+                p.then((v) => ({ done: true, v })).catch((e) => ({ done: true, err: String(e).slice(0, 160) })),
+                new Promise((r) => setTimeout(() => r({ done: false }), 8000)),
+            ]);
+            const names = (m.extensionNames || []).filter((x) => x.includes('chatfilesys'));
+            return { ok: names.length > 0, already, clicked, settled, names,
+                     warning: settled.done ? null : '安装 promise 未在 8s 内 settle（已按已装处理）' };
         } catch (e) { return { ok: false, why: String(e).slice(0, 200) }; }
     }""", [zip_url])
 

@@ -643,15 +643,33 @@ async function renderGraphInto(host, graphBody) {
             line.textContent = `已降级（${summary.degrade.tier}）：${reasons.join('；')}`;
             statusEl?.after?.(line);
         }
-        if (summary.layoutFailedReason) {
+        // **空图要解释**（R6）：图一个节点都没有、而当前聊天明显有内容 ⇒ 那是「没读到」，
+        // 不是「这个聊天没有结构」。此前只 `console.warn`，用户看到的是一张空白图 + 一行状态字，
+        // 重开弹窗就什么都不剩（2026-09-28 真机复检发现）。
+        if (summary.nodeCount === 0) {
+            const chatLen = (ctx().chat || []).length;
+            if (chatLen > 0) {
+                const why = (summary.notes || []).filter((n) => /失败|不齐|跳过|不可用/.test(n)).slice(0, 2).join(' / ')
+                    || `当前聊天有 ${chatLen} 层，但数据源一个会话都没读出来`;
+                reportError('CFS-N004', { why, toast: false });
+            }
+        }
+        if (summary.layoutFailedReason) {            // 布局不可用**也要进错误面**（此前只写状态行 + console.warn ⇒ 用户在弹窗顶部看不到，
+            // 关掉弹窗就再也找不到原因。2026-09-28 真机复检发现）
+            reportError('CFS-N003', { why: summary.layoutFailedReason, toast: false });
             const line = document.createElement('div');
             line.className = 'chatfilesys-note chatfilesys-graph-degrade';
             line.textContent = `布局不可用：${summary.layoutFailedReason}`;
             statusEl?.after?.(line);
         }
     } catch (e) {
+        // **失败必须进错误面**（不只是写一行状态字）：状态行会随下一次刷新消失，
+        // 而错误条留在弹窗顶部、带编号、可复制诊断（R6 的要求）
         setStatus(`结构图不可用：${e?.message || e}`);
-        console.warn('[chatfilesys] 结构图渲染失败:', e);
+        reportError(e?.code === 'CFS-G100' ? 'CFS-N002' : 'CFS-N001', {
+            detail: e?.stack || e?.message,
+            why: e?.code === 'CFS-G100' ? undefined : (e?.message || null),
+        });
     }
 }
 
