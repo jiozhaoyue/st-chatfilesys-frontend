@@ -274,7 +274,11 @@ export function installSeam(adapter, opts = {}) {
      */
     const serveListingOf = typeof opts.serveListing === 'function' ? opts.serveListing : () => false;
     const listLibraryChats = typeof opts.listLibraryChats === 'function' ? opts.listLibraryChats : null;
-    const originalFetch = globalThis.fetch;
+    // **必须 `bind(globalThis)`**：`fetch` 是 `this` 敏感的**原生**方法，脱离宿主对象调用会抛
+    // `Illegal invocation`（真机实测：双写落盘那条路的 `onWrote` 回调就报了这个，
+    // 因为它经由 `seam.native` 走到这里）。今天没全炸，只是因为宿主自己把 `globalThis.fetch`
+    // 换成了不敏感 `this` 的包装函数（Luker 的 FrontendFetch 就是）；**换个宿主／换个版本就会炸**。
+    const originalFetch = globalThis.fetch.bind(globalThis);
     // 成功写回调（T2 双写模式用）：参数 { familyId, chatKey }，只做通知、不改写结果
     const onWrote = typeof opts.onWrote === 'function' ? opts.onWrote : null;
     const notifyWrote = (family, chatKey) => {

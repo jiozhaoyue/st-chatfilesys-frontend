@@ -39,8 +39,24 @@ STEPS = """async (extSrc) => {
         const mirrorMod = await import(extSrc + '/core/mirror.js');
         const nativeFetch = (...a) => window.__nativeFetch.apply(null, a);
         const H = () => window.SillyTavern?.getContext?.()?.getRequestHeaders?.() || {};
+        // **必须与插件用同一套依赖**：本仓自 2026-09-27 起档1（Authority SQL）优先。
+        // 本用例的适配器若落到档2/档3，而**插件自己**装的是档1 ⇒ 两边看的是**不同的库**，
+        // 表现为「双写落出的文件与库投影不一致」这种看着像产品 bug 的假红
+        // （2026-09-28 定位：与 `harness.read_family` 同一根因）。
+        let __authClient = null;
+        try {
+            const sdk = globalThis.STAuthority?.AuthoritySDK;
+            if (sdk && typeof sdk.init === 'function') {
+                __authClient = await sdk.init({
+                    extensionId: 'third-party/chatfilesys', displayName: 'ChatFilesys',
+                    version: '1.0.0', installType: 'local',
+                    declaredPermissions: { sql: { private: true }, fs: { private: true } },
+                });
+            }
+        } catch { /* 拿不到就走降级档（与插件自身行为一致） */ }
         const { tier, adapter, dispose: disposeAdapter } = await adapterMod.createStorageAdapter({
             fetch: nativeFetch, headers: H, log: (m) => log('warn: ' + String(m).slice(0, 120)),
+            authorityClient: __authClient,
         });
         log('tier: ' + tier);
 

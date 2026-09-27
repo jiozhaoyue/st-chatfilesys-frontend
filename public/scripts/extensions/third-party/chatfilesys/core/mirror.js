@@ -66,7 +66,14 @@ export function createMirror(deps) {
     const log = deps.log ?? console.warn;
     const headers = typeof deps.headers === 'function' ? deps.headers : () => ({ 'Content-Type': 'application/json' });
     const debounceMs = deps.debounceMs ?? 1500;
-    const timers = deps.timers ?? { setTimeout, clearTimeout };
+    // **必须包一层调用，不能把裸引用挂进对象**：`timers.setTimeout(...)` 会让 `this === timers`，
+    // 而 `setTimeout` 是**窗口**方法——Chrome 下以错误接收者调用会抛 `Illegal invocation`。
+    // 真机实测（2026-09-28）：双写落盘那条路的 `onWrote` 就被这个异常打断 ⇒ 文件根本没落，
+    // 表现为「双写落出的文件与库投影不一致」（看着像产品大 bug，根因是这一行）。
+    const timers = deps.timers ?? {
+        setTimeout: (...a) => globalThis.setTimeout(...a),
+        clearTimeout: (...a) => globalThis.clearTimeout(...a),
+    };
 
     const dirty = new Map(); // familyId → chatKey（提示用；实际以家族记录为准）
     const state = {
