@@ -109,6 +109,44 @@ RUN_SLASH_JS = """async (c) => {
 # 把 extension_settings 落盘（宿主 boot 时用 settings.json 里的值整份顶掉内存里的那份）。
 PERSIST_SETTINGS_JS = """() => { SillyTavern.getContext().saveSettingsDebounced(); return 'saved'; }"""
 
+# ── 用例自建存储适配器时的**必备依赖**（2026-09-28 定位到的测试基建缺陷） ──────────────
+#
+# **症状**：用例自己 `createStorageAdapter({fetch, headers})` 时会落到**档2/档3**，
+# 而本仓自 2026-09-27 起**档1（Authority SQL）优先**（`5abc466`）——家族住在档1 的库里
+# ⇒ `loadFamily` **恒为 null**，表现为整条用例在**前置**就判失败（`family=None` / `no-family`）。
+# 一轮里先后在三处踩到：`harness.read_family`、`test_swipe_versions` 的种入与读回、
+# 以及**另外 6 个同样形状的用例文件**（`grep -ln createStorageAdapter tests/e2e/*.py`）。
+#
+# **修法**：自建适配器前先按插件的方式 init Authority 客户端并传进去。把下面这段
+# **原样插到 `createStorageAdapter({...})` 之前**，并在参数里加 `authorityClient: __authClient`：
+#
+#   let __authClient = null;
+#   try {
+#       const sdk = globalThis.STAuthority?.AuthoritySDK;
+#       if (sdk && typeof sdk.init === 'function') {
+#           __authClient = await sdk.init({
+#               extensionId: 'third-party/chatfilesys', displayName: 'ChatFilesys',
+#               version: '1.0.0', installType: 'local',
+#               declaredPermissions: { sql: { private: true }, fs: { private: true } },
+#           });
+#       }
+#   } catch { /* 拿不到就走降级档——与插件自身的行为一致 */ }
+#
+# **为什么不做成自动的**：适配器是**被测对象的依赖**，用例必须显式声明它用的是哪一档
+# （把选档藏起来，就再也测不出「档1 上某个方法坏了」这类问题——本轮正是修了基建才露出
+# `branch_paths` 的唯一约束冲突）。故这里只给**样板**，不替用例做决定。
+AUTHORITY_CLIENT_SNIPPET = """let __authClient = null;
+try {
+    const sdk = globalThis.STAuthority?.AuthoritySDK;
+    if (sdk && typeof sdk.init === 'function') {
+        __authClient = await sdk.init({
+            extensionId: 'third-party/chatfilesys', displayName: 'ChatFilesys',
+            version: '1.0.0', installType: 'local',
+            declaredPermissions: { sql: { private: true }, fs: { private: true } },
+        });
+    }
+} catch { /* 走降级档 */ }"""
+
 
 def reset_instance(page, timeout=120000):
     """给裸 page 用（独立风格用例）：把实例复位到**干净起点**，返回 'reset'。
