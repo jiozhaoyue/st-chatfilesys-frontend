@@ -767,10 +767,27 @@ class Runner:
         return self.js("""async ([src, chatKey]) => {
             const ctx = SillyTavern.getContext();
             const mod = await import(src + '/core/storage/adapter.js');
+            // **必须把 Authority 客户端也传给适配器**：本仓自 2026-09-27 起档1（Authority SQL）
+            // 优先（`5abc466`）。不传 client 时 `createStorageAdapter` 会落到档2/档3——
+            // 而家族住在档1 的库里 ⇒ `loadFamily` **恒为 null**，读到的是另一个后端。
+            // 这会让所有用 `read_family` 的用例在档1生效的实例上假红（2026-09-28 定位到的
+            // 测试基建缺陷：`test_main_branch` 的前置 `family=None` 就是它）。
+            let authorityClient = null;
+            try {
+                const sdk = globalThis.STAuthority?.AuthoritySDK;
+                if (sdk && typeof sdk.init === 'function') {
+                    authorityClient = await sdk.init({
+                        extensionId: 'third-party/chatfilesys', displayName: 'ChatFilesys',
+                        version: '1.0.0', installType: 'local',
+                        declaredPermissions: { sql: { private: true }, fs: { private: true } },
+                    });
+                }
+            } catch { /* 拿不到就走降级档（与插件自身的行为一致） */ }
             const built = await mod.createStorageAdapter({
                 fetch: (...a) => globalThis.fetch(...a),
                 headers: () => ctx.getRequestHeaders(),
                 log: () => {},
+                authorityClient,
             });
             try {
                 const fam = await built.adapter.loadFamily({ chatKey });
