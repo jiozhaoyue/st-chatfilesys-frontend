@@ -38,18 +38,35 @@ export default defineConfig({
                         { text: '安装与入口', link: '/guide/install' },
                         { text: '三种模式', link: '/guide/modes' },
                         { text: '三档存储与降级', link: '/guide/storage-tiers' },
+                        { text: '管理弹窗', link: '/guide/popup' },
                     ],
                 },
                 {
                     text: '分支与版本',
                     items: [
+                        { text: '分支树', link: '/guide/tree' },
                         { text: '每层版本', link: '/guide/versions' },
+                        { text: '主分支', link: '/guide/main-branch' },
+                        { text: '原生创建分支/检查点接管', link: '/guide/native-branch' },
                     ],
                 },
                 {
-                    text: '重要边界',
+                    text: '数据与记录',
                     items: [
+                        { text: '导入旅程', link: '/guide/import' },
+                        { text: '入库提醒弹窗', link: '/guide/import-prompt' },
+                        { text: '回收站', link: '/guide/trash' },
+                        { text: '导出', link: '/guide/export' },
+                        { text: '聊天记录零丢失', link: '/guide/fidelity' },
+                        { text: '并发写与冲突', link: '/guide/concurrency' },
+                    ],
+                },
+                {
+                    text: '图与边界',
+                    items: [
+                        { text: '图视图', link: '/guide/graph' },
                         { text: '隐私边界（如实）', link: '/guide/privacy' },
+                        { text: '边界与未做到（汇总）', link: '/guide/boundaries' },
                     ],
                 },
             ],
