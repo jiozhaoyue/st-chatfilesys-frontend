@@ -56,7 +56,7 @@
 | --- | --- | --- | --- |
 | SillyTavern | `http://127.0.0.1:8001` | 扫扩展目录 | ✅ 9/9 |
 | Luker | `https://127.0.0.1:8003` | 扫扩展目录 | ✅ 9/9 |
-| PureTavern | `http://127.0.0.1:8899` | **`installExtension(zipUrl)`**（不扫目录） | ✅ 9/10（A2 是预期中的安装前探测） |
+| PureTavern | `http://127.0.0.1:8899` | **`installExtension(zipUrl)`**（不扫目录） | ✅ 9/9 |
 | TauriTavern | 无 HTTP 端点（桌面） | `tauri:dev:pilot` + `tauri-pilot` CLI | ✅ 9/9 |
 
 断言覆盖的是**跨宿主真正会碎的东西**（装配与协议），不是把功能用例再跑一遍：
