@@ -45,9 +45,17 @@ export default defineConfig({
                     text: '分支与版本',
                     items: [
                         { text: '分支树', link: '/guide/tree' },
+                        { text: '合并分支', link: '/guide/merge' },
                         { text: '每层版本', link: '/guide/versions' },
                         { text: '主分支', link: '/guide/main-branch' },
                         { text: '原生创建分支/检查点接管', link: '/guide/native-branch' },
+                    ],
+                },
+                {
+                    text: '设置与排障',
+                    items: [
+                        { text: '设置：能调什么', link: '/guide/settings' },
+                        { text: '出错时你会看到什么', link: '/guide/errors' },
                     ],
                 },
                 {
@@ -65,6 +73,7 @@ export default defineConfig({
                     text: '图与边界',
                     items: [
                         { text: '图视图', link: '/guide/graph' },
+                        { text: '装了别的插件会不会坏', link: '/guide/plugin-ecosystem' },
                         { text: '隐私边界（如实）', link: '/guide/privacy' },
                         { text: '边界与未做到（汇总）', link: '/guide/boundaries' },
                     ],
