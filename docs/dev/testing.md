@@ -67,7 +67,12 @@ harness 提供一台「已经理解了本插件」的驱动：`Runner.boot()` �
 - **跨三模式的行为一致性回归未做**（参数化矩阵）→ 见[路线图](/dev/roadmap)。
 - **多插件共存实测未做**。
 - **首次用户旅程实测未做**（用真实聊天完整走一遍：导入 → 聊天 → 分支 → 切版本 → 换家族）。
-- **档 1（Authority SQL）没有真机验证**——它的适配器只有用 mock client 的单测。
+- **档 1（Authority SQL）**：单测用 mock client，**真机**另有专门用例
+  （`tests/e2e/test_authority_tier.py`：档位徽章 + 真后端数据回环 + 降级留因）。
+  它的**性能与多并发基准**还没做。
+- **改档 1 时：mock 必须照真机形状给**。本仓踩过一次「mock 与实现一起按假设写」——
+  mock 返回裸数组、实现也当行数组用，真机上 `(rows || []).map is not a function`，而单测全绿。
+  真机形状清单见 `.trellis/spec/frontend/docs-sources.md` 的「已沉淀的 Authority SDK 事实」。
 
 ## 失败与降级时的表现
 
