@@ -77,7 +77,9 @@ export function createGraphController(deps = {}) {
         const sourceDeps = typeof deps.getSourceDeps === 'function' ? deps.getSourceDeps() : null;
         if (!sourceDeps) {
             const e = new Error('数据源当前不可用（库模式未启用或没有活动角色）');
-            e.code = 'CFS-G100';
+            // 这是**跨模块的条件标记**，不是错误编号——故意不取 `CFS-*` 形状：
+            // 取错误编号的形状却不在目录里，任何转发它的调用点都会被渲染成「未登记」。
+            e.code = 'SRC_UNAVAILABLE';
             throw e;
         }
         const source = createChatSource(sourceDeps);

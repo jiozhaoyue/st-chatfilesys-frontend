@@ -721,9 +721,9 @@ async function renderGraphInto(host, graphBody) {
         // **失败必须进错误面**（不只是写一行状态字）：状态行会随下一次刷新消失，
         // 而错误条留在弹窗顶部、带编号、可复制诊断（R6 的要求）
         setStatus(`结构图不可用：${e?.message || e}`);
-        reportError(e?.code === 'CFS-G100' ? 'CFS-N002' : 'CFS-N001', {
+        reportError(e?.code === 'SRC_UNAVAILABLE' ? 'CFS-N002' : 'CFS-N001', {
             detail: e?.stack || e?.message,
-            why: e?.code === 'CFS-G100' ? undefined : (e?.message || null),
+            why: e?.code === 'SRC_UNAVAILABLE' ? undefined : (e?.message || null),
         });
     }
 }
