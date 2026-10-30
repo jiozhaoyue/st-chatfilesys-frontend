@@ -59,7 +59,7 @@ import {
 import { esc, getActiveBranch, assembleBranchLines } from './ui/common.js';
 import { parentsOf, childrenOf } from './core/graph/graph.js';
 import { DEGRADE_DEFAULTS } from './ui/graph/degrade.js';
-import { createPopupContent } from './ui/popup.js';
+import { createPopupContent, ensureFloatWindowsAttached, syncFloatWindows } from './ui/popup.js';
 import { renderTree } from './ui/tree.js';
 import { injectMessageTools, injectAllMessages } from './ui/marker.js';
 import { openVersionsPopup } from './ui/versions.js';
@@ -1000,7 +1000,10 @@ function injectAllNow() {
 function scheduleUiRefresh() {
     clearTimeout(uiRefreshTimer);
     uiRefreshTimer = setTimeout(() => {
-        if (popupHandle) popupHandle.content.refresh(currentView());
+        const v = currentView();
+        if (popupHandle) popupHandle.content.refresh(v);
+        else syncFloatWindows(v); // PO-3：弹窗关着，树小窗也要「边聊边看」（开着时 refresh 已同步）
+        ensureFloatWindowsAttached(); // 自愈兜底：宿主清场/重绘后按记忆几何挂回
         injectAllNow();
     }, 150);
 }
@@ -1025,12 +1028,36 @@ async function renderChat() {
 
 /* ---------------- 管理弹窗（唯一界面） ---------------- */
 
+/** PO-3 小窗的业务动作委托（浮窗挂在 body 上、独立于弹窗生命周期，
+ *  `bindPopupEvents` 只管弹窗 root —— 小窗里的 data-action 按钮走这里；
+ *  动作语义与页签完全同源：图动作全打在单例 view 上，不挑宿主位置）。 */
+let floatDelegateBound = false;
+function bindFloatWindowActions() {
+    if (floatDelegateBound) return;
+    floatDelegateBound = true;
+    document.addEventListener('click', async (evt) => {
+        const el = evt.target.closest('[data-action]');
+        if (!el || !el.closest('.chatfilesys-floatwin')) return;
+        evt.stopPropagation();
+        try {
+            await handleAction(el.dataset.action, el);
+        } catch (e) {
+            console.error(`[${MODULE_NAME}] 浮窗操作 ${el.dataset.action} 失败:`, e);
+            reportError(ACTION_FALLBACK_CODE[el.dataset.action] || 'CFS-G003', {
+                detail: e?.stack || e?.message,
+                why: `浮窗动作 ${el.dataset.action} 抛了异常`,
+            });
+        }
+    });
+}
+
 async function openManagementPopup() {
     if (popupHandle) return;
     if (typeof Popup !== 'function') {
         toastr.error('当前环境缺少 Popup API，管理面板不可用。');
         return;
     }
+    bindFloatWindowActions();
     const content = createPopupContent(ctx(), currentView());
     bindPopupEvents(content.el);  // 弹窗内容的数据操作委托（switch/rename/export/enable/…）
     const popup = new Popup(content.el, POPUP_TYPE.DISPLAY, '', {
@@ -2191,14 +2218,21 @@ async function importJsonlFlow({ only = null, includeCurrent = false, keepBindin
         toastr.success(`${parts.join('，')}。`, '聊天文件系统', { timeOut: 6000 });
         console.log(`[${MODULE_NAME}] 导入结果:`, result);
     }
-    // 4.2：不可判定 ⇒ 不自动合并，只提示 + 明细进控制台（候选点选界面本轮不做，已登记「未做到」）
+    // 4.2：不可判定 ⇒ 不自动合并（R1.4 不硬猜），交**官方 Popup** 的候选清单让用户逐条点选
     if (result.suspected?.length) {
         const nFiles = new Set(result.suspected.map((s) => s.fileName)).size;
-        toastr.info(`${nFiles} 个文件疑似同族但证据不足，未自动合并，明细见控制台。`, '聊天文件系统', { timeOut: 8000 });
+        toastr.info(`${nFiles} 个文件疑似同族但证据不足，未自动合并——已打开确认清单。`, '聊天文件系统', { timeOut: 8000 });
         for (const s of result.suspected) {
             console.info(`[${MODULE_NAME}] 疑似同族候选：${s.fileName} ← 家族「${s.familyName || s.familyId}」`
                 + `${s.reason ? `（${s.reason}）` : ''}`, formatPlan(s.plan));
         }
+        await suspectedCandidatesFlow({
+            suspected: result.suspected,
+            deleteSources,
+            adapter: storageState.adapter,
+            trash,
+            api,
+        });
     }
     if (result.fuzzyLimited) {
         console.info(`[${MODULE_NAME}] 模糊探测只比对了最近 ${getSetting('import.fuzzy_candidates')} 个家族`
@@ -2211,6 +2245,103 @@ async function importJsonlFlow({ only = null, includeCurrent = false, keepBindin
     await syncCurrentBranchId(); // 导入可能给当前聊天建档 → 本键的分支解析跟着更新
     bumpChatList();
     renderAll();
+}
+
+/* ---------------- 疑似同族候选确认（4.2；R1.4 不硬猜） ---------------- */
+
+/**
+ * 候选点选清单（**官方 Popup**——L1-MR-4：复杂交互走官方弹窗；PO-3 豁免只给树/图小窗）。
+ *
+ * 每个候选：文件名 + 疑似家族 + 逐层依据（`formatPlan`）+「并入该家族 / 保留独立」。
+ * · **并入** = 只对该文件再走一次导入旅程：`targetFamilyId` 指到候选家族、`fuzzyProbe: false`
+ *   （用户已点名目标，不再猜）；源文件处理与首次导入同一选择（PARDON 已在首跑确认过）；
+ *   失败允许重试（按钮解禁）。
+ * · **保留独立** = 什么都不做（R1.1：低重合时保留独立内容，不强并）。
+ * 全部落定后走宿主自己的关闭路径收窗；用户手动 ✕ 等价于其余全部保留独立。
+ */
+async function suspectedCandidatesFlow({ suspected, deleteSources, adapter, trash, api }) {
+    if (typeof Popup !== 'function') {
+        console.warn('[chatfilesys] 缺少 Popup API，疑似候选只能留在控制台明细里。');
+        return;
+    }
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[ch]));
+    const el = document.createElement('div');
+    el.className = 'chatfilesys-popup chatfilesys-cands';
+    el.innerHTML = `
+        <div class="chatfilesys-note">以下文件与某个既有家族<strong>疑似同族但证据不足</strong>（判不了）。本插件不硬猜：
+        请逐条确认，或保留为独立家族。</div>
+        ${suspected.map((s, i) => `
+            <div class="chatfilesys-cand" data-cand="${i}">
+                <div class="chatfilesys-cand-head">
+                    <strong>${esc(s.fileName)}</strong>
+                    <span class="chatfilesys-badge">疑似家族：${esc(s.familyName || s.familyId)}</span>
+                </div>
+                <div class="chatfilesys-cand-plan chatfilesys-note">${esc(formatPlan(s.plan))}</div>
+                <div class="chatfilesys-btnrow">
+                    <button class="menu_button" data-cand-merge="${i}"
+                        title="把该文件并入这个家族（再走一次导入旅程；源文件处理与首次导入同一选择）">
+                        <i class="fa-solid fa-code-merge"></i> 并入该家族</button>
+                    <button class="menu_button" data-cand-skip="${i}" title="保留为独立家族（不做任何合并）">
+                        <i class="fa-solid fa-xmark"></i> 保留独立</button>
+                </div>
+                <div class="chatfilesys-note" data-role="cand-status"></div>
+            </div>`).join('')}`;
+    const popup = new Popup(el, POPUP_TYPE.DISPLAY, '', { wide: true });
+    popup.show();
+
+    const settle = (i, text) => {
+        const row = el.querySelector(`[data-cand="${i}"] [data-role="cand-status"]`);
+        if (row) row.textContent = text;
+    };
+    let resolved = 0;
+    el.addEventListener('click', async (evt) => {
+        const btn = evt.target.closest('[data-cand-merge], [data-cand-skip]');
+        if (!btn || btn.disabled) return;
+        const i = Number(btn.dataset.candMerge ?? btn.dataset.candSkip);
+        const s = suspected[i];
+        if (btn.dataset.candSkip !== undefined) {
+            btn.disabled = true;
+            settle(i, '已保留为独立家族。');
+            resolved += 1;
+        } else {
+            btn.disabled = true;
+            settle(i, '正在按你确认的目标家族重新导入…');
+            try {
+                const r = await runImport({ adapter, trash, api, confirm: async () => true, progress: () => {} }, {
+                    only: s.fileName,
+                    deleteSources,
+                    characterId: api.characterId,
+                    avatarUrl: api.avatarUrl,
+                    targetFamilyId: s.familyId,
+                    fuzzyProbe: false, // 用户已点名目标：不再做模糊探测
+                });
+                if (r.failed?.length) {
+                    settle(i, `失败：${r.failed[0].error}`);
+                    btn.disabled = false; // 失败允许重试
+                    return;
+                }
+                settle(i, `已并入（合并 ${r.totalMerged ?? 0} 条）。`);
+                resolved += 1;
+                bumpChatList();
+                renderAll();
+            } catch (e) {
+                settle(i, `失败：${e?.message || e}`);
+                btn.disabled = false;
+                return;
+            }
+        }
+        if (resolved >= suspected.length) {
+            // 全部落定 → 走宿主自己的关闭路径（与 harness close_popup 同一条路，别绕过宿主清理）
+            setTimeout(() => {
+                try {
+                    const dlg = el.closest('dialog');
+                    dlg?.querySelector('.popup-button-close')?.click();
+                } catch { /* 已关就不管 */ }
+            }, 900);
+        }
+    });
 }
 
 /* ---------------- 入库提醒弹窗（T8 / R8.1 / AC21） ---------------- */

@@ -21,6 +21,129 @@
 
 import { esc, nodeLabel, getActiveBranch, branchMaxFloor, renderInactiveContent } from './common.js';
 import { renderTree } from './tree.js';
+import { createFloatWin } from './floatwin.js';
+
+/* ---------------- PO-3 非模态小窗（模块级单例） ----------------
+ * 小窗**独立于弹窗生命周期**：弹窗关了，小窗还在（「边聊边看」的本意）。
+ * 自愈点：`refresh()` 每次都会 `ensureAttached()`（renderAll 由宿主事件驱动，
+ * printMessages 批量重绘后必然路过这里）；真机取证见 tests/e2e/test_floatwin.py。 */
+let floatTree = null;
+let floatGraph = null;
+/** 最近一次 refresh 的树渲染参数（小窗手动刷新 / 弹窗关闭后 syncFloatWindows 重画时用） */
+let lastTreeView = null;
+/** 最近一次 refresh 的图上下文（token / renderGraph 回调 / 选中详情 HTML） */
+let lastGraphCtx = null;
+/** 图浮窗刚关闭 → 下一次 refresh 必须把视图重挂回页签（token 没变也要） */
+let graphTabRemount = false;
+let floatDocBound = false;
+
+/** 自愈再挂载（index.js#renderAll 每次路过；被宿主清场后按记忆几何挂回 body） */
+export function ensureFloatWindowsAttached() {
+    let healed = false;
+    if (floatTree?.isOpen) healed = floatTree.ensureAttached() || healed;
+    if (floatGraph?.isOpen) healed = floatGraph.ensureAttached() || healed;
+    return healed;
+}
+
+/** 弹窗关闭时的轻量同步：树浮窗按最新视图重画（「边聊边看」不要求弹窗开着） */
+export function syncFloatWindows(view) {
+    if (floatTree?.isOpen && view?.model) {
+        lastTreeView = {
+            model: view.model,
+            direction: view.treeDirection ?? 'down',
+            currentBranchId: view.branchId ?? null,
+        };
+        renderTreeIntoFloat();
+    }
+}
+
+function renderTreeIntoFloat() {
+    if (!floatTree?.isOpen || !lastTreeView) return;
+    const host = floatTree.body.querySelector('[data-role="float-tree-host"]');
+    if (host) renderTree(host, lastTreeView);
+}
+
+function toggleTreeFloat() {
+    if (floatTree?.isOpen) { floatTree.destroy(); floatTree = null; return; }
+    if (floatTree) { floatTree.ensureAttached(); renderTreeIntoFloat(); return; }
+    floatTree = createFloatWin({
+        title: '结构树（浮窗）', width: 480, height: 420,
+        onClose: () => { floatTree = null; },
+    });
+    floatTree.body.innerHTML = `
+        <div class="chatfilesys-btnrow">
+            <button class="menu_button" data-float="tree-refresh"
+                title="按最近一次数据重画（弹窗开着时会自动同步）"><i class="fa-solid fa-rotate"></i> 刷新</button>
+        </div>
+        <div class="chatfilesys-tree-host" data-role="float-tree-host"></div>`;
+    renderTreeIntoFloat();
+}
+
+function renderGraphIntoFloat(token) {
+    if (!floatGraph?.isOpen || !lastGraphCtx?.renderGraph) return;
+    if (String(floatGraph.body.dataset.graphToken ?? '') === String(token)) return;
+    floatGraph.body.dataset.graphToken = String(token);
+    const host = floatGraph.body.querySelector('[data-role="float-graph-host"]');
+    if (host) lastGraphCtx.renderGraph(host, floatGraph.body);
+}
+
+/** 图浮窗关闭后把视图**立即挂回页签**（关闭不触发 renderAll，不能等下一次 refresh）；
+ *  弹窗没开时是 no-op——那种情况由 graphTabRemount 在下一次 refresh 接回。 */
+function remountGraphToTab() {
+    const tab = document.querySelector('dialog[open] [data-tabbody="graph"]');
+    const tabHost = tab?.querySelector('[data-role="graph-host"]');
+    if (!tabHost || !lastGraphCtx?.renderGraph) return;
+    tabHost.innerHTML = '';
+    lastGraphCtx.renderGraph(tabHost, tab);
+    graphTabRemount = false;
+}
+
+function toggleGraphFloat() {
+    if (floatGraph?.isOpen) {
+        floatGraph.destroy(); // 视图 DOM 随浮窗移除；立即接回页签（refresh 路径作兜底）
+        floatGraph = null;
+        graphTabRemount = true;
+        remountGraphToTab();
+        return;
+    }
+    if (floatGraph) { floatGraph.ensureAttached(); renderGraphIntoFloat(lastGraphCtx?.token ?? ''); return; }
+    floatGraph = createFloatWin({
+        title: '结构图（浮窗）', width: 560, height: 460,
+        onClose: () => {
+            floatGraph = null;
+            graphTabRemount = true;
+            remountGraphToTab(); // ✕ 按钮路径与 toggle 关闭路径行为一致：立即接回页签
+        },
+    });
+    // 图动作按钮与页签同名同 data-action（index.js 的浮窗委托转 handleAction；动作打在单例 view 上）
+    floatGraph.body.innerHTML = `
+        <div class="chatfilesys-btnrow">
+            <button class="menu_button" data-action="graph-reload" title="重新读数据源并重建图（忽略缓存）"><i class="fa-solid fa-rotate"></i> 重算</button>
+            <button class="menu_button" data-action="graph-fit" title="把整张图装进视口"><i class="fa-solid fa-expand"></i> 适应窗口</button>
+            <button class="menu_button" data-action="graph-zoom-in" title="放大"><i class="fa-solid fa-magnifying-glass-plus"></i></button>
+            <button class="menu_button" data-action="graph-zoom-out" title="缩小"><i class="fa-solid fa-magnifying-glass-minus"></i></button>
+        </div>
+        <div class="chatfilesys-graph-host" data-role="float-graph-host"></div>
+        <div class="chatfilesys-note" data-role="graph-status"></div>
+        <div class="chatfilesys-graph-selection" data-role="float-graph-selection"></div>`;
+    floatGraph.body.dataset.graphToken = '';
+    renderGraphIntoFloat(lastGraphCtx?.token ?? '');
+    // 页签说明**立即出现**（不等下一次 refresh——打开这个动作本身就该给页签一个交代）
+    const tabHost = document.querySelector('dialog[open] [data-tabbody="graph"] [data-role="graph-host"]');
+    if (tabHost) tabHost.innerHTML = '<div class="chatfilesys-note">结构图正在浮窗中显示（屏幕右上角小窗）。关闭浮窗后这里会恢复。</div>';
+}
+
+/** 浮窗内部按钮的文档级委托（浮窗挂在 body 上，不在弹窗 root 里）：
+ *  data-float（树刷新）在这里处理；data-action（图动作）由 index.js 的浮窗委托转 handleAction。 */
+function ensureFloatDocDelegates() {
+    if (floatDocBound) return;
+    floatDocBound = true;
+    document.addEventListener('click', (evt) => {
+        const el = evt.target.closest('[data-float]');
+        if (!el || !el.closest('.chatfilesys-floatwin')) return;
+        if (el.dataset.float === 'tree-refresh') renderTreeIntoFloat();
+    });
+}
 
 const TABS = [
     { key: 'chat', label: '当前聊天' },
@@ -152,6 +275,15 @@ export function createPopupContent(ctx, view) {
 
     const bodyOf = (key) => shellHost.querySelector(`[data-tabbody="${key}"]`);
 
+    // PO-3 小窗：弹窗内的浮窗开关按钮（data-float；**不用** data-action——那是业务动作的命名空间）
+    root.addEventListener('click', (evt) => {
+        const el = evt.target.closest('[data-float]');
+        if (!el || !root.contains(el)) return;
+        if (el.dataset.float === 'tree') toggleTreeFloat();
+        else if (el.dataset.float === 'graph') toggleGraphFloat();
+    });
+    ensureFloatDocDelegates();
+
     /** 最近一次渲染的视图（picker 的 change 监听在 refresh 之外，需要它来算「主分支」） */
     let lastModel = null;
 
@@ -162,7 +294,11 @@ export function createPopupContent(ctx, view) {
         body.innerHTML = `
             <div class="chatfilesys-tab-inner">
                 <div class="chatfilesys-section">
-                    <h4>结构树</h4>
+                    <h4>结构树
+                        <button class="menu_button chatfilesys-floatbtn" data-float="tree"
+                            title="把结构树放进非模态小窗（边聊边看；可拖动/缩放，弹窗关了也在）">
+                            <i class="fa-solid fa-up-right-from-square"></i> 浮窗</button>
+                    </h4>
                     <div class="chatfilesys-tree-host" data-role="tree-host"></div>
                 </div>
                 <div class="chatfilesys-section">
@@ -312,6 +448,7 @@ export function createPopupContent(ctx, view) {
                         <button class="menu_button" data-action="graph-fit" title="把整张图装进视口"><i class="fa-solid fa-expand"></i> 适应窗口</button>
                         <button class="menu_button" data-action="graph-zoom-in" title="放大"><i class="fa-solid fa-magnifying-glass-plus"></i></button>
                         <button class="menu_button" data-action="graph-zoom-out" title="缩小"><i class="fa-solid fa-magnifying-glass-minus"></i></button>
+                        <button class="menu_button" data-float="graph" title="把结构图放进非模态小窗（边聊边看；可拖动/缩放，弹窗关了也在）"><i class="fa-solid fa-up-right-from-square"></i> 浮窗</button>
                     </div>
                     <div class="chatfilesys-graph-host" data-role="graph-host"></div>
                     <div class="chatfilesys-note" data-role="graph-status"></div>
@@ -343,6 +480,12 @@ export function createPopupContent(ctx, view) {
         const active = model ? getActiveBranch(model, branchId) : null;
         const maxF = active ? branchMaxFloor(active) : 0;
         lastModel = model;
+
+        /* ---------- PO-3 小窗：自愈再挂载 + 上下文快照（先于页签渲染） ---------- */
+        floatTree?.ensureAttached();
+        floatGraph?.ensureAttached();
+        lastTreeView = { model, direction: treeDirection, currentBranchId: branchId };
+        lastGraphCtx = { token: graphToken, renderGraph, enabled: graphEnabled };
 
         header.innerHTML = model
             ? `<span class="chatfilesys-badge">家族：${esc(familyName)}</span>
@@ -396,6 +539,7 @@ export function createPopupContent(ctx, view) {
         if (chatBody && model) {
             const treeHost = chatBody.querySelector('[data-role="tree-host"]');
             if (treeHost) renderTree(treeHost, { model, direction: treeDirection, currentBranchId: branchId });
+            if (floatTree?.isOpen) renderTreeIntoFloat(); // PO-3：树浮窗与页签同源同步
             const picker = chatBody.querySelector('[data-role="branch-picker"]');
             if (picker) {
                 const prev = picker.value;
@@ -455,6 +599,7 @@ export function createPopupContent(ctx, view) {
             const host = graphBody.querySelector('[data-role="graph-host"]');
             if (graphEnabled === false) {
                 // 关掉了就说清楚「为什么这儿是空的」并给一键开启——空着比说清楚更糟
+                if (floatGraph?.isOpen) { floatGraph.destroy(); floatGraph = null; graphTabRemount = true; }
                 const sel = graphBody.querySelector('[data-role="graph-selection"]');
                 if (host) host.innerHTML = '';
                 if (sel) {
@@ -462,8 +607,17 @@ export function createPopupContent(ctx, view) {
                         <div class="chatfilesys-btnrow"><button class="menu_button" data-action="settings-enable-graph">
                         <i class="fa-solid fa-toggle-on"></i> 开启结构图</button></div>`;
                 }
-            } else if (graphBody.dataset.graphToken !== gtoken) {
+            } else if (floatGraph?.isOpen) {
+                // PO-3：视图在浮窗里 —— 页签放说明防误读；浮窗按 token 同步重挂；选中详情两处都喂
+                if (host) host.innerHTML = '<div class="chatfilesys-note">结构图正在浮窗中显示（屏幕右上角小窗）。关闭浮窗后这里会恢复。</div>';
+                renderGraphIntoFloat(gtoken);
+                const fsel = floatGraph.body.querySelector('[data-role="float-graph-selection"]');
+                if (fsel) fsel.innerHTML = graphSelectionHtml(graphSelection);
+                const sel = graphBody.querySelector('[data-role="graph-selection"]');
+                if (sel) sel.innerHTML = graphSelectionHtml(graphSelection);
+            } else if (graphBody.dataset.graphToken !== gtoken || graphTabRemount) {
                 graphBody.dataset.graphToken = gtoken;
+                graphTabRemount = false; // 浮窗关闭后的接回只在下一次 refresh 生效一次
                 if (host && typeof renderGraph === 'function') renderGraph(host, graphBody);
                 const sel = graphBody.querySelector('[data-role="graph-selection"]');
                 if (sel) sel.innerHTML = graphSelectionHtml(graphSelection);

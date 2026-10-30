@@ -612,7 +612,7 @@
 
 .chatfilesys-graph-minimap .chatfilesys-mini-box {
     fill: rgba(88, 166, 255, .14);
-    stroke: #58a6ff;
+    stroke: var(--SmartThemeQuoteColor, #58a6ff);
     stroke-width: 1;
 }
 
@@ -757,11 +757,11 @@
 }
 
 .chatfilesys-merge-step.chatfilesys-side-a {
-    border-color: #58a6ff;
+    border-color: var(--SmartThemeQuoteColor, #58a6ff);
 }
 
 .chatfilesys-merge-step.chatfilesys-side-b {
-    border-color: #d29922;
+    border-color: var(--SmartThemeEmColor, #d29922);
 }
 
 .chatfilesys-merge-conflicts h5 {
@@ -782,11 +782,11 @@
 }
 
 .chatfilesys-merge-conflict.picked-a {
-    border-left-color: #58a6ff;
+    border-left-color: var(--SmartThemeQuoteColor, #58a6ff);
 }
 
 .chatfilesys-merge-conflict.picked-b {
-    border-left-color: #d29922;
+    border-left-color: var(--SmartThemeEmColor, #d29922);
 }
 
 .chatfilesys-merge-conflict .side {
@@ -801,4 +801,118 @@
     align-items: center;
     gap: 3px;
     cursor: pointer;
+}
+
+/* ---------------- PO-3 非模态小窗（结构树/结构图专用；豁免凭证见 ui/floatwin.js 文件头） ----------------
+   样式纪律（L1-MR-3）：全部类名 chatfilesys-floatwin* 前缀；配色走 SmartTheme 变量 + 回退值；
+   零硬编码主题色（下方的中性灰阶 rgba 阴影/遮罩不算主题色）。绝不裸用酒馆全站类名。 */
+
+.chatfilesys-floatwin {
+    position: fixed;
+    z-index: 3500; /* 高于聊天区/工具排，低于酒馆模态弹窗（~9999）——非模态不该盖住官方对话框 */
+    display: flex;
+    flex-direction: column;
+    min-width: 280px;
+    min-height: 200px;
+    background: var(--SmartThemeBodyBgColor, var(--grey30, #1d1f24));
+    color: var(--SmartThemeBodyColor, #c9d1d9);
+    border: 1px solid var(--SmartThemeBorderColor, #30363d);
+    border-radius: 10px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
+    font-size: 13px;
+}
+
+.chatfilesys-floatwin-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px 6px 12px;
+    background: var(--SmartThemeBlurTintColor, rgba(48, 54, 61, 0.6));
+    border-bottom: 1px solid var(--SmartThemeBorderColor, #30363d);
+    cursor: move;
+    user-select: none;
+    touch-action: none; /* 拖拽手势不滚动页面 */
+}
+
+.chatfilesys-floatwin-title {
+    font-weight: 600;
+    font-size: 12.5px;
+    color: var(--SmartThemeEmColor, var(--SmartThemeBodyColor, #c9d1d9));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chatfilesys-floatwin-spring {
+    flex: 1;
+}
+
+.chatfilesys-floatwin-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--SmartThemeBodyColor, #c9d1d9);
+    width: 24px;
+    height: 24px;
+    line-height: 1;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.chatfilesys-floatwin-btn:hover {
+    border-color: var(--SmartThemeBorderColor, #30363d);
+    color: var(--SmartThemeEmColor, #ffffff);
+}
+
+.chatfilesys-floatwin-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 8px 10px;
+}
+
+.chatfilesys-floatwin-resize {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 16px;
+    height: 16px;
+    cursor: nwse-resize;
+    touch-action: none;
+    background: linear-gradient(135deg, transparent 50%, var(--SmartThemeBorderColor, #30363d) 50%);
+    opacity: 0.7;
+}
+
+/* 小窗内的树/图宿主沿用弹窗页签同款容器类（渲染器是同源单点），只补滚动上下文 */
+.chatfilesys-floatwin .chatfilesys-tree-host,
+.chatfilesys-floatwin .chatfilesys-graph-host {
+    max-height: none;
+}
+
+/* ---------------- 疑似同族候选确认清单（4.2；官方 Popup 内） ---------------- */
+
+.chatfilesys-cands .chatfilesys-cand {
+    border: 1px solid var(--SmartThemeBorderColor, #30363d);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin: 8px 0;
+}
+
+.chatfilesys-cands .chatfilesys-cand-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+}
+
+.chatfilesys-cands .chatfilesys-cand-plan {
+    margin-bottom: 6px;
+    opacity: .85;
+}
+
+.chatfilesys-cands [data-role="cand-status"] {
+    margin-top: 4px;
+    color: var(--SmartThemeEmColor, var(--SmartThemeBodyColor, #c9d1d9));
 }

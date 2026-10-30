@@ -32,11 +32,17 @@ import { createMinimap } from './minimap.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 
-/** 节点配色（按「谁说的」分两类；与宿主主题变量解耦——图是数据可视化，不是宿主 UI） */
+/** 节点配色（按「谁说的」分两类；填充与宿主主题变量解耦——图是数据可视化，不是宿主 UI，
+ *  这是**已登记的设计决策**）。
+ *  描边/高亮**走主题变量**（L1-MR-3：SVG presentation attribute 不支持 var()，
+ *  故用 `style.stroke` 赋值——CSS 属性支持 var）；回退值保证深浅主题都可见。 */
 const FILL_USER = '#2d4a6b';
 const FILL_CHAR = '#3a3350';
-const STROKE_DEFAULT = 'rgba(255,255,255,0.22)';
-const STROKE_ACTIVE = '#f0c040';
+const STROKE_DEFAULT = 'var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.22))';
+const STROKE_ACTIVE = 'var(--SmartThemeQuoteColor, #f0c040)';
+const applyStroke = (rect, active) => {
+    rect.style.stroke = active ? STROKE_ACTIVE : STROKE_DEFAULT;
+};
 
 /** 造一个 SVG 元素（`createElement` 不给命名空间，必须用 `createElementNS`） */
 function svg(tag, attrs = {}) {
@@ -170,9 +176,9 @@ export function createGraphView(deps = {}) {
         const rect = svg('rect', {
             x: -w / 2, y: -h / 2, width: w, height: h, rx: 6,
             fill: node.isUser ? FILL_USER : FILL_CHAR,
-            stroke: node.id === state.activeId ? STROKE_ACTIVE : STROKE_DEFAULT,
             'stroke-width': node.id === state.activeId ? 2 : 1,
         });
+        applyStroke(rect, node.id === state.activeId);
         const t1 = svg('text', { class: 'chatfilesys-gnode-id', x: -w / 2 + 10, y: 4 });
         t1.textContent = primary;
         const t2 = svg('text', { class: 'chatfilesys-gnode-meta', x: -w / 2 + 46, y: 4 });
@@ -322,7 +328,7 @@ export function createGraphView(deps = {}) {
             const on = g.dataset.node === state.activeId;
             const rect = g.querySelector('rect');
             if (!rect) return;
-            rect.setAttribute('stroke', on ? STROKE_ACTIVE : STROKE_DEFAULT);
+            applyStroke(rect, on);
             rect.setAttribute('stroke-width', on ? '2' : '1');
         });
     }
