@@ -128,12 +128,39 @@ STEPS = """async (extSrc) => {
         log('DOM mes count = ' + mesN);
         out.__mesN = mesN;
 
-        // ⑨ UI 发消息 → chats/append 拦截写库
+        // ⑧.5 清掉宿主侧模态（开机公告等）——⑨ 的发消息是**真实 UI 点击**，
+        //     被宿主模态盖住会被静默吞掉（2026-10-31 实测：Luker 重启后某插件的开机公告
+        //     弹窗盖住页面 → send 点击无效 → append 根本没发，floors 停在 2）。
+        //     只动宿主模态，别碰自家弹窗。
+        await (async () => {
+            for (const d of document.querySelectorAll('dialog[open]')) {
+                if (d.querySelector('.chatfilesys-popup')) continue;
+                const btn = [...d.querySelectorAll('button, .popup-button-ok, .popup-button-close, .menu_button')]
+                    .find((b) => /我知道了|确定|关闭|OK|好/.test(b.textContent || ''));
+                if (btn) btn.click(); else d.close();
+            }
+            await new Promise(r => setTimeout(r, 600));
+        })();
+        log('host dialogs after dismiss: ' + document.querySelectorAll('dialog[open]').length);
+
+        // ⑨ UI 发消息 → 拦截写库。
+        //     主路 = 真实 UI 点击（#send_but）；**兜底 = /send 斜杠**。
+        //     2026-10-31 实测：本实例（宿主重启后）的 UI 发送管道**没有把用户消息加进聊天**
+        //     （chatLen 不变；抓包只有开场白 swipe 初始化的 chats/patch，没有消息 add）——
+        //     这是宿主侧环境问题（与 chatfilesys 无关：同实例上保真用例的 append/字段级 add
+        //     全部落库）。本用例要验的是「接缝写库闭环」，消息从哪条路进来都算数，但要**如实记录**。
         const ta = document.querySelector('#send_textarea');
         ta.value = '真机全旅程v4探针消息';
         ta.dispatchEvent(new Event('input', { bubbles: true }));
         document.querySelector('#send_but').click();
-        await new Promise(r => setTimeout(r, 10000));
+        await new Promise(r => setTimeout(r, 8000));
+        if ((c.chat || []).length <= chatLen) {
+            log('UI send 未把消息加进聊天（宿主发送管道环境问题）→ 兜底 /send');
+            await c.executeSlashCommandsWithOptions('/send 真机全旅程v4探针消息', { handleExecutionErrors: true });
+        } else {
+            log('UI send 正常（chatLen=' + c.chat.length + '）');
+        }
+        await new Promise(r => setTimeout(r, 4000));
 
         // ⑩ 库状态复核 + seam 拦截记录
         const f2 = await adapter.loadFamily({ familyId });
