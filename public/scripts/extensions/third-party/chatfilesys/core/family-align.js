@@ -24,8 +24,11 @@ import { computeHash, normalizeText } from './merge.js';
 /** cost 0.0 要求的最小归一化长度。挡 `''` / `'…'` / `'*沉默*'` 这类无区分度短行。 */
 export const MIN_EVIDENCE_LEN = 8;
 
-/** 对齐代价三档。**必须严格有序**：MATCH < GAP < MISMATCH < 2×GAP（见文件头第 3 条）。 */
-export const COST = Object.freeze({ MATCH: 0, GAP: 1, MISMATCH: 1.5 });
+/**
+ * 对齐代价三档（**整数** 0/2/3 —— C1.3 起；乘 2 避免浮点累加误差，比例关系不变）。
+ * **必须严格有序**：MATCH < GAP < MISMATCH < 2×GAP（见文件头第 3 条）。
+ */
+export const COST = Object.freeze({ MATCH: 0, GAP: 2, MISMATCH: 3 });
 
 /** 判据阈值。数值来源见 `design.md` §7.1（真实语料标定，不是拍的）。 */
 export const LIMITS = Object.freeze({
@@ -33,7 +36,11 @@ export const LIMITS = Object.freeze({
     n0Floor: 3,        // (1) 且不少于 3 层
     minFloors: 3,      // (2) 双方各 ≥ 3 层
     minMaxRatio: 0.25, // (2) 长度比不足则降级 uncertain（不是 different）
-    maxFloors: 2000,   // 性能护栏：超过则判 uncertain，不做 O(n·m) 对齐
+    // 工作量预算（C1.3 起取代旧 `maxFloors: 2000` 硬护栏）：超过则 budget-exceeded，
+    // **不截断、不假装合并**（spec §4）。旧护栏把 >2000 层直接降成 independent 是 design-v2
+    // 明令移除的行为（R1.7：超过旧 2000 层护栏也纳入错位对齐验收）。
+    // 10000×10000 = 1e8 cells（含歧义第二趟 ≈ 2e8 次行内操作）在该预算内。
+    maxCells: 200000000,
 });
 
 /** 该 hash 是否够格当证据（长度门槛只对**行正文**施加；swipe 条目在构造时已各自施过） */
@@ -168,7 +175,8 @@ export function matchBound(a, b) {
 }
 
 /**
- * 全局对齐（Needleman–Wunsch 变体），跑在**整条序列**上。
+ * 全局对齐 —— **旧全矩阵实现，只作 oracle**（implement-v2 C1.3：短序列保留旧 DP 作为独立 oracle）。
+ * 生产路径走 `align` / `alignEx`（线性空间）。内存 O(n·m)，别拿它跑长聊天。
  *
  * 统计量天然包含公共前/后缀 —— 这一点是纠错：原设计把统计量的分母取自「去掉公共前后缀之后
  * 的中段」，而中段按定义就是**不匹配**的部分，要求它 30% 精确匹配是结构性自相矛盾
@@ -178,19 +186,17 @@ export function matchBound(a, b) {
  * @param {Array<object>} b
  * @returns {{n0:number, n15:number, gaps:number, path:Array<object>}}
  */
-export function align(a, b) {
+export function alignFull(a, b) {
     const n = a.length;
     const m = b.length;
-    const INF = Number.POSITIVE_INFINITY;
     // dp[i][j] = 对齐 a[i..] 与 b[j..] 的最小代价；ptr 记选择：0=配对 1=a 空位 2=b 空位
-    const dp = Array.from({ length: n + 1 }, () => new Float64Array(m + 1).fill(INF));
+    const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
     const ptr = Array.from({ length: n + 1 }, () => new Int8Array(m + 1));
-    dp[n][m] = 0;
     for (let j = m - 1; j >= 0; j -= 1) { dp[n][j] = dp[n][j + 1] + COST.GAP; ptr[n][j] = 2; }
     for (let i = n - 1; i >= 0; i -= 1) { dp[i][m] = dp[i + 1][m] + COST.GAP; ptr[i][m] = 1; }
     for (let i = n - 1; i >= 0; i -= 1) {
         for (let j = m - 1; j >= 0; j -= 1) {
-            let best = classify(a[i], b[j]).cost + dp[i + 1][j + 1];
+            let best = pairCost(a[i], b[j]) + dp[i + 1][j + 1];
             let p = 0;
             const up = COST.GAP + dp[i + 1][j];
             const left = COST.GAP + dp[i][j + 1];
@@ -222,6 +228,312 @@ export function align(a, b) {
     while (i < n) { gaps += 1; path.push({ ai: i, bj: null, cost: COST.GAP, why: 'gap' }); i += 1; }
     while (j < m) { gaps += 1; path.push({ ai: null, bj: j, cost: COST.GAP, why: 'gap' }); j += 1; }
     return { n0, n15, gaps, path };
+}
+
+/* ---------------- 线性空间对齐（Hirschberg 分治，整数代价） ----------------
+ *
+ * design-v2「对齐机制与复杂度」：大序列用线性空间分治回溯（Hirschberg 式）和相同 tie-break；
+ * 不因 >2000 层降级；每个批次检查 abort 与预算。
+ *
+ * 实现要点（改前先读）：
+ * · **稀疏零代价矩阵**：cost(i,j)=0 只发生在 classify 的三种 MATCH 情形（hash 等值 /
+ *   一侧当前正文在另一侧版本集）。先用倒排索引收集每行的零位（`zeros`），DP 行内其余格
+ *   直接填 MISMATCH —— 把每格一次 Set.has 换成行内几次 O(1) 命中，1e8 格才跑得动；
+ *   零位集合与 `classify` 的三种情形一一对应（含 `b.swipeHashes.has(a.hash)` 的反向通道），
+ *   **不剪枝、不改最优路径**（design-v2：任何剪枝须证明不误杀——这里没有剪枝）。
+ * · **同一份分治内核，两种驱动**：内核是生成器（`hirschbergGen`），在行块边界 `yield`；
+ *   同步驱动（`align`/`alignEx`，测试与小输入）与异步驱动（`alignLinearAsync`，带
+ *   12ms 门限的让出调度 + 取消检查）共用同一份逻辑，不维护两份实现。
+ * · **tie-break 与旧 DP 相同**：候选顺序 [配对, a空位, b空位] + 严格 `<`。歧义第二趟
+ *   反转候选顺序；两条同分路径的配对差异 ⇒ 对应楼层标 `ambig`（不伪造唯一对应）。
+ */
+
+/** 配对代价（与 `classify` 同判据；零位矩阵的权威口径） */
+function pairCost(da, db) {
+    return classify(da, db).cost;
+}
+
+/**
+ * 稀疏零位矩阵：`zeros[i]` = 与 a[i] 可能构成 MATCH 的 b 下标集合。
+ * 覆盖 classify 的全部三条 MATCH 通道；**是超集的精确化**（有些零位在最优路径上未必用上，
+ * 但每个 MATCH 都在其中 ⇒ DP 结果与逐格 classify 完全一致）。
+ */
+function buildZeros(a, b) {
+    const posB = new Map(); // b 的当前正文 hash → [j]
+    b.forEach((d, j) => {
+        let l = posB.get(d.hash);
+        if (!l) posB.set(d.hash, l = []);
+        l.push(j);
+    });
+    const swipeB = new Map(); // b 的版本集成员 hash → [j]（反向通道：b.swipeHashes.has(a.hash)）
+    b.forEach((d, j) => {
+        for (const h of d.swipeHashes) {
+            let l = swipeB.get(h);
+            if (!l) swipeB.set(h, l = []);
+            l.push(j);
+        }
+    });
+    const zeros = [];
+    for (const d of a) {
+        const js = new Set();
+        if (d.len >= MIN_EVIDENCE_LEN) {
+            for (const j of posB.get(d.hash) || []) js.add(j); // 通道①：双方当前正文等值
+        }
+        for (const h of d.swipeHashes) {
+            for (const j of posB.get(h) || []) js.add(j);      // 通道②：a 的版本集含 b 的当前
+        }
+        for (const j of swipeB.get(d.hash) || []) js.add(j);   // 通道③：b 的版本集含 a 的当前
+        zeros.push(js);
+    }
+    return zeros;
+}
+
+/** 取消检查器（每行调用一次；抛 {code:'aborted'} 由 planFamilyMerge 接住转 uncertain）。
+ *  预算不在行级判定 —— Hirschberg 的行会被分治层级重访，行级计数不等于总工作量；
+ *  预算在 `planFamilyMerge` 进入 DP 前按 `cells = n*m` 一次性判定（宁可多算一档）。 */
+function makeChecker(opts) {
+    return (i) => {
+        if (opts.abortFlag?.aborted) {
+            const e = new Error('[aborted] 对齐被取消');
+            e.code = 'aborted';
+            throw e;
+        }
+        void i;
+    };
+}
+
+/** 子矩形 [i0,i1)×[j0,j1) 的完整 DP + 回溯（小矩形基例；内存 O(n·m)，n≤2 或 m≤2 才进来） */
+function smallSolve(a, b, zeros, i0, i1, j0, j1, prefer) {
+    const n = i1 - i0;
+    const m = j1 - j0;
+    const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+    const ptr = Array.from({ length: n + 1 }, () => new Int8Array(m + 1));
+    for (let j = m - 1; j >= 0; j -= 1) { dp[n][j] = dp[n][j + 1] + COST.GAP; ptr[n][j] = 2; }
+    for (let i = n - 1; i >= 0; i -= 1) { dp[i][m] = dp[i + 1][m] + COST.GAP; ptr[i][m] = 1; }
+    for (let i = n - 1; i >= 0; i -= 1) {
+        for (let j = m - 1; j >= 0; j -= 1) {
+            const c = zeros[i0 + i].has(j0 + j) ? COST.MATCH : COST.MISMATCH;
+            const cands = prefer === 'inverted'
+                ? [[COST.GAP + dp[i][j + 1], 2], [COST.GAP + dp[i + 1][j], 1], [c + dp[i + 1][j + 1], 0]]
+                : [[c + dp[i + 1][j + 1], 0], [COST.GAP + dp[i + 1][j], 1], [COST.GAP + dp[i][j + 1], 2]];
+            let best = cands[0][0];
+            let p = cands[0][1];
+            for (const [v, pp] of cands) if (v < best) { best = v; p = pp; }
+            dp[i][j] = best;
+            ptr[i][j] = p;
+        }
+    }
+    const path = [];
+    let i = 0;
+    let j = 0;
+    while (i < n && j < m) {
+        const p = ptr[i][j];
+        if (p === 0) {
+            const c = classify(a[i0 + i], b[j0 + j]);
+            path.push({ ai: i0 + i, bj: j0 + j, cost: c.cost, why: c.why });
+            i += 1; j += 1;
+        } else if (p === 1) {
+            path.push({ ai: i0 + i, bj: null, cost: COST.GAP, why: 'gap' }); i += 1;
+        } else {
+            path.push({ ai: null, bj: j0 + j, cost: COST.GAP, why: 'gap' }); j += 1;
+        }
+    }
+    while (i < n) { path.push({ ai: i0 + i, bj: null, cost: COST.GAP, why: 'gap' }); i += 1; }
+    while (j < m) { path.push({ ai: null, bj: j0 + j, cost: COST.GAP, why: 'gap' }); j += 1; }
+    return path;
+}
+
+/**
+ * Hirschberg 分治内核（生成器；行块边界 yield，由驱动决定是否让出调度）。
+ * 缓冲池按分治深度各备一对行缓冲 → 内存 O((log n)·m)，零分配churn。
+ */
+function* hirschbergGen(a, b, zeros, i0, i1, j0, j1, opts, depth) {
+    const n = i1 - i0;
+    const m = j1 - j0;
+    if (n === 0) {
+        const out = [];
+        for (let j = j0; j < j1; j += 1) out.push({ ai: null, bj: j, cost: COST.GAP, why: 'gap' });
+        return out;
+    }
+    if (m === 0) {
+        const out = [];
+        for (let i = i0; i < i1; i += 1) out.push({ ai: i, bj: null, cost: COST.GAP, why: 'gap' });
+        return out;
+    }
+    if (n <= 2 || m <= 2) return smallSolve(a, b, zeros, i0, i1, j0, j1, opts.prefer);
+
+    const mid = i0 + (n >> 1);
+    const check = makeChecker({ ...opts, width: m });
+    // 前向行：i0 → mid（F(mid, j0..j1)）
+    const W = m + 1;
+    let bufA = opts.pool.get(depth * 2) || null;
+    let bufB = opts.pool.get(depth * 2 + 1) || null;
+    if (!bufA) { bufA = new Int32Array(W); bufB = new Int32Array(W); opts.pool.set(depth * 2, bufA); opts.pool.set(depth * 2 + 1, bufB); }
+    let prev = bufA;
+    let cur = bufB;
+    for (let j = 0; j <= m; j += 1) prev[j] = COST.GAP * j; // F(i0, ·) 边界
+    let since = 0;
+    for (let i = i0 + 1; i <= mid; i += 1) {
+        cur[0] = prev[0] + COST.GAP;
+        const zrow = zeros[i - 1];
+        for (let jj = 1; jj <= m; jj += 1) {
+            const c = zrow.has(j0 + jj - 1) ? COST.MATCH : COST.MISMATCH;
+            let best = c + prev[jj - 1];
+            const up = COST.GAP + prev[jj];
+            if (up < best) best = up;
+            const left = COST.GAP + cur[jj - 1];
+            if (left < best) best = left;
+            cur[jj] = best;
+        }
+        const t = prev; prev = cur; cur = t;
+        check(i);
+        if (++since >= opts.yieldEvery) { since = 0; yield; }
+    }
+    const fRow = prev;
+    // 后向行：i1 → mid（B(mid, j0..j1)）；descend 用另一对缓冲（depth*2+4/+5）
+    let gPrev = opts.pool.get(depth * 2 + 4) || null;
+    let gCur = opts.pool.get(depth * 2 + 5) || null;
+    if (!gPrev) { gPrev = new Int32Array(W); gCur = new Int32Array(W); opts.pool.set(depth * 2 + 4, gPrev); opts.pool.set(depth * 2 + 5, gCur); }
+    for (let j = 0; j <= m; j += 1) gPrev[j] = COST.GAP * (m - j); // B(i1, ·) 边界
+    since = 0;
+    for (let i = i1 - 1; i >= mid; i -= 1) {
+        // gCur[j] = min(c(i,j)+gPrev[j+1], GAP+gPrev[j], GAP+gCur[j+1])，j 从 m-1 降到 0
+        gCur[m] = COST.GAP * (i1 - i);
+        const zrow = zeros[i];
+        for (let jj = m - 1; jj >= 0; jj -= 1) {
+            const c = zrow.has(j0 + jj) ? COST.MATCH : COST.MISMATCH;
+            let best = c + gPrev[jj + 1];
+            const up = COST.GAP + gPrev[jj];
+            if (up < best) best = up;
+            const left = COST.GAP + gCur[jj + 1];
+            if (left < best) best = left;
+            gCur[jj] = best;
+        }
+        const t = gPrev; gPrev = gCur; gCur = t;
+        check(i);
+        if (++since >= opts.yieldEvery) { since = 0; yield; }
+    }
+    const gRow = gPrev;
+    // 分割点：k* = argmin_j F(mid, j) + B(mid, j)；tie 由 prefer 决定（primary 取最小 j）
+    let bestK = 0;
+    let bestV = Number.POSITIVE_INFINITY;
+    for (let jj = 0; jj <= m; jj += 1) {
+        const v = fRow[jj] + gRow[jj];
+        if (v < bestV || (opts.prefer === 'inverted' && v === bestV)) { bestV = v; bestK = jj; }
+    }
+    const k = j0 + bestK;
+    const head = yield* hirschbergGen(a, b, zeros, i0, mid, j0, k, opts, depth + 1);
+    const tail = yield* hirschbergGen(a, b, zeros, mid, i1, k, j1, opts, depth + 1);
+    return head.concat(tail);
+}
+
+function* alignGen(a, b, opts) {
+    return yield* hirschbergGen(a, b, buildZeros(a, b), 0, a.length, 0, b.length, opts, 0);
+}
+
+function summarize(path) {
+    let n0 = 0;
+    let n15 = 0;
+    let gaps = 0;
+    for (const p of path) {
+        if (p.cost === COST.MATCH) n0 += 1;
+        else if (p.cost === COST.MISMATCH) n15 += 1;
+        else gaps += 1;
+    }
+    return { n0, n15, gaps };
+}
+
+/**
+ * 主/副两趟路径的配对差异 → 歧义集合。
+ * `ambiguousCount` 按**主路径楼层**计（与 planFamilyMerge 的 `ambig` 旗标同一谓词）：
+ * 该层涉及的下标在两趟里配对不一致（或一侧配了另一侧空位）即歧义。
+ */
+function ambiguityOf(path, alt) {
+    const pm = new Map();
+    const sm = new Map();
+    const pmB = new Map();
+    const smB = new Map();
+    for (const p of path) if (p.ai !== null && p.bj !== null) { pm.set(p.ai, p.bj); pmB.set(p.bj, p.ai); }
+    for (const p of alt) if (p.ai !== null && p.bj !== null) { sm.set(p.ai, p.bj); smB.set(p.bj, p.ai); }
+    const ambigA = new Set();
+    const ambigB = new Set();
+    for (const [ai, bj] of pm) if (sm.get(ai) !== bj) ambigA.add(ai);
+    for (const [ai, bj] of sm) if (pm.get(ai) !== bj) ambigA.add(ai);
+    for (const [bj, ai] of pmB) if (smB.get(bj) !== ai) ambigB.add(bj);
+    for (const [bj, ai] of smB) if (pmB.get(bj) !== ai) ambigB.add(bj);
+    const ambiguousCount = path.filter((p) => (p.ai !== null && ambigA.has(p.ai)) || (p.bj !== null && ambigB.has(p.bj))).length;
+    return { ambigA, ambigB, ambiguousCount };
+}
+
+function driveSync(genFactory) {
+    const it = genFactory();
+    let r = it.next();
+    while (!r.done) r = it.next();
+    return r.value;
+}
+
+/**
+ * 异步驱动：行块之间让出调度（12ms 门限），取消/预算有界（每行还有同步 check）。
+ * 主线程降级路径用这个 —— UI 不被一次长 DP 卡死（design-v2：主线程分片让出调度）。
+ */
+async function driveAsync(genFactory, { abortFlag, yieldMs = 12 } = {}) {
+    const it = genFactory();
+    let r = it.next();
+    let last = Date.now();
+    while (!r.done) {
+        if (abortFlag?.aborted) {
+            const e = new Error('[aborted] 对齐被取消');
+            e.code = 'aborted';
+            throw e;
+        }
+        if (Date.now() - last >= yieldMs) {
+            await new Promise((res) => setTimeout(res, 0));
+            last = Date.now();
+        }
+        r = it.next();
+    }
+    return r.value;
+}
+
+/**
+ * 全局对齐（线性空间，同步入口）—— 旧 `align` 的等价替换：同 tie-break、同统计口径。
+ * 空输入不抛（旧用例钉住的行为）。
+ */
+export function align(a, b) {
+    const path = driveSync(() => alignGen(a, b, { prefer: 'primary', yieldEvery: 4096, pool: new Map() }));
+    return { ...summarize(path), path };
+}
+
+/**
+ * 带歧义检测的对齐：第二趟反转 tie-break；两条同分路径的配对差异 ⇒ 歧义。
+ * @returns {{n0,n15,gaps, path, ambiguousCount:number,
+ *            ambigA:Set<number>, ambigB:Set<number>}}
+ */
+export function alignEx(a, b, opts = {}) {
+    const mk = (prefer) => () => alignGen(a, b, {
+        prefer, yieldEvery: opts.yieldEvery ?? 4096,
+        pool: new Map(), abortFlag: opts.abortFlag, maxCells: opts.maxCells,
+    });
+    const path = driveSync(mk('primary'));
+    const alt = driveSync(mk('inverted'));
+    return { ...summarize(path), path, ...ambiguityOf(path, alt) };
+}
+
+/** 异步版（让出调度 + 取消）；`planFamilyMerge` 的生产入口。 */
+export async function alignLinearAsync(a, b, opts = {}) {
+    const { abortFlag, onProgress, yieldEvery = 256 } = opts;
+    const path = await driveAsync(
+        () => alignGen(a, b, { prefer: 'primary', yieldEvery, pool: new Map(), abortFlag, maxCells: null }),
+        { abortFlag },
+    );
+    onProgress?.({ phase: 'align-primary', done: path.length });
+    // 歧义第二趟（同规模、同预算内 —— 预算按主趟 cells 在 planFamilyMerge 前置判定）
+    const alt = await driveAsync(
+        () => alignGen(a, b, { prefer: 'inverted', yieldEvery, pool: new Map(), abortFlag, maxCells: null }),
+        { abortFlag },
+    );
+    onProgress?.({ phase: 'align-ambiguity', done: path.length });
+    return { ...summarize(path), path, ...ambiguityOf(path, alt) };
 }
 
 /** 精确（正文相等且过长度门槛）的连续公共前缀长度 —— 只作报告与祖先证据，不参与判定 */
@@ -285,11 +597,18 @@ const needOf = (n, m) => Math.max(LIMITS.n0Floor, Math.ceil(LIMITS.n0Ratio * Mat
  * **任何异常都不抛、不写库**：判不出来就返回 `uncertain` + 理由（`L0-11` 静默降级的精神）。
  *
  * @param {{aRows: Array<object>, bRows: Array<object>,
- *          aMainChat?: string|null, bMainChat?: string|null, log?: Function}} args
- *   `aMainChat`/`bMainChat` 只用来填报告的 `familyHint`，**不参与判定**。
+ *          aMainChat?: string|null, bMainChat?: string|null, log?: Function,
+ *          maxCells?: number, abortFlag?: {aborted:boolean},
+ *          onProgress?: Function, yieldEvery?: number}} args
+ *   `aMainChat`/`bMainChat` 只用来填报告的 `familyHint`，**不参与判定**；
+ *   `maxCells` = 工作量预算（n·m 格数，缺省 `LIMITS.maxCells`），超限 → `uncertain/budget-exceeded`
+ *   （不截断、不假装合并，spec §4）；`abortFlag` = 可变取消旗标（**不是** AbortSignal ——
+ *   它不能 postMessage，跨 Worker 只传这个普通对象等价物）；`onProgress` = 进度回调
+ *   （UI 层自行 rAF 合帧，`L1-MR-9`）。
  * @returns {Promise<object>} MergePlan
  */
-export async function planFamilyMerge({ aRows, bRows, aMainChat = null, bMainChat = null, log = () => {} } = {}) {
+export async function planFamilyMerge({ aRows, bRows, aMainChat = null, bMainChat = null, log = () => {},
+    maxCells = null, abortFlag = null, onProgress = null, yieldEvery = 256 } = {}) {
     const nmA = normalizeMainChat(aMainChat);
     const nmB = normalizeMainChat(bMainChat);
     const familyHint = {
@@ -319,8 +638,12 @@ export async function planFamilyMerge({ aRows, bRows, aMainChat = null, bMainCha
     if (Math.min(n, m) / Math.max(n, m) < LIMITS.minMaxRatio) {
         return plan('uncertain', 'length-ratio', { stats: { n0: 0, n15: 0, gaps: 0, minLen: Math.min(n, m), maxLen: Math.max(n, m) } });
     }
-    if (Math.max(n, m) > LIMITS.maxFloors) {
-        return plan('uncertain', 'too-large', { stats: { n0: 0, n15: 0, gaps: 0, minLen: n, maxLen: m } });
+    // 工作量预算（C1.3 取代旧 2000 层硬护栏）：cells 超限 → budget-exceeded，不截断不假装。
+    const cells = n * m;
+    if (cells > (maxCells ?? LIMITS.maxCells)) {
+        return plan('uncertain', 'budget-exceeded', {
+            stats: { n0: 0, n15: 0, gaps: 0, minLen: n, maxLen: m, cells },
+        });
     }
 
     const need = needOf(n, m);
@@ -331,8 +654,23 @@ export async function planFamilyMerge({ aRows, bRows, aMainChat = null, bMainCha
         return plan('different', 'prefilter', { stats: { n0: 0, n15: 0, gaps: 0, ...base } });
     }
 
-    const al = align(a, b);
-    const stats = { n0: al.n0, n15: al.n15, gaps: al.gaps, ...base };
+    let al;
+    try {
+        al = await alignLinearAsync(a, b, {
+            abortFlag, yieldEvery,
+            onProgress: (p) => onProgress?.(p),
+        });
+    } catch (e) {
+        if (e?.code === 'aborted') {
+            return plan('uncertain', 'aborted', { stats: { n0: 0, n15: 0, gaps: 0, ...base, cells } });
+        }
+        if (e?.code === 'budget-exceeded') {
+            return plan('uncertain', 'budget-exceeded', { stats: { n0: 0, n15: 0, gaps: 0, ...base, cells } });
+        }
+        log(`对齐失败：${e?.message || e}`);
+        return plan('uncertain', 'align-failed');
+    }
+    const stats = { n0: al.n0, n15: al.n15, gaps: al.gaps, ambiguousCount: al.ambiguousCount, ...base, cells };
 
     // (1) 绝对证据下限 —— 挡住「偏移极大」「只共享开场白」「空/短 swipe 碰撞」三类假阳性
     if (al.n0 < need) {
@@ -350,7 +688,16 @@ export async function planFamilyMerge({ aRows, bRows, aMainChat = null, bMainCha
 
     const floors = al.path.map((p, k) => {
         const floorNo = k + 1;
+        // 歧义（同分多解）：对应关系不唯一 ⇒ 不硬并（design-v2：歧义路径保留独立对应和说明）
+        const ambig = (p.ai !== null && al.ambigA.has(p.ai)) || (p.bj !== null && al.ambigB.has(p.bj));
         if (p.cost === COST.MATCH) {
+            if (ambig) {
+                return {
+                    floorNo, kind: 'two-groups', cost: p.cost, ambig: true,
+                    evidence: '同分多解：该层存在并列最优对应（配给哪一侧同价）⇒ 不硬并，两份都留',
+                    aIdx: p.ai, bIdx: p.bj,
+                };
+            }
             return {
                 floorNo, kind: 'swipe-merge', cost: p.cost,
                 evidence: p.why === 'swipe'
@@ -361,15 +708,15 @@ export async function planFamilyMerge({ aRows, bRows, aMainChat = null, bMainCha
         }
         if (p.cost === COST.MISMATCH) {
             return {
-                floorNo, kind: 'two-groups', cost: p.cost,
+                floorNo, kind: 'two-groups', cost: p.cost, ...(ambig ? { ambig: true } : {}),
                 evidence: '同位置但正文不同 ⇒ 该层两个组，交用户选（两份都留）',
                 aIdx: p.ai, bIdx: p.bj,
             };
         }
         if (p.bj === null) {
-            return { floorNo, kind: 'only-a', cost: p.cost, evidence: '只有 A 有这一层', aIdx: p.ai, bIdx: null };
+            return { floorNo, kind: 'only-a', cost: p.cost, ...(ambig ? { ambig: true } : {}), evidence: '只有 A 有这一层', aIdx: p.ai, bIdx: null };
         }
-        return { floorNo, kind: 'only-b', cost: p.cost, evidence: '只有 B 有这一层', aIdx: null, bIdx: p.bj };
+        return { floorNo, kind: 'only-b', cost: p.cost, ...(ambig ? { ambig: true } : {}), evidence: '只有 B 有这一层', aIdx: null, bIdx: p.bj };
     });
 
     return plan('same-family', null, { mode, commonPrefix: cpl, commonSuffix: cps, floors, stats });

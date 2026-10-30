@@ -361,8 +361,10 @@ test('align：空输入不抛', () => {
 });
 
 test('LIMITS：与 design.md §7.1 的定案值一致（改一处必须改两处）', () => {
+    // C1.3 起：`maxFloors: 2000` 硬护栏被工作量预算取代（design-v2 明令：不因 >2000 层降级，
+    // 预算耗尽给 budget-exceeded 与分批入口）；其余四值不动（真实语料标定）。
     assert.deepEqual({ ...LIMITS }, {
-        n0Ratio: 0.30, n0Floor: 3, minFloors: 3, minMaxRatio: 0.25, maxFloors: 2000,
+        n0Ratio: 0.30, n0Floor: 3, minFloors: 3, minMaxRatio: 0.25, maxCells: 200000000,
     });
     assert.equal(MIN_EVIDENCE_LEN, 8);
 });

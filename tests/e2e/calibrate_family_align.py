@@ -23,11 +23,13 @@ from collections import Counter
 
 BACKUPS = r"D:\Repo\Tavern-repo\Instance\Dev\Luker\data\default-user\backups"
 
-# ---- design.md §3 的常量（改动须同步 design.md）----
+# ---- design.md §3 的常量（改动须同步 design.md；与 core/family-align.js 的 COST 一致）----
+# 2026-10-31（C1.3）：代价乘 2 改**整数** 0/2/3（比例关系不变：MATCH < GAP < MISMATCH < 2×GAP），
+# 与 JS 实现逐位对齐 —— 标定数字与实现不得静默漂移。
 MIN_EVIDENCE_LEN = 8   # cost=0.0 的最小归一化长度（挡 '' / '…' / '*沉默*'）
-GAP = 1.0              # 删/插一层
-MISMATCH = 1.5         # 同位置、内容不同
-MATCH = 0.0
+GAP = 2                # 删/插一层
+MISMATCH = 3           # 同位置、内容不同
+MATCH = 0
 # ---- design.md §4 step 3 的判据 ----
 T_N0_RATIO = 0.30      # (1) n0 ≥ max(3, ratio × min)
 T_N0_FLOOR = 3
