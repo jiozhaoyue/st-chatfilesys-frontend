@@ -5,7 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { planImport, buildFamilyFromJsonl, mergeIntoFamily, attachMergedFork, runImport } from '../../public/scripts/extensions/third-party/chatfilesys/core/importer.js';
+import { planImport, buildFamilyFromJsonl, mergeIntoFamily, attachMergedFork, runImport, probeFamily } from '../../public/scripts/extensions/third-party/chatfilesys/core/importer.js';
 
 const msg = (mes, i, name = '我', isUser = true) => JSON.stringify({ name, is_user: isUser, mes, send_date: 1000 + i });
 
@@ -199,7 +199,7 @@ test('attachMergedFork：forkFloor 超宿主范围抛错', () => {
 
 /** mock adapter（内存）+ mock api + mock trash */
 function mockWorld() {
-    const db = { families: {}, floorsByFamily: {}, deleted: [], trash: [] };
+    const db = { families: {}, floorsByFamily: {}, bindings: {}, deleted: [], trash: [] };
     /** 契约形态装配：family 含派生 model（真实三档 assembleFamily 同语义） */
     const assemble = (fam) => {
         const branches = (fam.branches || []).map((b) => ({
@@ -218,13 +218,35 @@ function mockWorld() {
         };
     };
     const adapter = {
+        // 契约形状：`listFamilies({characterId}) -> [{familyId, name, updatedAt}]`
+        // （`core/storage/adapter.js:5`）。缺了它 = 本仓栽过的「mock 与实现一起按假设写」。
+        async listFamilies() {
+            return Object.values(db.families).map((f) => ({
+                familyId: f.familyId, name: f.name, updatedAt: f.updatedAt ?? 0,
+            }));
+        },
         async loadFamily({ chatKey, familyId }) {
             if (familyId != null) {
                 const fam = Object.values(db.families).find((f) => f.familyId === familyId);
                 return fam ? assemble(fam) : null;
             }
             const fam = db.families[chatKey];
-            return fam ? assemble(fam) : null;
+            if (fam) return assemble(fam);
+            // 绑定键（`bindChatKey` 产物）：模糊命中后 chatKey → familyId 的登记
+            const fid = db.bindings[chatKey];
+            if (fid != null) {
+                const bound = Object.values(db.families).find((f) => f.familyId === fid);
+                return bound ? assemble(bound) : null;
+            }
+            return null;
+        },
+        // 契约：`bindChatKey({ familyId, chatKey }) -> { ok }`（`core/storage/adapter.js:16`）。
+        // 缺了它 = 本仓栽过的「mock 与实现一起按假设写」（importer 模糊命中后会调它）。
+        async bindChatKey({ familyId, chatKey }) {
+            const fam = Object.values(db.families).find((f) => f.familyId === familyId);
+            if (!fam) return { ok: false, reason: 'family-not-found' };
+            db.bindings[chatKey] = familyId;
+            return { ok: true };
         },
         async loadFloors({ familyId }) {
             return { floors: db.floorsByFamily[familyId] || [], hasMore: false };
@@ -430,4 +452,215 @@ test('runImport：并入既有家族时分支文件的 main_chat 不落到家族
     assert.equal(fam.hostMetadata.main_chat, '更早的父', '主键自己的父线索保留');
     assert.equal(fam.hostMetadata.top_a, 'keep');
     assert.deepEqual(fam.hostMetadata.variables, { hp: 1 }, '同一次入向的其他内容照常并入');
+});
+
+/* ---------------- 智能家族合并接线（4.1a/4.1b/4.2）：模糊探测 ---------------- */
+
+/** 长于 MIN_EVIDENCE_LEN(=8) 的正文夹具（同源/异文各一套） */
+const T = (tag) => `正文-${tag}-甲甲乙乙丙丙丁丁戊戊`;
+const S = (tag) => `异文-${tag}-己己庚庚辛辛壬壬癸癸`;
+
+/** 把一个家族（连同它的楼层行）塞进 mock 世界 */
+async function seedFamily(world, { chatKey, name, lines, updatedAt = 0 }) {
+    const built = await buildFamilyFromJsonl(lines, { familyId: `f_${name}`, chatKey, characterId: 'c1', name });
+    if (updatedAt) built.family.updatedAt = updatedAt;
+    world.db.families[chatKey] = built.family;
+    world.db.floorsByFamily[built.family.familyId] = built.floors;
+    return built.family;
+}
+
+test('runImport(模糊)：未命中 chatKey 但判同族 ⇒ 并入既有家族（不新建家族、多出一条分支）', async () => {
+    const world = mockWorld();
+    await seedFamily(world, {
+        chatKey: 'av1::old', name: 'old',
+        lines: jsonlLines(msg(T('1'), 0), msg(T('2'), 1), msg(T('3'), 2), msg(T('4'), 3), msg(T('5'), 4)),
+    });
+    // 导入文件：5 层里 4 层逐字相同、第 3 层改写（同位置不同文 ⇒ two-groups）
+    world.api.files.incoming = jsonlLines(msg(T('1'), 0), msg(T('2'), 1), msg(T('X'), 2), msg(T('4'), 3), msg(T('5'), 4));
+    world.api.searchChats = async () => [{ file_name: 'incoming.jsonl' }];
+
+    const result = await runImport({
+        adapter: world.adapter, trash: world.trash, api: world.api, confirm: async () => true,
+    }, { currentFileName: 'cur', deleteSources: false, characterId: 'c1', avatarUrl: 'av1' });
+
+    assert.equal(Object.keys(world.db.families).length, 1, '并入既有家族，不得新建家族');
+    assert.equal(result.families.length, 0, '`families` 只记新建的家族');
+    assert.deepEqual(result.suspected, [], '判同族 ⇒ 无「疑似」项');
+    const fam = world.db.families['av1::old'];
+    assert.equal(fam.model.branches.length, 2, '模糊合并应给家族新增一条分支');
+    const nb = fam.model.branches.find((b) => !b.is_default);
+    const a = fam.model.branches.find((b) => b.is_default);
+    assert.equal(nb.name, 'incoming', '新分支名 = 源文件名');
+    for (const f of [1, 2, 4, 5]) assert.equal(nb.path[f], a.path[f], `第 ${f} 层应零复制共享同一组`);
+    assert.notEqual(nb.path[3], a.path[3], '第 3 层被改写 ⇒ 新组');
+    assert.ok(fam.model.groups[nb.path[3]], 'B 的私有组应落在 groups');
+});
+
+test('runImport(模糊)：同一文件导入两次 ⇒ 家族数仍为 1（模糊命中必须绑定 chatKey；改前会红）', async () => {
+    const world = mockWorld();
+    await seedFamily(world, {
+        chatKey: 'av1::old', name: 'old',
+        lines: jsonlLines(msg(T('1'), 0), msg(T('2'), 1), msg(T('3'), 2), msg(T('4'), 3), msg(T('5'), 4)),
+    });
+    world.api.files.incoming = jsonlLines(msg(T('1'), 0), msg(T('2'), 1), msg(T('X'), 2), msg(T('4'), 3), msg(T('5'), 4));
+    world.api.searchChats = async () => [{ file_name: 'incoming.jsonl' }];
+    const deps = { adapter: world.adapter, trash: world.trash, api: world.api, confirm: async () => true };
+    const opts = { currentFileName: 'cur', deleteSources: false, characterId: 'c1', avatarUrl: 'av1' };
+
+    await runImport(deps, opts);
+    assert.equal(Object.keys(world.db.families).length, 1, '首次：模糊命中并入既有家族');
+
+    // 不绑定 chatKey 时，第二次导入仍「精确未命中」→ 探测时守卫（非活跃分支已在第 3 层持私有组）
+    // 降级为 group-collision → 落到建档 ⇒ **家族翻倍**（实测 1 → 2）。
+    await runImport(deps, opts);
+    assert.equal(Object.keys(world.db.families).length, 1, '第二次：绑定 chatKey ⇒ 精确命中，不得家族翻倍');
+    assert.equal(world.db.bindings['av1::incoming'], 'f_old', '模糊命中后已把 chatKey 绑定到该家族');
+});
+
+test('runImport(模糊)：判 uncertain ⇒ 不合并、记入 suspected、仍自建家族', async () => {
+    const world = mockWorld();
+    await seedFamily(world, {
+        chatKey: 'av1::old', name: 'old',
+        lines: jsonlLines(msg(T('1'), 0), msg(T('2'), 1), msg(T('3'), 2)),
+    });
+    world.api.files.small = jsonlLines(msg(T('1'), 0)); // 只有 1 层 ⇒ floor-too-few ⇒ uncertain
+    world.api.searchChats = async () => [{ file_name: 'small.jsonl' }];
+
+    const result = await runImport({
+        adapter: world.adapter, trash: world.trash, api: world.api, confirm: async () => true,
+    }, { currentFileName: 'cur', deleteSources: false, characterId: 'c1', avatarUrl: 'av1' });
+
+    assert.equal(Object.keys(world.db.families).length, 2, '未合并，自己新建一个家族');
+    assert.equal(result.families.length, 1);
+    assert.equal(result.suspected.length, 1);
+    assert.equal(result.suspected[0].fileName, 'small');
+    assert.equal(result.suspected[0].familyId, 'f_old');
+    assert.equal(result.suspected[0].plan.verdict, 'uncertain', '不确定必须如实报 uncertain，不硬猜');
+});
+
+test('runImport(模糊)：建模层守卫降级（group-collision）⇒ 不合并、记入 suspected', async () => {
+    const world = mockWorld();
+    const rowOf = (mes, i) => ({
+        floorNo: 0, variantId: '', seq: 0,
+        content: JSON.stringify({ name: '我', is_user: true, mes, send_date: 1000 + i }),
+        contentHash: null, sendDate: 1000 + i,
+    });
+    const [r1, r2, r3, r4] = [rowOf(T('1'), 0), rowOf(T('2'), 1), rowOf(T('3'), 2), rowOf(T('4'), 3)];
+    const r44 = rowOf(T('C'), 9);
+    // 既有家族：活跃 b_main；非活跃 bc 在第 4 层有自己的私有组 g44
+    world.db.families['av1::old'] = {
+        familyId: 'f_old', chatKey: 'av1::old', characterId: 'c1', name: 'old',
+        branches: [
+            { id: 'b_main', name: '主分支', is_default: true, fork_floor: 0 },
+            { id: 'bc', name: 'C线', is_default: false, fork_floor: 3 },
+        ],
+        branchPaths: {
+            b_main: { 1: 'g1', 2: 'g2', 3: 'g3', 4: 'g4' },
+            bc: { 1: 'g1', 2: 'g2', 3: 'g3', 4: 'g44' },
+        },
+        model: {
+            active_branch: 'b_main',
+            branches: [
+                { id: 'b_main', name: '主分支', is_default: true, fork_base: 0, path: { 1: 'g1', 2: 'g2', 3: 'g3', 4: 'g4' } },
+                { id: 'bc', name: 'C线', is_default: false, fork_base: 3, path: { 1: 'g1', 2: 'g2', 3: 'g3', 4: 'g44' } },
+            ],
+            groups: { g44: { id: 'g44', floor: 4, active: 0, variants: [] } },
+        },
+    };
+    world.db.floorsByFamily['f_old'] = [
+        { ...r1, floorNo: 1, variantId: 'g1' },
+        { ...r2, floorNo: 2, variantId: 'g2' },
+        { ...r3, floorNo: 3, variantId: 'g3' },
+        { ...r4, floorNo: 4, variantId: 'g4' },
+        { ...r44, floorNo: 4, variantId: 'g44' },
+    ];
+    // 导入文件：前 3 层同源，第 4 层改写 ⇒ B 在第 4 层建新私有组 ⇒ 与 bc 的 g44 撞层
+    world.api.files.incoming = jsonlLines(msg(T('1'), 0), msg(T('2'), 1), msg(T('3'), 2), msg(T('Y'), 3));
+    world.api.searchChats = async () => [{ file_name: 'incoming.jsonl' }];
+
+    const result = await runImport({
+        adapter: world.adapter, trash: world.trash, api: world.api, confirm: async () => true,
+    }, { currentFileName: 'cur', deleteSources: false, characterId: 'c1', avatarUrl: 'av1' });
+
+    assert.equal(Object.keys(world.db.families).length, 2, '守卫降级 ⇒ 不合并，自己建档');
+    assert.equal(result.suspected.length, 1);
+    assert.equal(result.suspected[0].fileName, 'incoming');
+    assert.equal(result.suspected[0].reason, 'group-collision');
+});
+
+test('runImport(模糊)：判 different ⇒ 照旧新建家族（不并入）', async () => {
+    const world = mockWorld();
+    await seedFamily(world, {
+        chatKey: 'av1::old', name: 'old',
+        lines: jsonlLines(msg(T('1'), 0), msg(T('2'), 1), msg(T('3'), 2)),
+    });
+    world.api.files.other = jsonlLines(msg(S('1'), 0), msg(S('2'), 1), msg(S('3'), 2));
+    world.api.searchChats = async () => [{ file_name: 'other.jsonl' }];
+
+    const result = await runImport({
+        adapter: world.adapter, trash: world.trash, api: world.api, confirm: async () => true,
+    }, { currentFileName: 'cur', deleteSources: false, characterId: 'c1', avatarUrl: 'av1' });
+
+    assert.equal(Object.keys(world.db.families).length, 2, '判不同 ⇒ 新建家族');
+    assert.equal(result.families.length, 1);
+    assert.deepEqual(result.suspected, []);
+});
+
+test('runImport(模糊)：候选上限 N 生效（超出 N 的更老家族不被比对）', async () => {
+    const mkWorld = async () => {
+        const world = mockWorld();
+        await seedFamily(world, {
+            chatKey: 'av1::new', name: 'new', updatedAt: 30,
+            lines: jsonlLines(msg(S('1'), 0), msg(S('2'), 1), msg(S('3'), 2), msg(S('4'), 3)),
+        });
+        await seedFamily(world, {
+            chatKey: 'av1::old', name: 'old', updatedAt: 10,
+            lines: jsonlLines(msg(T('1'), 0), msg(T('2'), 1), msg(T('3'), 2), msg(T('4'), 3)),
+        });
+        world.api.files.incoming = jsonlLines(msg(T('1'), 0), msg(T('2'), 1), msg(T('X'), 2), msg(T('4'), 3));
+        world.api.searchChats = async () => [{ file_name: 'incoming.jsonl' }];
+        return world;
+    };
+    const run = (world, extra) => runImport(
+        { adapter: world.adapter, trash: world.trash, api: world.api, confirm: async () => true },
+        { currentFileName: 'cur', deleteSources: false, characterId: 'c1', avatarUrl: 'av1', ...extra },
+    );
+
+    // N=1 ⇒ 只比 updatedAt 最新的 new（different）⇒ 未命中，新建家族 + 如实报 limited
+    const w1 = await mkWorld();
+    const r1 = await run(w1, { fuzzyCandidates: 1 });
+    assert.equal(Object.keys(w1.db.families).length, 3, 'N=1 ⇒ 没比到能匹配的 old ⇒ 新建家族');
+    assert.equal(r1.fuzzyLimited, true, '命中上限必须如实报出「只比了最近 N 个」');
+
+    // N=20 ⇒ 比到 old ⇒ 并入既有家族（家族数不变）
+    const w2 = await mkWorld();
+    const r2 = await run(w2, { fuzzyCandidates: 20 });
+    assert.equal(Object.keys(w2.db.families).length, 2, 'N 足够 ⇒ 并入既有家族，不新建');
+    assert.ok(!r2.fuzzyLimited, '没超上限就不该报 limited');
+    assert.equal(w2.db.families['av1::old'].model.branches.length, 2, '并入 old 应给 old 加一条分支');
+});
+
+test('runImport(模糊)：精确命中 chatKey 时不做模糊探测（回归：那条路一字不动）', async () => {
+    const world = mockWorld();
+    const deps = { adapter: world.adapter, trash: world.trash, api: world.api, confirm: async () => true };
+    const opts = { currentFileName: 'cur', only: 'chat1', deleteSources: false, characterId: 'c1', avatarUrl: 'av1' };
+    await runImport(deps, opts); // 首次：建档
+    assert.equal(Object.keys(world.db.families).length, 1);
+
+    let listed = 0;
+    const orig = world.adapter.listFamilies.bind(world.adapter);
+    world.adapter.listFamilies = async (a) => { listed += 1; return orig(a); };
+
+    const r = await runImport(deps, opts); // 再次：chatKey 精确命中
+
+    assert.equal(listed, 0, '精确命中不得触发模糊探测（listFamilies 一次都不许调）');
+    assert.equal(r.totalMerged, 0, '完全相同 ⇒ 幂等，无新增行');
+    assert.equal(Object.keys(world.db.families).length, 1);
+});
+
+test('probeFamily：缺 listFamilies 的适配器不抛（降级为空候选）', async () => {
+    const out = await probeFamily({ loadFamily: async () => null }, { characterId: 'c1', bRows: [] });
+    assert.deepEqual(out.hit, null);
+    assert.deepEqual(out.suspected, []);
+    assert.equal(out.total, 0);
 });

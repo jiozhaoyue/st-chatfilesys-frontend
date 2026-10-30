@@ -9,8 +9,13 @@
  * 纯函数：无 DOM、无网络、无适配器依赖（ops 由调用方送 applyOps）。
  */
 
-/** 归一化：去 BOM、统一换行符、去首尾空白 */
-function normalizeText(s) {
+/**
+ * 归一化：去 BOM、统一换行符、去首尾空白。
+ *
+ * **导出**（2026-09-29）：`family-align.js` 需要「归一化后的长度」来做证据长度门槛。
+ * 本仓纪律是「全仓只有一个归一化 / 一个哈希原语」——所以**导出这一份**，不另写第二份。
+ */
+export function normalizeText(s) {
     return String(s ?? '')
         .replace(/﻿/g, '')
         .replace(/\r\n/g, '\n')

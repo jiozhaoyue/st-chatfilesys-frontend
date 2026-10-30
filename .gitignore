@@ -39,3 +39,8 @@ docs/.vitepress/cache/
 # 仓根的空 node_modules（非本扩展所需——单测用 `node --test`，零依赖；
 # 它是一次误跑的 `npm install` 留下的空目录，只污染 `git status`）
 /node_modules/
+
+# 独立壳测试基建（SillyTavern 1.18.0 本地副本，供截图/错峰 e2e 用——上游源码，禁止入库）
+/standalone/
+# 截图验证的产物 PNG（真机 e2e 输出，不入库）
+/standalone_*.png

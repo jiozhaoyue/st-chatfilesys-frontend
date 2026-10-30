@@ -52,6 +52,7 @@ import { createStorageAdapter } from './core/storage/adapter.js';
 import { modelFromStore, storeFromModel } from './core/store-bridge.js';
 import { createTrash } from './core/trash.js';
 import { runImport } from './core/importer.js';
+import { formatPlan } from './core/family-align.js';
 import {
     IMPORT_PROMPT_MODE, normImportPrompt, shouldPromptImport, withImportPromptMutes,
 } from './core/import-prompt.js';
@@ -2176,6 +2177,9 @@ async function importJsonlFlow({ only = null, includeCurrent = false, keepBindin
         deleteSources,
         characterId: api.characterId,
         avatarUrl: api.avatarUrl,
+        // 智能家族合并（设置项单一事实源 = core/settings-registry.js）
+        fuzzyProbe: Boolean(getSetting('import.fuzzy_probe')),
+        fuzzyCandidates: Number(getSetting('import.fuzzy_candidates')),
     });
 
     const parts = [`已合并 ${result.totalMerged} 条`];
@@ -2186,6 +2190,19 @@ async function importJsonlFlow({ only = null, includeCurrent = false, keepBindin
     } else {
         toastr.success(`${parts.join('，')}。`, '聊天文件系统', { timeOut: 6000 });
         console.log(`[${MODULE_NAME}] 导入结果:`, result);
+    }
+    // 4.2：不可判定 ⇒ 不自动合并，只提示 + 明细进控制台（候选点选界面本轮不做，已登记「未做到」）
+    if (result.suspected?.length) {
+        const nFiles = new Set(result.suspected.map((s) => s.fileName)).size;
+        toastr.info(`${nFiles} 个文件疑似同族但证据不足，未自动合并，明细见控制台。`, '聊天文件系统', { timeOut: 8000 });
+        for (const s of result.suspected) {
+            console.info(`[${MODULE_NAME}] 疑似同族候选：${s.fileName} ← 家族「${s.familyName || s.familyId}」`
+                + `${s.reason ? `（${s.reason}）` : ''}`, formatPlan(s.plan));
+        }
+    }
+    if (result.fuzzyLimited) {
+        console.info(`[${MODULE_NAME}] 模糊探测只比对了最近 ${getSetting('import.fuzzy_candidates')} 个家族`
+            + '（调高「模糊探测：最多比对几个家族」可扩大范围）。');
     }
     if (wantMirror && result.totalFiles > 0) {
         extension_settings[MODULE_NAME].storage_mode = 'mirror';
