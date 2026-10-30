@@ -288,6 +288,13 @@ def main():
                 r.delete_test_char()
             except Exception:
                 pass
+            # 复位存储模式：本用例切过 pure，留给下一条用例的是 off（出厂默认）——
+            # 2026-10-31 实测：留在 pure 会让 night 的合并前置看到 not-enabled
+            try:
+                r.set_storage_mode('off')
+                r.close_popup()
+            except Exception:
+                pass
             # **先出汇总再关浏览器**——今晚实测三次「driver 在 close 时死亡」会把结果吞掉
             # （graph 收尾崩、night 收尾挂、本用例首跑）：判定与证据必须落在最不可能丢的位置。
             fails = [t for t in results if not t.startswith("PASS")]

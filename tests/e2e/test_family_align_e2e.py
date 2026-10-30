@@ -348,7 +348,12 @@ def main():
                 r.delete_test_char()   # 连聊天文件一起删（测试自产，非用户数据）
             except Exception:
                 pass
-            b.close()
+            # 今晚三次实证：driver 可能在 close 时死亡/挂起，吞掉其后的判定打印——
+            # 关浏览器异常必须兜住，判定与证据要落在最不可能丢的位置（2026-10-31）。
+            try:
+                b.close()
+            except Exception as e:
+                print(f"[warn] 浏览器关闭异常（不影响判定）：{str(e)[:120]}")
 
 
 if __name__ == "__main__":
