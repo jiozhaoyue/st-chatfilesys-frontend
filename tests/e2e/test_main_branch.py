@@ -14,6 +14,7 @@
 依赖：Dev Luker 8003 在跑 + 扩展已同步到实例 `data/default-user/extensions/chatfilesys/`。
 用法: PYTHONIOENCODING=utf-8 python tests/e2e/test_main_branch.py
 """
+import time
 import pathlib
 import sys
 
@@ -30,6 +31,22 @@ def btn_disabled(r, action):
         const b = document.querySelector('dialog[open] .chatfilesys-popup [data-action="' + a + '"]');
         return b ? { disabled: !!b.disabled, title: b.title, branch: b.dataset.branch } : null;
     }""", action)
+
+
+def wait_family(r, pred, timeout=20000, desc=""):
+    """轮询库内家族状态直到 pred 为真（写链 = applyOperations→宿主保存→接缝→SQL，异步；
+    固定 settle 会读到中间态——2026-10-31 探针实锤，取代「settle(900) 后单次读」的旧写法）。"""
+    end = time.time() + timeout / 1000
+    last = None
+    while time.time() < end:
+        last = r.read_family(r.chat_key())
+        try:
+            if pred(last):
+                return last
+        except Exception:
+            pass
+        r.settle(700)
+    raise TimeoutError(f"wait_family 超时({desc}): last={last and {k: last[k] for k in ('defaults', 'activeBranch', 'keyBindings')}}")
 
 
 def reload_chat(r, settle_ms=2500):
@@ -91,11 +108,20 @@ def main():
             r.ensure_active("b_main")        # 回到 b_main：设为主分支之前，这个聊天看到的是 4 层
             r.settle(900)
             st1 = r.state()
-            fam1 = r.read_family(key)
+            # N1（2026-09-26 用户裁定）：根键上的普通切换 = 家族级切换，主分支标记跟着迁——
+            # 切到 b1 时 defaults 会短暂变成 [b1]，切回 b_main 后必须迁回。读库要**轮询**等写链落定。
+            _end = time.time() + 20
+            fam1 = None
+            while time.time() < _end:
+                fam1 = r.read_family(key)
+                if (fam1 and fam1["activeBranch"] == "b_main" and fam1["defaults"] == ["b_main"]
+                        and {x["id"] for x in fam1["branches"]} == {"b_main", nb}):
+                    break
+                r.settle(800)
             ok1 = (st1["chatLen"] == 4 and fam1 and fam1["activeBranch"] == "b_main"
                    and fam1["defaults"] == ["b_main"]
                    and {x["id"] for x in fam1["branches"]} == {"b_main", nb})
-            results.append(report("前置：两条分支（b_main 4 层 / b1 2 层），当前打开 b_main", ok1,
+            results.append(report("前置：两条分支（b_main 4 层 / b1 2 层），切回后主分支标记回落 b_main", ok1,
                                   f"chatLen={st1['chatLen']} active={st1.get('activeId')} branch={nb} fam={fam1}"))
 
             # ---------- ① 选中当前主分支 → 删除按钮变灰 ----------
@@ -118,12 +144,18 @@ def main():
             r.settle(800)
             confirm_txt = top_dialog_text(r)
             r.popup_ok()
-            r.settle(3000)
+            # 流程 = switchBranch（写库 bump）→ loadFamily → setBindingBranch → saveModel；
+            # 全链异步，等库内出现「defaults=[nb] 且主键绑定指到 nb」再断言
+            fam2 = wait_family(
+                r,
+                lambda f: (f and f["defaults"] == [nb] and f["activeBranch"] == nb
+                           and (f["keyBindings"].get(key) or {}).get("branchId") == nb),
+                desc="设主分支落库")
+            r.settle(500)
             results.append(report("② 点「设为主分支」有明确确认（讲清主分支是什么、旧主分支可删）",
                                   "主分支" in confirm_txt, f"confirm={confirm_txt[:80]}"))
 
             # ---------- ③ 库内不变式 ----------
-            fam2 = r.read_family(key)
             model2 = r.model() or {}
             defaults2 = [x["id"] for x in model2.get("branches", []) if x.get("is_default")]
             ok4 = (fam2 is not None
