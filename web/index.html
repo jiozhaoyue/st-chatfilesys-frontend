@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>ChatFilesys · 工作台（web 模式）</title>
+  <!--
+    web 模式 —— 三形态同构（L1-MR-6）：本页不含业务节点，只有入口 chrome
+    （档位徽章 / 家族选择 / 导入）；全部业务 UI 出自插件 ui/popup.js#createPopupContent
+    （与酒馆弹窗同一模板源），动作出自 ui/workbench.js（宿主无关控制器）。
+    零构建、零 CDN、零外部请求。
+  -->
+  <link rel="stylesheet" href="../public/scripts/extensions/third-party/chatfilesys/style.css">
+  <link rel="stylesheet" href="./web.css">
+  <style>
+    html, body { margin: 0; min-height: 100%; background: #141417; color: #d6d6dd; }
+  </style>
+</head>
+<body>
+  <div class="cfsysw-app" id="app">
+    <header class="cfsysw-header">
+      <div>
+        <h1 class="cfsysw-title">ChatFilesys · 工作台 <span class="cfsysw-badge">web 模式</span></h1>
+        <div class="cfsysw-sub">与酒馆插件同一套 core/ui —— 数据源：<span id="cfsysw-tier">检测中…</span>
+          · <span id="cfsysw-libcount">—</span></div>
+      </div>
+      <div class="cfsysw-header-actions">
+        <select class="text_pole" id="cfsysw-family" title="选择要打开的家族（= 插件里的「当前聊天」）"></select>
+        <button class="cfsysw-btn" id="cfsysw-sample">载入示例</button>
+        <label class="cfsysw-btn cfsysw-filebtn">导入 .jsonl
+          <input type="file" id="cfsysw-file" accept=".jsonl,application/json" multiple hidden>
+        </label>
+      </div>
+    </header>
+
+    <main class="cfsysw-popup-host" id="cfsysw-popup-host"></main>
+  </div>
+
+  <script type="module" src="./app.js?v=9"></script>
+</body>
+</html>
