@@ -21,7 +21,6 @@
  * 不出现按楼层号逐行枚举的列表（旧「楼层」页签不得复活）。
  */
 
-import { Popup, POPUP_TYPE } from '../../../../popup.js';   // 子目录多一级：ui/ 比 index.js 深一层
 import { esc, nodeLabel, branchMaxFloor, getActiveBranch } from './common.js';
 import { versionsAt } from '../core/versions.js';
 
@@ -68,7 +67,38 @@ function listOf(view, floor) {
  * @param {(k: number, text: string) => Promise<void>} [opts.onEditVariant] 编辑正文
  * @returns {object|null} popup 实例（环境缺 Popup API 时 null）
  */
-export function openVersionsPopup(opts) {
+export async function openVersionsPopup(opts) {
+    const root = buildVersionsContent(opts);
+    if (!root) return null;
+    // 宿主 = 官方 Popup（DISPLAY + wide + large，见 spec/frontend/component-guidelines.md）。
+    // **动态导入**：本模块的其余部分（buildVersionsContent）必须保持宿主无关 —— web 工作台
+    // 会整模块加载它，静态 import 宿主 popup.js 会让那条导入链在无宿主环境下 404。
+    // 插件侧调用方是 fire-and-forget（index.js#openVersionsPopupFor），async 化无行为差异。
+    // @vite-ignore：宿主模块不在本仓构建图里（web 构建时跳过解析，运行时才解析——宿主必有）。
+    const { Popup, POPUP_TYPE } = await import(/* @vite-ignore */ '../../../../popup.js');
+    const popup = new Popup(root, POPUP_TYPE.DISPLAY, '', { wide: true, large: true });
+    popup.show();
+    // 关闭时连带清 DOM：宿主 `Popup#hide` 在自己的关闭路径里会 `dlg.remove()`，但若 dialog 是被
+    // 直接 `close()`（自动化脚本 / 别处绕开 complete()），那份清理不会执行 → 残留节点叠在 body 里。
+    // 与 `openManagementPopup` 同一处置（2026-09-26 真机取证，tests/e2e/probe_popup_residue.py）。
+    const dialog = root.closest('dialog');
+    dialog?.addEventListener('close', () => {
+        if (dialog.open) return;   // 被宿主拦下的关闭（立刻 showModal 复原）不能拆节点
+        dialog.remove();
+    });
+    return popup;
+}
+
+/**
+ * 构建「该层版本」内容（**宿主无关**：DOM + 交互全在这里，载体由调用方决定）。
+ *
+ * 单一模板源（L1-MR-10）：插件态 = 官方 Popup 承载（openVersionsPopup），
+ * web 工作台 = `<dialog>` 承载 —— 两处共用同一份内容与交互，不造第二份版本 UI。
+ *
+ * @param {object} opts 同 openVersionsPopup（全部回调由调用方注入，写路径不在本模块）
+ * @returns {HTMLElement|null} 内容根节点（无模型时 null）
+ */
+export function buildVersionsContent(opts) {
     const { floor } = opts;
     const view0 = opts.getView ? opts.getView() : opts;
     if (!view0?.model) return null;
@@ -283,17 +313,6 @@ export function openVersionsPopup(opts) {
         render();
     });
 
-    // 宿主 = 官方 Popup（DISPLAY + wide + large，见 spec/frontend/component-guidelines.md）
-    const popup = new Popup(root, POPUP_TYPE.DISPLAY, '', { wide: true, large: true });
     render();
-    popup.show();
-    // 关闭时连带清 DOM：宿主 `Popup#hide` 在自己的关闭路径里会 `dlg.remove()`，但若 dialog 是被
-    // 直接 `close()`（自动化脚本 / 别处绕开 complete()），那份清理不会执行 → 残留节点叠在 body 里。
-    // 与 `openManagementPopup` 同一处置（2026-09-26 真机取证，tests/e2e/probe_popup_residue.py）。
-    const dialog = root.closest('dialog');
-    dialog?.addEventListener('close', () => {
-        if (dialog.open) return;   // 被宿主拦下的关闭（立刻 showModal 复原）不能拆节点
-        dialog.remove();
-    });
-    return popup;
+    return root;
 }

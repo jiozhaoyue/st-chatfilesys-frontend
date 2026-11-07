@@ -92,15 +92,27 @@ test('module-paths：引用宿主模块的相对路径深度正确（必须落�
 test('module-paths：动态 import 的相对路径也指向存在的文件', () => {
     const re = /import\(\s*['"](\.[^'"]+)['"]\s*\)/g;
     const bad = [];
+    let checked = 0;
     for (const f of collectJs(PLUGIN_ROOT)) {
         const src = fs.readFileSync(f, 'utf8');
         let m;
         while ((m = re.exec(src)) !== null) {
             const target = path.resolve(path.dirname(f), m[1]);
-            if (!existsAny(target)) bad.push(`${path.relative(PLUGIN_ROOT, f)} → ${m[1]}`);
+            checked++;
+            // 插件内部文件必须存在；逃出插件目录的（宿主模块，如 ui/versions.js 动态导入
+            // 官方 popup.js —— 2026-11-07 拆载体后 Web 侧也要整模块可加载）按宿主落点规则验深度
+            if (target.startsWith(PLUGIN_ROOT + path.sep)) {
+                if (!existsAny(target)) bad.push(`${path.relative(PLUGIN_ROOT, f)} → ${m[1]}`);
+            } else {
+                const rel = path.relative(PUBLIC_ROOT, target).replaceAll('\\', '/');
+                if (!/^(script\.js|scripts\/[^/]+)$/.test(rel)) {
+                    bad.push(`${path.relative(PLUGIN_ROOT, f)} → ${m[1]} （解析到 public/${rel}）`);
+                }
+            }
         }
     }
-    assert.deepEqual(bad, [], `动态 import 指向不存在的文件：\n${bad.join('\n')}`);
+    assert.ok(checked >= 5, `动态 import 解析到的太少（${checked}），正则可能失配`);
+    assert.deepEqual(bad, [], `动态 import 指向不存在的文件或宿主落点深度错：\n${bad.join('\n')}`);
 });
 
 test('module-paths：ui/ 与 index.js 的宿主模块深度点对点（错一位就是扩展整体起不来）', () => {
@@ -110,5 +122,7 @@ test('module-paths：ui/ 与 index.js 的宿主模块深度点对点（错一位
     assert.match(index, /from '\.\.\/\.\.\/\.\.\/popup\.js'/);            // chatfilesys/ → scripts/popup.js
     assert.match(index, /from '\.\.\/\.\.\/\.\.\/\.\.\/script\.js'/);      // chatfilesys/ → public/script.js
     assert.match(popupUi, /from '\.\.\/\.\.\/\.\.\/\.\.\/popup\.js'/);    // ui/ 多一级
-    assert.match(versionsUi, /from '\.\.\/\.\.\/\.\.\/\.\.\/popup\.js'/);
+    // ui/versions.js 2026-11-07 起改为**动态导入**宿主 Popup（buildVersionsContent 要保持
+    // 宿主无关、供 web 工作台整模块加载）；深度点对点判据跟着形态走
+    assert.match(versionsUi, /import\(\s*'\.\.\/\.\.\/\.\.\/\.\.\/popup\.js'\s*\)/);
 });

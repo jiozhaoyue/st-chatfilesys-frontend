@@ -28,7 +28,7 @@
  * 见 00-HANDOVER「G100 哨兵」教训）。
  */
 
-import { buildFamilyFromJsonl } from '../core/importer.js';
+import { buildFamilyFromJsonl, mergeIntoFamily, attachMergedFork } from '../core/importer.js';
 import { modelFromStore } from '../core/store-bridge.js';
 import { renameBranch, setMainBranch, deleteBranch } from '../core/branches.js';
 import { getActiveBranch } from './common.js';
@@ -39,6 +39,9 @@ import { DEGRADE_DEFAULTS } from './graph/degrade.js';
 import { grouped as settingsGroupsOf, readSetting, writeSetting, defaults as settingsDefaults, SETTINGS } from '../core/settings-registry.js';
 import { APPLY } from '../core/settings-registry.js';
 import { STORAGE_MODES, STORAGE_MODE_LABELS } from '../core/mode.js';
+import { activateVariant, deleteVariants, deletionOrder, moveVariant, editVariantText, targetBranchForGroup } from '../core/versions.js';
+import { computeHash } from '../core/merge.js';
+import { buildVersionsContent } from './versions.js';
 
 const WEB_LOCAL_CODE = 'WEB-LOCAL'; // 故意不像目录编号（不借错误编号命名空间）
 
@@ -97,6 +100,119 @@ export function createWorkbench(ports = {}) {
             .sort((a, b) => (a.floorNo - b.floorNo) || ((a.seq || 0) - (b.seq || 0)))
             .map((r) => { try { return JSON.parse(r.content); } catch { return null; } })
             .filter(Boolean);
+    }
+
+    /** 重拉楼层行 + 重建全模型（任何落库写之后都要走一遍，保持内存态=库内态） */
+    async function reloadFloors() {
+        if (!family || !adapter) return;
+        const { floors } = await adapter.loadFloors({ familyId: family.familyId, from: 0, limit: 1e9 });
+        family.floors = floors || [];
+        family.fullModel = modelFromStore(family, family.floors);
+        currentBranchId = family.fullModel.active_branch ?? currentBranchId;
+    }
+
+    /* ---------------- 导入合并旅程（与 index.js#importOneFile 的合并支同编排） ---------------- */
+
+    /**
+     * 对已在库的家族做指纹合并：库内既有行 vs 导入行 → 差异行经 attachMergedFork 旁挂成子分支。
+     * @returns {Promise<'noop'|'merged'>} noop = 内容完全一致（零写入）
+     */
+    async function mergeExisting(existing, lines, branchName) {
+        if (!adapter) throw new Error('存储未就绪');
+        const { floors: allRows } = await adapter.loadFloors({ familyId: existing.familyId, from: 0, limit: 1e9 });
+        const existingRows = await Promise.all((allRows || []).map(async (f) => {
+            let obj = null;
+            try { obj = JSON.parse(f.content); } catch { /* 坏行按原样算哈希素材 */ }
+            return { hash: f.contentHash ?? (obj ? await computeHash(obj) : null), sendDate: f.sendDate, sender: obj?.name ?? null };
+        }));
+        const { floors: mergeFloors, stats, forkFloor } = await mergeIntoFamily(existingRows, lines);
+        if (!mergeFloors?.length || forkFloor == null) return 'noop';
+        // 差异落库前要用户点头（合并是结构变更：原分支不动，新增子分支）
+        const ok = dialog.confirm(
+            `「${branchName}」与库内版本有差异（新增 ${mergeFloors.length} 行）。合并为子分支？（原分支不动）`);
+        if (!ok) throw new Error('用户取消合并');
+        // 模型是**家族级**的：先在库内现值上旁挂（不拿视图缓存直接改——乐观锁要求以库内 integrity 为基准）
+        const fam = await adapter.loadFamily({ familyId: existing.familyId });
+        const { floors: libRows } = await adapter.loadFloors({ familyId: existing.familyId, from: 0, limit: 1e9 });
+        const model = modelFromStore(fam, libRows);
+        const assigned = attachMergedFork(model, mergeFloors, forkFloor, branchName);
+        const sr = await adapter.saveFloors({
+            familyId: existing.familyId, floors: assigned.floors, expectedIntegrity: fam.integrity ?? null,
+        });
+        if (!sr?.ok) throw new Error(sr?.conflict ? 'conflict' : (sr?.reason || '存储拒绝'));
+        const sm = await adapter.saveModel({
+            familyId: existing.familyId, model, expectedIntegrity: sr.integrity ?? null,
+        });
+        if (!sm?.ok) throw new Error(sm?.conflict ? 'conflict' : (sm?.reason || '存储拒绝'));
+        notify.ok(`已合并为子分支「${branchName}」（branchId=${assigned.branchId}）。`);
+        await openFamily(existing.familyId);
+        return 'merged';
+    }
+
+    /* ---------------- 楼层版本四能力（写路径：库行原位改 + saveFloors 合并式 upsert） ---------------- */
+
+    /**
+     * 对活跃路径上某楼层的行执行一次变更（core/versions 纯函数就地改 line）。
+     * 行身份 = (floorNo, variantId=活跃 path 值)；saveFloors 按 (familyId, floorNo, variantId)
+     * 合并式 upsert + integrity 自增（core/storage/idb.js#saveFloors，三档同契约）。
+     * @param {(line: object) => void} mutator core/versions 纯函数（抛错即中止，不落库）
+     */
+    async function applyFloorOp(floor, mutator) {
+        if (!family || !adapter) throw new Error('未打开家族');
+        const active = getActiveBranch(family.fullModel, currentBranchId);
+        const variantId = active?.path?.[floor];
+        const row = (family.floors || []).find((r) => r.floorNo === floor && r.variantId === variantId);
+        if (!row) throw new Error(`楼层 ${floor}（${variantId || '无路径'}）不在活跃分支上，或库行缺失`);
+        const line = JSON.parse(row.content);
+        mutator(line); // 抛错 = 数据未动（纯函数契约）
+        row.content = JSON.stringify(line);
+        row.contentHash = await computeHash(line);
+        row.sendDate = line?.send_date ?? row.sendDate ?? null;
+        const res = await adapter.saveFloors({
+            familyId: family.familyId, floors: [row], expectedIntegrity: family.integrity ?? null,
+        });
+        if (!res?.ok) throw new Error(res?.conflict ? '库内已有更新的版本（conflict），请重新打开家族' : (res?.reason || '存储拒绝'));
+        family.integrity = res.integrity;
+        await reloadFloors();
+        invalidateGraph();
+        onRendered();
+    }
+
+    /**
+     * 打开「该层版本」模态（web 载体 = `<dialog>`；内容与插件同源 buildVersionsContent）。
+     * @param {number} floor 楼层号（从 1 起）
+     */
+    async function openVersions(floor) {
+        if (!family) { notify.warn('先打开一个家族。'); return; }
+        const root = buildVersionsContent({
+            floor,
+            getView: () => ({ model: family.fullModel, chat: activeRows(), currentBranchId }),
+            onSwitchVariant: (k) => applyFloorOp(floor, (line) => activateVariant(line, k)),
+            // 别的组的版本 = 切到它所在分支（与插件 switchToGroupVersionFlow 同语义）
+            onSwitchGroup: (gid, k) => (async () => {
+                const branchId = targetBranchForGroup(family.fullModel, gid, floor, currentBranchId);
+                if (!branchId) throw new Error(`组 ${gid} 没有对应的分支归属`);
+                family.fullModel.active_branch = branchId;
+                currentBranchId = branchId;
+                if (await saveModel()) notify.ok('已切换分支。');
+                onRendered();
+            })(),
+            onDeleteVariants: (indices) => applyFloorOp(floor, (line) => deleteVariants(line, deletionOrder(indices))),
+            onMoveVariant: (from, to) => applyFloorOp(floor, (line) => moveVariant(line, from, to)),
+            onEditVariant: (k, text) => applyFloorOp(floor, (line) => editVariantText(line, k, text)),
+        });
+        if (!root) { notify.warn('该层没有可管理的版本。'); return; }
+        const dlg = document.createElement('dialog');
+        dlg.className = 'cfsysw-modal';
+        dlg.appendChild(root);
+        const close = document.createElement('button');
+        close.className = 'menu_button';
+        close.textContent = '关闭';
+        close.addEventListener('click', () => dlg.close());
+        root.appendChild(close);
+        document.body.appendChild(dlg);
+        dlg.addEventListener('close', () => dlg.remove());
+        dlg.showModal();
     }
 
     /** 模型写回（唯一写入口）：integrity 乐观锁；冲突如实报 */
@@ -300,13 +416,18 @@ export function createWorkbench(ports = {}) {
             characterId: 'standalone',
             name: base,
         };
-        // 幂等（产品契约 §5 基线场景）：同 familyId 或同 chatKey 已在库 ⇒ 零写入直接打开
+        // 幂等（产品契约 §5 基线场景）：同 familyId 或同 chatKey 已在库 ⇒ 零写入直接打开。
+        // 但若**内容有差异**（同一聊天的更新版本）→ 走合并旅程：指纹对齐 → 差异行旁挂 → 子分支。
         const existing = await adapter.loadFamily({ familyId: identity.familyId })
             || await adapter.loadFamily({ chatKey: identity.chatKey });
         if (existing) {
-            notify.info(`${name}：已在库内，直接打开（幂等，零写入）`);
-            await openFamily(existing.familyId);
-            return { imported: false, familyId: existing.familyId };
+            const mergeRes = await mergeExisting(existing, lines, base);
+            if (mergeRes === 'noop') {
+                notify.info(`${name}：已在库内且无变化（幂等，零写入）`);
+                await openFamily(existing.familyId);
+                return { imported: false, familyId: existing.familyId };
+            }
+            return { imported: true, merged: true, familyId: existing.familyId };
         }
         const { family: famStore, floors } = await buildFamilyFromJsonl(lines, identity, null);
         const cr = await adapter.createFamily({ family: famStore });
@@ -562,6 +683,7 @@ export function createWorkbench(ports = {}) {
         bind,
         openFamily,
         importText,
+        openVersions,
         listFamilies: () => (adapter ? adapter.listFamilies({}) : Promise.resolve([])),
         activeRows,
         saveModel,

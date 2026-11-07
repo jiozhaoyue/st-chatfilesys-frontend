@@ -2,6 +2,54 @@
  * 本页是独立文档、不注入宿主，理论上可裸选择器；仍统一 cfsysw- 前缀，
  * 与插件 style.css（chatfilesys-* 双前缀）互不干扰，也为日后模板同源做准备。 */
 
+/* ==========================================================================
+ * 宿主环境补齐（web 页自身承担；**不影响插件形态**）：
+ * 弹窗 HTML/样式按酒馆宿主环境写成 —— 依赖宿主的 ① Font Awesome ② .menu_button /
+ * .text_pole 等宿主类 ③ --SmartTheme* 主题变量。三样在独立页都缺，这里补齐。
+ * 变量取值 = style.css 各回退值（视觉与插件回退态一致，不另造主题）。
+ * ========================================================================== */
+
+:root {
+    --grey30: #1d1f24;
+    --SmartThemeBodyColor: #c9d1d9;
+    --SmartThemeQuoteColor: #58a6ff;
+    --SmartThemeBorderColor: #30363d;
+    --SmartThemeBodyBgColor: #1d1f24;
+    --SmartThemeBlurTintColor: rgba(48, 54, 61, 0.6);
+    --SmartThemeErrorColor: #f85149;
+    --SmartThemeEmColor: #d29922;
+    --SmartThemeOkColor: #79d8a0;
+}
+
+/* 宿主类 shim：弹窗 HTML 里的按钮/输入框在宿主有全局样式，独立页这里给同形 */
+.menu_button {
+    padding: 4px 10px;
+    border: 1px solid var(--SmartThemeBorderColor, #30363d);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, .04);
+    color: var(--SmartThemeBodyColor, #c9d1d9);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.menu_button:hover:not(:disabled) { background: rgba(255, 255, 255, .09); }
+
+.menu_button:disabled { opacity: .45; cursor: not-allowed; }
+
+.text_pole {
+    padding: 5px 8px;
+    border: 1px solid var(--SmartThemeBorderColor, #30363d);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, .25);
+    color: var(--SmartThemeBodyColor, #c9d1d9);
+    font-size: 13px;
+}
+
+.text_pole:focus { outline: 1px solid var(--SmartThemeQuoteColor, #58a6ff); }
+
+.checkbox_label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+
 .cfsysw-app { max-width: 1280px; margin: 0 auto; padding: 16px 20px 48px; font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 14px; }
 
 .cfsysw-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid #2c2c34; }
@@ -60,5 +108,30 @@
 
 /* 弹窗内容宿主：popup.js 的 UI 原样整页挂载 */
 .cfsysw-popup-host { margin-top: 16px; }
-.cfsysw-popup-host .chatfilesys-popup { max-width: 980px; margin: 0 auto; }
+.cfsysw-popup-host .chatfilesys-popup {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 16px 18px 18px;
+    border: 1px solid var(--SmartThemeBorderColor, #30363d);
+    border-radius: 10px;
+    background: var(--SmartThemeBodyBgColor, #1d1f24);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, .35);
+}
 .cfsysw-header-actions select.text_pole { max-width: 260px; }
+.cfsysw-header-actions select#cfsysw-floor { max-width: 110px; }
+.cfsysw-header-actions .cfsysw-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+/* 版本管理模态（web 载体；内容与插件同源 buildVersionsContent） */
+.cfsysw-modal {
+    min-width: min(720px, 92vw);
+    max-width: 92vw;
+    max-height: 86vh;
+    padding: 16px 18px;
+    border: 1px solid var(--SmartThemeBorderColor, #30363d);
+    border-radius: 10px;
+    background: var(--SmartThemeBodyBgColor, #1d1f24);
+    color: var(--SmartThemeBodyColor, #c9d1d9);
+    overflow: auto;
+}
+
+.cfsysw-modal::backdrop { background: rgba(0, 0, 0, .55); }

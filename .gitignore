@@ -45,3 +45,4 @@ docs/.vitepress/cache/
 # 截图验证的产物 PNG（真机 e2e 输出，不入库）
 /standalone_*.png
 /standalone-*.png
+dist-web/

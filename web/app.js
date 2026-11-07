@@ -86,6 +86,25 @@ function rerender() {
     if (!content || !wb) return;
     content.refresh(wb.view());
     ensureFloatWindowsAttached(); // PO-3 自愈兜底：小窗被清场后按记忆几何挂回
+    syncFloorSelect();            // 楼层选择器跟随当前家族（版本管理入口）
+}
+
+/** 楼层选择器：选项 = 活跃分支的楼层数（**选择器不是楼层列表**——不逐层枚举内容，铁律同插件） */
+function syncFloorSelect() {
+    const sel = $('cfsysw-floor');
+    const btn = $('cfsysw-versions');
+    if (!wb || !wb.activeRows().length) {
+        sel.innerHTML = '<option value="">—</option>';
+        sel.disabled = true;
+        btn.disabled = true;
+        return;
+    }
+    const n = wb.activeRows().length;
+    sel.innerHTML = Array.from({ length: n }, (_, i) =>
+        `<option value="${i + 1}" ${Number(sel.value) === i + 1 ? 'selected' : ''}>第 ${i + 1} 层</option>`).join('');
+    if (!sel.value) sel.value = '1';
+    sel.disabled = false;
+    btn.disabled = false;
 }
 
 async function refreshFamilySelect(selectedId) {
@@ -175,6 +194,10 @@ async function boot() {
     wb.bind(document); // 文档级委托：弹窗内容 + PO-3 小窗全覆盖
 
     $('cfsysw-family').addEventListener('change', (e) => openById(e.target.value));
+    $('cfsysw-versions').addEventListener('click', () => {
+        const floor = Number($('cfsysw-floor').value || 1);
+        wb.openVersions(floor).catch((e) => notify.error(`版本管理打开失败：${e?.message || e}`));
+    });
     $('cfsysw-sample').addEventListener('click', async () => {
         const lines = [JSON.stringify(SAMPLE_HEADER), ...SAMPLE_ROWS.map((r) => JSON.stringify(r))];
         try {
@@ -203,3 +226,7 @@ boot().catch((e) => {
     console.error('[chatfilesys-web] 启动失败:', e);
     notify.error(`启动失败：${e?.message || e}`);
 });
+
+// 开发/自动化钩子（e2e 需要从页面触达工作台；生产用户不感知）。
+// 命名刻意不像产品 API——只给测试脚本用，不作为任何功能的依赖面。
+window.__cfsysw_web_hook = { get workbench() { return wb; }, notify };

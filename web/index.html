@@ -10,6 +10,11 @@
     （与酒馆弹窗同一模板源），动作出自 ui/workbench.js（宿主无关控制器）。
     零构建、零 CDN、零外部请求。
   -->
+  <!--
+    Font Awesome 走本地副本（pack-transfer 同款做法，禁 CDN；许可随目录分发）。
+    弹窗 HTML 里的 fa-* 图标由酒馆宿主提供，web 页自己补上。
+  -->
+  <link rel="stylesheet" href="./vendor/fontawesome/css/all.min.css">
   <link rel="stylesheet" href="../public/scripts/extensions/third-party/chatfilesys/style.css">
   <link rel="stylesheet" href="./web.css">
   <style>
@@ -26,6 +31,9 @@
       </div>
       <div class="cfsysw-header-actions">
         <select class="text_pole" id="cfsysw-family" title="选择要打开的家族（= 插件里的「当前聊天」）"></select>
+        <select class="text_pole" id="cfsysw-floor" title="选择楼层（= 插件里消息旁的版本按钮入口）" disabled></select>
+        <button class="cfsysw-btn" id="cfsysw-versions" disabled
+          title="管理该层的版本（切换/删除/重排/编辑）——与插件的消息旁版本弹窗同一份 UI">版本管理</button>
         <button class="cfsysw-btn" id="cfsysw-sample">载入示例</button>
         <label class="cfsysw-btn cfsysw-filebtn">导入 .jsonl
           <input type="file" id="cfsysw-file" accept=".jsonl,application/json" multiple hidden>
@@ -36,6 +44,12 @@
     <main class="cfsysw-popup-host" id="cfsysw-popup-host"></main>
   </div>
 
-  <script type="module" src="./app.js?v=9"></script>
+  <!--
+    经典脚本（**非 module**）：只为 file:// 双击形态给一句「该怎么办」的说明。
+    模块脚本在 file:// 下必然被 CORS 拒 ⇒ 没有它就只剩白屏。HTTP(S) 形态下它立即返回、
+    一个字节都不动（否则就成了第二份工作台 UI，违反单一模板源铁律）。
+  -->
+  <script src="./file-protocol-notice.js"></script>
+  <script type="module" src="./app.js?v=12"></script>
 </body>
 </html>

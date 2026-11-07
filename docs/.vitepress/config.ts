@@ -39,6 +39,7 @@ export default defineConfig({
                         { text: '三种模式', link: '/guide/modes' },
                         { text: '三档存储与降级', link: '/guide/storage-tiers' },
                         { text: '管理弹窗', link: '/guide/popup' },
+                        { text: 'web 工作台（独立网页）', link: '/guide/web-workbench' },
                     ],
                 },
                 {
