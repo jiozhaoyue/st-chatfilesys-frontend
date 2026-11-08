@@ -34,6 +34,8 @@
         <select class="text_pole" id="cfsysw-floor" title="选择楼层（= 插件里消息旁的版本按钮入口）" disabled></select>
         <button class="cfsysw-btn" id="cfsysw-versions" disabled
           title="管理该层的版本（切换/删除/重排/编辑）——与插件的消息旁版本弹窗同一份 UI">版本管理</button>
+        <button class="cfsysw-btn" id="cfsysw-reader-btn"
+          title="整篇阅读当前分支的完整对话（点任意一条管理该层版本）"><i class="fa-solid fa-book-open"></i> 阅读视图</button>
         <button class="cfsysw-btn" id="cfsysw-sample">载入示例</button>
         <label class="cfsysw-btn cfsysw-filebtn">导入 .jsonl
           <input type="file" id="cfsysw-file" accept=".jsonl,application/json" multiple hidden>
@@ -41,7 +43,15 @@
       </div>
     </header>
 
-    <main class="cfsysw-popup-host" id="cfsysw-popup-host"></main>
+    <div class="cfsysw-subrow">
+      <div class="cfsysw-search-host" id="cfsysw-search-host"></div>
+      <div class="cfsysw-statsrow" id="cfsysw-stats" title="当前家族的统计概览（全家族口径 + 活跃分支口径）"></div>
+    </div>
+
+    <main class="cfsysw-main-host">
+      <div class="cfsysw-reader-host" id="cfsysw-reader-host"></div>
+      <div class="cfsysw-popup-host" id="cfsysw-popup-host"></div>
+    </main>
   </div>
 
   <!--
@@ -50,6 +60,6 @@
     一个字节都不动（否则就成了第二份工作台 UI，违反单一模板源铁律）。
   -->
   <script src="./file-protocol-notice.js"></script>
-  <script type="module" src="./app.js?v=12"></script>
+  <script type="module" src="./app.js?v=13"></script>
 </body>
 </html>

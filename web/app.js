@@ -13,6 +13,7 @@ import { createStorageAdapter } from '../public/scripts/extensions/third-party/c
 import { createPopupContent, ensureFloatWindowsAttached } from '../public/scripts/extensions/third-party/chatfilesys/ui/popup.js';
 import { createWorkbench } from '../public/scripts/extensions/third-party/chatfilesys/ui/workbench.js';
 import { readSetting, writeSetting, defaults as settingsDefaults } from '../public/scripts/extensions/third-party/chatfilesys/core/settings-registry.js';
+import { computeStats, statsHtml, createReaderPanel, createSearchPanel } from './panels.js';
 
 /* ---------------- 页内基础设施 ---------------- */
 
@@ -81,12 +82,36 @@ const settingsPort = {
 
 let wb = null;
 let content = null; // createPopupContent 产物 { el, refresh }
+let reader = null;  // 阅读视图面板（web/panels.js）
+let search = null;  // 全局搜索面板（web/panels.js）
 
 function rerender() {
     if (!content || !wb) return;
     content.refresh(wb.view());
     ensureFloatWindowsAttached(); // PO-3 自愈兜底：小窗被清场后按记忆几何挂回
     syncFloorSelect();            // 楼层选择器跟随当前家族（版本管理入口）
+    renderStats();
+    reader?.refresh();
+}
+
+/** 统计条：家族统计概览（失败只降级成空条，不连坐页面） */
+function renderStats() {
+    const host = $('cfsysw-stats');
+    if (!host) return;
+    try {
+        host.innerHTML = statsHtml(computeStats(wb));
+    } catch { host.innerHTML = ''; }
+}
+
+/** 版本管理的统一入口（顶部按钮 / 阅读视图 / 搜索结果三处共用） */
+function openVersionsAt(floor) {
+    wb.openVersions(floor).catch((e) => notify.error(`版本管理打开失败：${e?.message || e}`));
+}
+
+/** 阅读视图开关 → 主区切换（阅读时藏管理面板，关了回来） */
+function syncReaderVisibility() {
+    $('app').classList.toggle('cfsysw-reading', Boolean(reader?.isOpen()));
+    $('cfsysw-reader-btn')?.classList.toggle('cfsysw-btn-active', Boolean(reader?.isOpen()));
 }
 
 /** 楼层选择器：选项 = 活跃分支的楼层数（**选择器不是楼层列表**——不逐层枚举内容，铁律同插件） */
@@ -193,11 +218,16 @@ async function boot() {
     $('cfsysw-popup-host').appendChild(content.el);
     wb.bind(document); // 文档级委托：弹窗内容 + PO-3 小窗全覆盖
 
+    // web 壳层面板（阅读 / 搜索 / 统计）：编辑一律转交同一份版本管理，不新造编辑面
+    reader = createReaderPanel({ workbench: wb, warn: notify.warn, openVersions: openVersionsAt });
+    reader.el.addEventListener('cfsysw-reader-toggle', syncReaderVisibility);
+    $('cfsysw-reader-host').appendChild(reader.el);
+    search = createSearchPanel({ workbench: wb, info: notify.info, openVersions: openVersionsAt, reader });
+    $('cfsysw-search-host').appendChild(search.el);
+    $('cfsysw-reader-btn').addEventListener('click', () => reader.toggle());
+
     $('cfsysw-family').addEventListener('change', (e) => openById(e.target.value));
-    $('cfsysw-versions').addEventListener('click', () => {
-        const floor = Number($('cfsysw-floor').value || 1);
-        wb.openVersions(floor).catch((e) => notify.error(`版本管理打开失败：${e?.message || e}`));
-    });
+    $('cfsysw-versions').addEventListener('click', () => openVersionsAt(Number($('cfsysw-floor').value || 1)));
     $('cfsysw-sample').addEventListener('click', async () => {
         const lines = [JSON.stringify(SAMPLE_HEADER), ...SAMPLE_ROWS.map((r) => JSON.stringify(r))];
         try {

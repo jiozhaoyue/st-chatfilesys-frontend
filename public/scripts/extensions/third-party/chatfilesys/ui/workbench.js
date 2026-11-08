@@ -102,6 +102,34 @@ export function createWorkbench(ports = {}) {
             .filter(Boolean);
     }
 
+    /**
+     * 全家族行（阅读视图 / 全局搜索 / 统计的数据面）：库行 + 每行的分支归属。
+     * 与 activeRows() 的差别：activeRows 只给活跃投影；这里给**全家族**（含别的分支的变体行），
+     * 归属 = variantId 出现在某分支 path 的值集里（一行可同属多条分支——共享楼层）。
+     * 只读：不缓存、不落库，每次现算（行数 = 楼层行总数，量级安全）。
+     */
+    function allRows() {
+        if (!family) return [];
+        const rows = (family.floors || []).map((r) => {
+            let line = null;
+            try { line = JSON.parse(r.content); } catch { /* 坏行按原样呈现（line=null），不吞 */ }
+            return {
+                floorNo: r.floorNo,
+                variantId: r.variantId,
+                seq: r.seq || 0,
+                line,
+                sendDate: r.sendDate ?? line?.send_date ?? null,
+                branchIds: [],
+            };
+        });
+        for (const b of family.fullModel?.branches || []) {
+            const pathSet = new Set(Object.values(b.path || {}));
+            for (const row of rows) if (pathSet.has(row.variantId)) row.branchIds.push(b.id);
+        }
+        rows.sort((a, b) => (a.floorNo - b.floorNo) || ((a.seq || 0) - (b.seq || 0)));
+        return rows;
+    }
+
     /** 重拉楼层行 + 重建全模型（任何落库写之后都要走一遍，保持内存态=库内态） */
     async function reloadFloors() {
         if (!family || !adapter) return;
@@ -686,6 +714,7 @@ export function createWorkbench(ports = {}) {
         openVersions,
         listFamilies: () => (adapter ? adapter.listFamilies({}) : Promise.resolve([])),
         activeRows,
+        allRows,
         saveModel,
         invalidateGraph,
         get tier() { return tier; },

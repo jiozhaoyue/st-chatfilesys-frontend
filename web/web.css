@@ -52,11 +52,11 @@
 
 .cfsysw-app { max-width: 1280px; margin: 0 auto; padding: 16px 20px 48px; font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 14px; }
 
-.cfsysw-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid #2c2c34; }
+.cfsysw-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid #2c2c34; flex-wrap: wrap; }
 .cfsysw-title { margin: 0; font-size: 20px; font-weight: 600; color: #eef0f6; }
 .cfsysw-badge { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 10px; background: #2b3a55; color: #9fc1ff; font-size: 12px; font-weight: 500; vertical-align: 3px; }
 .cfsysw-sub { margin-top: 4px; color: #8f8fa0; font-size: 12px; }
-.cfsysw-header-actions { display: flex; gap: 8px; }
+.cfsysw-header-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .cfsysw-btn { display: inline-block; padding: 6px 14px; border: 1px solid #3d3d49; border-radius: 6px; background: #23232b; color: #d6d6dd; cursor: pointer; font-size: 13px; }
 .cfsysw-btn:hover { background: #2e2e39; border-color: #55555f; }
@@ -135,3 +135,60 @@
 }
 
 .cfsysw-modal::backdrop { background: rgba(0, 0, 0, .55); }
+
+/* ==========================================================================
+ * 壳层第二排：搜索 + 统计（11-08 第二轮）
+ * ========================================================================== */
+
+.cfsysw-subrow { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+
+/* --- 统计 chips --- */
+.cfsysw-statsrow { display: flex; flex-wrap: wrap; gap: 6px; min-height: 22px; }
+.cfsysw-statsrow:empty { min-height: 0; }
+.cfsysw-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border: 1px solid #2c2c34; border-radius: 999px; background: #1b1b21; color: #8f8fa0; font-size: 12px; cursor: default; }
+.cfsysw-chip b { color: #cfd3e4; font-weight: 600; }
+
+/* --- 搜索 --- */
+.cfsysw-search { position: relative; }
+.cfsysw-search-bar { display: flex; align-items: center; gap: 8px; }
+.cfsysw-search-bar > i { color: #6e6e80; }
+.cfsysw-search-input { flex: 1; }
+.cfsysw-search-results { position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 60; max-height: 46vh; overflow: auto; padding: 10px 12px; border: 1px solid #2c2c34; border-radius: 8px; background: #1b1b21; box-shadow: 0 10px 30px rgba(0, 0, 0, .5); }
+.cfsysw-search-meta { margin-bottom: 6px; color: #8f8fa0; font-size: 12px; }
+.cfsysw-search-hit { padding: 8px 10px; margin: 6px 0; border: 1px solid #2c2c34; border-radius: 6px; background: #202028; }
+.cfsysw-search-hit:hover { border-color: #55555f; }
+.cfsysw-search-hit-main { display: flex; align-items: baseline; gap: 8px; }
+.cfsysw-search-hit-name { color: #9fc1ff; font-weight: 600; }
+.cfsysw-search-hit-branches { color: #6e6e80; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cfsysw-search-hit-text { margin-top: 5px; color: #c9cbd6; font-size: 13px; line-height: 1.6; word-break: break-word; }
+.cfsysw-search-hit-text mark { background: #4a3b12; color: #ffd479; padding: 0 2px; border-radius: 3px; }
+.cfsysw-search-hit-ops { margin-top: 6px; display: flex; gap: 6px; }
+
+/* ==========================================================================
+ * 阅读视图（活跃分支完整投影；点层 = 版本管理）
+ * ========================================================================== */
+
+.cfsysw-main-host { position: relative; }
+.cfsysw-app.cfsysw-reading .cfsysw-popup-host { display: none; }
+
+.cfsysw-reader { margin-top: 16px; border: 1px solid #2c2c34; border-radius: 10px; background: #1b1b21; overflow: hidden; }
+.cfsysw-reader-toolbar { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid #2c2c34; background: #202028; flex-wrap: wrap; }
+.cfsysw-reader-title { font-weight: 600; color: #eef0f6; display: inline-flex; align-items: center; gap: 8px; }
+.cfsysw-reader-tools { margin-left: auto; display: inline-flex; gap: 6px; }
+.cfsysw-reader-scroll { max-height: calc(100vh - 260px); min-height: 320px; overflow: auto; padding: 18px max(22px, calc((100% - 880px) / 2)) 26px; }
+
+.cfsysw-msg { max-width: 76%; margin: 10px 0; padding: 9px 13px 11px; border: 1px solid #2c2c34; border-radius: 10px; background: #23232b; cursor: pointer; }
+.cfsysw-msg:hover { border-color: #4f79d6; }
+.cfsysw-msg-user { margin-left: auto; background: #1d2536; border-color: #2b3a55; }
+.cfsysw-msg-flash { animation: cfsysw-flash 1.6s ease-out 1; }
+@keyframes cfsysw-flash { 0% { box-shadow: 0 0 0 3px rgba(79, 121, 214, .85); } 100% { box-shadow: 0 0 0 3px rgba(79, 121, 214, 0); } }
+.cfsysw-msg-head { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: #8f8fa0; }
+.cfsysw-msg-floor { color: #6e6e80; font-variant-numeric: tabular-nums; }
+.cfsysw-msg-name { color: #9fc1ff; font-weight: 600; }
+.cfsysw-msg-user .cfsysw-msg-name { color: #79d8a0; }
+.cfsysw-msg-time { color: #6e6e80; }
+.cfsysw-msg-variants { margin-left: auto; padding: 0 7px; border-radius: 999px; background: #2b3a55; color: #9fc1ff; font-size: 11px; }
+.cfsysw-msg-body { margin-top: 6px; color: #d6d6dd; font-size: var(--cfsysw-reader-font, 14px); line-height: 1.75; white-space: pre-wrap; word-break: break-word; }
+
+/* 阅读视图开关按钮的激活态 */
+.cfsysw-btn-active { border-color: #4f79d6 !important; background: #1d2536 !important; color: #9fc1ff !important; }
