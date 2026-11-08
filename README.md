@@ -20,9 +20,9 @@ ChatFilesys 是一个 [SillyTavern](https://github.com/SillyTavern/SillyTavern)�
 | --- | --- |
 | ![全局搜索](docs/assets/workbench-search.png) | ![版本管理](docs/assets/workbench-versions.png) |
 
-| 结构图（消息级，Worker·dagre 布局） |
-| --- |
-| ![结构图](docs/assets/workbench-graph.png) |
+| 分支对比（逐层 diff + 差异层跳转） | 结构图（消息级，Worker·dagre 布局） |
+| --- | --- |
+| ![分支对比](docs/assets/workbench-diff.png) | ![结构图](docs/assets/workbench-graph.png) |
 
 > 截图全部来自内置示例数据（虚构角色），不含任何真实聊天。
 
