@@ -638,6 +638,16 @@ export function createSearchPanel(opts) {
     const wb = opts.workbench;
     const MAX_RESULTS = 50;
 
+    // 搜索历史（最近 5 条；浏览器本地记忆，隐私模式降级为不记忆）
+    const HIST_KEY = 'chatfilesys-web-search-history';
+    const loadHist = () => { try { const h = JSON.parse(localStorage.getItem(HIST_KEY)); return Array.isArray(h) ? h : []; } catch { return []; } };
+    const saveHist = () => { try { localStorage.setItem(HIST_KEY, JSON.stringify(history)); } catch { /* 配额/隐私模式：不记忆 */ } };
+    let history = loadHist();
+    const rememberQuery = (q) => {
+        history = [q, ...history.filter((x) => x !== q)].slice(0, 5);
+        saveHist();
+    };
+
     const el = document.createElement('div');
     el.className = 'cfsysw-search';
     el.innerHTML = `
@@ -651,6 +661,18 @@ export function createSearchPanel(opts) {
 
     const input = el.querySelector('[data-role="search-input"]');
     const results = el.querySelector('[data-role="search-results"]');
+
+    /** 空输入时的面板内容：有历史给历史 chips，没有给一句引导 */
+    function historyHtml() {
+        if (!history.length) return '<div class="cfsysw-note">输入关键词开始搜索（历史会记在这里）。</div>';
+        return `<div class="cfsysw-search-meta">最近搜索</div>
+            <div class="cfsysw-search-hist">
+                ${history.map((h) => `<button class="cfsysw-btn cfsysw-hist-chip" data-hist="${esc(h)}" title="点击搜这个词">${esc(h)}</button>`).join('')}
+                <button class="cfsysw-btn" data-hist-act="clear" title="清掉历史记录（不影响任何数据）">清空</button>
+            </div>`;
+    }
+
+    const showHistory = () => { results.hidden = false; results.innerHTML = historyHtml(); };
 
     /** 高亮片段：先转义再包 <mark>（防注入） */
     function snippet(text, query) {
@@ -677,11 +699,13 @@ export function createSearchPanel(opts) {
     function run() {
         const query = input.value.trim();
         if (!wb.view().model) { opts.info?.('先打开一个家族再搜索。'); return; }
+        if (!query) { showHistory(); return; } // 空回车 = 看历史
         if (query.length < 2) {
             results.hidden = false;
             results.innerHTML = '<div class="cfsysw-note">至少输入 2 个字符。</div>';
             return;
         }
+        rememberQuery(query);
         const branchLabel = new Map((wb.view().model.branches || []).map((b, i) => [b.id, `#${i + 1} ${b.name}`]));
         const hits = [];
         for (const r of wb.allRows()) {
@@ -721,6 +745,18 @@ export function createSearchPanel(opts) {
     }
 
     el.addEventListener('click', async (e) => {
+        const hist = e.target.closest('[data-hist]');
+        if (hist) {
+            input.value = hist.dataset.hist;
+            run();
+            return;
+        }
+        if (e.target.closest('[data-hist-act="clear"]')) {
+            history = [];
+            saveHist();
+            showHistory();
+            return;
+        }
         const btn = e.target.closest('[data-search-act]');
         if (!btn) return;
         const act = btn.dataset.searchAct;
@@ -733,6 +769,10 @@ export function createSearchPanel(opts) {
     input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); run(); }
         if (e.key === 'Escape') { results.hidden = true; }
+    });
+    // 点输入框且为空 → 展开最近搜索（有历史才有内容）
+    input.addEventListener('focus', () => {
+        if (!input.value.trim() && history.length) showHistory();
     });
 
     return { el, refresh: () => { results.hidden = true; } };
