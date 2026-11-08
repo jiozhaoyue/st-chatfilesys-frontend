@@ -134,7 +134,9 @@ function branchProjection(wb, branchId = null) {
  * @param {(floor: number) => Promise<void>} opts.openVersions 打开该层版本管理（= wb.openVersions）
  * @param {(branchId: string) => Promise<void>} [opts.switchBranch] 切换活跃分支（= wb.handleAction('switch')）
  * @param {(name: string, text: string) => Promise<void>} [opts.exportText] 文本导出（下载端口）
- * @returns {{el, refresh, scrollToFloor, toggle, isOpen}}
+ * @param {(floor: number) => Promise<void>} [opts.forkAt] 从该层分叉（= wb.handleAction('fork-at')）
+ * @param {(msg: string, def?: string) => string|null} [opts.prompt] 输入对话框（分叉命名）
+ * @returns {{el, refresh, scrollToFloor, readBranch, toggle, isOpen}}
  */
 export function createReaderPanel(opts) {
     const wb = opts.workbench;
@@ -193,6 +195,8 @@ export function createReaderPanel(opts) {
                     ${variantCount > 1 ? `<span class="cfsysw-msg-variants" title="该层共 ${esc(String(variantCount))} 个版本（含其他分支）">${esc(String(variantCount))} 版</span>` : ''}
                 </header>
                 <div class="cfsysw-msg-body">${esc(mes) || '<span class="cfsysw-note">（空正文）</span>'}</div>
+                ${clickable ? `<button class="cfsysw-msg-fork" data-fork-floor="${esc(String(r.floorNo))}"
+                    title="从第 ${esc(String(r.floorNo))} 层分出一条新分支（共享前 ${esc(String(r.floorNo))} 层，原分支不动）"><i class="fa-solid fa-code-fork"></i></button>` : ''}
                 ${hasFlip ? `
                 <div class="cfsysw-swipe-flip" title="只读预览这一层的各个版本（正式切换 / 编辑请点正文打开版本管理）">
                     <button class="cfsysw-btn" data-swipe-act="prev" data-floor="${esc(String(r.floorNo))}" ${idx <= 0 ? 'disabled' : ''}>◀</button>
@@ -350,6 +354,13 @@ export function createReaderPanel(opts) {
     }
 
     el.addEventListener('click', async (e) => {
+        // 在此层分叉（悬浮按钮；优先消费，不触发「点层开版本管理」）
+        const fork = e.target.closest('[data-fork-floor]');
+        if (fork) {
+            e.stopPropagation();
+            await opts.forkAt?.(Number(fork.dataset.forkFloor));
+            return;
+        }
         // 内联 swipe 只读预览（不与「点层开版本管理」冲突：flipper 优先消费）
         const flip = e.target.closest('[data-swipe-act]');
         if (flip) {

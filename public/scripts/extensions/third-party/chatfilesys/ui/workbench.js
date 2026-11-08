@@ -30,7 +30,7 @@
 
 import { buildFamilyFromJsonl, mergeIntoFamily, attachMergedFork } from '../core/importer.js';
 import { modelFromStore } from '../core/store-bridge.js';
-import { renameBranch, setMainBranch, deleteBranch } from '../core/branches.js';
+import { renameBranch, setMainBranch, deleteBranch, createBranch } from '../core/branches.js';
 import { getActiveBranch } from './common.js';
 import { parentsOf, childrenOf } from '../core/graph/graph.js';
 import { createGraphView } from './graph/view.js';
@@ -543,6 +543,19 @@ export function createWorkbench(ports = {}) {
                 if (!family || !branchId) return;
                 setMainBranch(family.fullModel, branchId);
                 if (await saveModel()) notify.ok('已设为主分支。');
+                onRendered();
+                return;
+            }
+            case 'fork-at': {
+                // 从活跃分支第 N 层分出一条新分支（共享前 N 层，原分支不动）——
+                // web 阅读视图的「在此层分叉」入口；插件侧未来接线时同名同语义
+                if (!family) { notify.warn('先打开一个家族。'); return; }
+                const floor = Number(el?.dataset?.floor);
+                if (!Number.isInteger(floor) || floor < 1) return;
+                const name = dialog.prompt(`从第 ${floor} 层分出一条新分支（共享前 ${floor} 层，之后各行其是）：`, `第 ${floor} 层分叉`);
+                if (!name) return;
+                createBranch(family.fullModel, { name, forkFloor: floor, activate: false });
+                if (await saveModel()) notify.ok(`已创建分支「${name}」（共享前 ${floor} 层，原分支不动）。`);
                 onRendered();
                 return;
             }

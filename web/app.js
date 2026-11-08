@@ -312,6 +312,10 @@ async function boot() {
             syncFloorSelect(); // 活跃分支变了 → 楼层选择器跟随
         },
         exportText: download,
+        forkAt: async (floor) => {
+            await wb.handleAction('fork-at', { dataset: { floor: String(floor) } });
+        },
+        prompt: (msg, def) => globalThis.prompt(msg, def),
     });
     reader.el.addEventListener('cfsysw-reader-toggle', syncReaderVisibility);
     $('cfsysw-reader-host').appendChild(reader.el);

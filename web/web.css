@@ -128,6 +128,15 @@
 .cfsysw-search-hit-text mark { background: #4a3b12; color: #ffd479; padding: 0 2px; border-radius: 3px; }
 .cfsysw-search-hit-ops { margin-top: 6px; display: flex; gap: 6px; }
 
+/* 在此层分叉（悬浮按钮；悬停气泡时出现） */
+.cfsysw-msg { position: relative; }
+.cfsysw-msg-fork { position: absolute; top: -10px; right: 10px; display: none; padding: 2px 9px; border: 1px solid #3d3d49; border-radius: 999px; background: #23232b; color: #9fc1ff; font-size: 12px; cursor: pointer; }
+.cfsysw-msg:hover .cfsysw-msg-fork { display: inline-block; }
+.cfsysw-msg-fork:hover { border-color: #4f79d6; background: #1d2536; }
+
+/* 在此层分叉（纸张主题下的配色） */
+.cfsysw-reader-paper .cfsysw-msg-fork { background: #faf6ec; border-color: #d8cfba; color: #7d5f2e; }
+
 /* 搜索历史 chips */
 .cfsysw-search-hist { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .cfsysw-hist-chip { padding: 2px 12px; border-radius: 999px; font-size: 12px; }
