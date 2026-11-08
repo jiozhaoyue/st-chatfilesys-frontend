@@ -135,7 +135,8 @@
 .cfsysw-main-host { position: relative; }
 .cfsysw-app.cfsysw-reading .cfsysw-popup-host { display: none; }
 
-.cfsysw-reader { margin-top: 16px; border: 1px solid #2c2c34; border-radius: 10px; background: #1b1b21; overflow: hidden; }
+.cfsysw-reader { margin-top: 16px; border: 1px solid #2c2c34; border-radius: 10px; background: #1b1b21; overflow: hidden; position: relative; }
+.cfsysw-reader-progress { position: absolute; top: 0; left: 0; height: 2px; width: 0%; background: #4f79d6; z-index: 2; transition: width .12s linear; pointer-events: none; }
 .cfsysw-reader-toolbar { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid #2c2c34; background: #202028; flex-wrap: wrap; }
 .cfsysw-reader-title { font-weight: 600; color: #eef0f6; display: inline-flex; align-items: center; gap: 8px; }
 .cfsysw-reader-tools { margin-left: auto; display: inline-flex; gap: 6px; }

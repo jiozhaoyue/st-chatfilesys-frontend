@@ -139,7 +139,10 @@ function branchProjection(wb, branchId = null) {
 export function createReaderPanel(opts) {
     const wb = opts.workbench;
     let open = false;
-    let fontPx = 14;               // 正文字号（12–20）
+    // 字号记忆（浏览器本地；隐私模式读不到就用默认值）
+    const FONT_KEY = 'chatfilesys-web-reader-font';
+    let fontPx = (() => { try { return Math.min(20, Math.max(12, Number(localStorage.getItem(FONT_KEY)) || 14)); } catch { return 14; } })();
+    const rememberFont = () => { try { localStorage.setItem(FONT_KEY, String(fontPx)); } catch { /* 配额/隐私模式：不记忆，内存态仍可用 */ } };
     let lastFloors = [];           // 当前渲染过的楼层号（上下层导航用）
     let readBranchId = null;       // 正在读的分支；null = 当前视图分支（活跃投影）
     const swipePreview = new Map(); // floorNo → 内联 swipe 预览下标（**只读预览**，不落库）
@@ -222,6 +225,7 @@ export function createReaderPanel(opts) {
             .map((b, i) => `<option value="${esc(b.id)}" ${(readBranchId || v.branchId) === b.id ? 'selected' : ''}>#${i + 1} ${esc(b.name)}${b.is_default ? '（主分支）' : ''}</option>`)
             .join('');
         el.innerHTML = `
+            <div class="cfsysw-reader-progress" data-role="reader-progress"></div>
             <div class="cfsysw-reader-toolbar">
                 <span class="cfsysw-reader-title"><i class="fa-solid fa-book-open"></i> 阅读 · ${esc(v.familyName)}</span>
                 <select class="text_pole" data-role="reader-branch" title="选一条分支来读（别的分支是只读投影）">${branchOpts}</select>
@@ -248,9 +252,24 @@ export function createReaderPanel(opts) {
         const scRect = sc.getBoundingClientRect();
         const tRect = target.getBoundingClientRect();
         sc.scrollTop += (tRect.top + tRect.height / 2) - (scRect.top + scRect.height / 2);
+        updateProgress();
     }
 
-    /** 滚到指定楼层（搜索「阅读定位」用）：没开着就先开 */
+    /** 阅读进度条：显式更新为主（scroll 事件在后台标签页会被搁置，事件只作兜底） */
+    function updateProgress() {
+        const sc = el.querySelector('.cfsysw-reader-scroll');
+        const bar = el.querySelector('[data-role="reader-progress"]');
+        if (!sc || !bar) return;
+        const max = sc.scrollHeight - sc.clientHeight;
+        bar.style.width = `${max > 0 ? Math.min(100, (sc.scrollTop / max) * 100) : 100}%`;
+    }
+
+    // 兜底：用户滚轮/拖动滚动条时（scroll 不冒泡，捕获阶段在面板根上收）
+    el.addEventListener('scroll', (e) => {
+        if (e.target?.classList?.contains('cfsysw-reader-scroll')) updateProgress();
+    }, true);
+
+    /** 滚到指定楼层（搜索「阅读定位」/ 键盘翻层用）：没开着就先开 */
     function scrollToFloor(floor) {
         if (!open) toggle(true);
         render();
@@ -307,8 +326,8 @@ export function createReaderPanel(opts) {
         if (act === 'close') { toggle(false); return; }
         if (act === 'prev') { step(-1); return; }
         if (act === 'next') { step(1); return; }
-        if (act === 'font-up') { fontPx = Math.min(20, fontPx + 1); render(); keepScroll(); return; }
-        if (act === 'font-down') { fontPx = Math.max(12, fontPx - 1); render(); keepScroll(); return; }
+        if (act === 'font-up') { fontPx = Math.min(20, fontPx + 1); rememberFont(); render(); keepScroll(); return; }
+        if (act === 'font-down') { fontPx = Math.max(12, fontPx - 1); rememberFont(); render(); keepScroll(); return; }
         if (act === 'switch-branch') {
             if (readBranchId && opts.switchBranch) await opts.switchBranch(readBranchId);
             readBranchId = null; // 已成为活跃分支 → 回到可编辑投影
@@ -366,6 +385,16 @@ export function createReaderPanel(opts) {
         const tRect = t.getBoundingClientRect();
         sc.scrollTop += tRect.top - scRect.top - 12;
     }
+
+    // 阅读进度条：scroll 不冒泡，用捕获阶段在面板根上收（面板只建一次，监听跟着活全程）
+    el.addEventListener('scroll', (e) => {
+        const sc = e.target;
+        if (!sc?.classList?.contains('cfsysw-reader-scroll')) return;
+        const bar = el.querySelector('[data-role="reader-progress"]');
+        if (!bar) return;
+        const max = sc.scrollHeight - sc.clientHeight;
+        bar.style.width = `${max > 0 ? Math.min(100, (sc.scrollTop / max) * 100) : 100}%`;
+    }, true);
 
     function toggle(force) {
         open = typeof force === 'boolean' ? force : !open;
