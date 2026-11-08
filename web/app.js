@@ -333,6 +333,15 @@ async function boot() {
         const res = document.querySelector('[data-role="search-results"]');
         if (res && !res.hidden) res.hidden = true;
     });
+    // PO-3 浮窗关闭 → 接回页签：popup.js 的接回找 `dialog[open]`（插件态载体），
+    // web 页没有 dialog ⇒ 那一步是 no-op。这里在浮窗动作（toggle 按钮 / ✕）后补一次
+    // rerender——refresh 的 graphTabRemount 分支会把图重挂回页签。
+    document.addEventListener('click', (e) => {
+        const floatToggle = e.target.closest('[data-float]');
+        const floatClose = e.target.closest('.chatfilesys-floatwin [data-role="close"]');
+        if (!floatToggle && !floatClose) return;
+        setTimeout(() => { if (!document.querySelector('.chatfilesys-floatwin')) rerender(); }, 120);
+    }, true);
 
     // 页面级异常兜底：任何漏网异常至少在页面上说一声（不静默）
     window.addEventListener('error', (e) => notify.error(`页面异常：${e?.message || e}`));

@@ -164,6 +164,7 @@ export function createReaderPanel(opts) {
         return `
             <article class="cfsysw-msg${line.is_user ? ' cfsysw-msg-user' : ''}${clickable ? '' : ' cfsysw-msg-readonly'}"
                 data-floor="${esc(String(r.floorNo))}"
+                ${clickable ? 'role="button" tabindex="0"' : ''}
                 title="${clickable
                 ? `点这条打开第 ${esc(String(r.floorNo))} 层的版本管理（切换 / 删除 / 重排 / 编辑）`
                 : '只读投影：这是别的分支的内容，先「切到此分支」才能编辑'}">
@@ -361,6 +362,16 @@ export function createReaderPanel(opts) {
         readBranchId = sel.value && sel.value !== active ? sel.value : null;
         swipePreview.clear();
         render();
+    });
+
+    // 键盘可达：可点气泡支持 Enter / Space 触发（role=button 的合同）
+    el.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        const msg = e.target.closest?.('.cfsysw-msg[data-floor][role="button"]');
+        if (!msg || e.target !== msg) return;
+        e.preventDefault();
+        if (!readBranchId || readBranchId === wb.view().branchId) opts.openVersions(Number(msg.dataset.floor));
+        else opts.info?.('这是别的分支的只读投影——先点「切到此分支」再编辑。');
     });
 
     // 键盘导航（← / → 翻层，Esc 关阅读）：输入框聚焦或任何模态开着时不抢按键

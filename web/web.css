@@ -158,6 +158,8 @@
 /* 只读投影（读别的分支）：不可点的外观，点击给提示不动作 */
 .cfsysw-msg-readonly { cursor: default; opacity: .92; }
 .cfsysw-msg-readonly:hover { border-color: #55555f; }
+/* 键盘可达（role=button 气泡）：聚焦环与只读态区分 */
+.cfsysw-msg[role="button"]:focus-visible { outline: 2px solid #4f79d6; outline-offset: 2px; }
 
 /* 日期分隔线 */
 .cfsysw-day-sep { display: flex; align-items: center; gap: 12px; margin: 16px 0 8px; color: #6e6e80; font-size: 12px; }
