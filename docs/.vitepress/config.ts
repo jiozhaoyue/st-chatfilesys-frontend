@@ -93,6 +93,7 @@ export default defineConfig({
                         { text: '测试基建', link: '/dev/testing' },
                         { text: '文档政策', link: '/dev/docs-policy' },
                         { text: '路线图（计划公开）', link: '/dev/roadmap' },
+                        { text: 'Authority 后端接入指导', link: '/dev/authority-backend' },
                     ],
                 },
             ],
@@ -101,9 +102,6 @@ export default defineConfig({
                     text: '其他文档',
                     items: [
                         { text: '纯数据库模式说明（人话版）', link: '/pure-db-mode-explained' },
-                        { text: '多聊天 / PR 存储接缝建议书', link: '/multi-chat-pr-storage-seam-proposal' },
-                        { text: 'Timelines 迁移计划', link: '/timelines-migration-plan' },
-                        { text: 'Timelines 迁移 PRD', link: '/timelines-migration-prd' },
                     ],
                 },
             ],

@@ -56,7 +56,7 @@ node 单测用 `vm` 跑真库。做法是**库不自己加载自己**：`core/gr
   「改宿主 API 只改一处」，代价是这个文件偏大。拆分的标准是「能下沉到 `core/` 的就要下沉」。
 - **`core/` 不设运行时类型校验**（纯 JS，靠 JSDoc + 单测锁行为）；跨层传错形状的错误会在跑测试时暴露，
   而不是在写代码时被编译器拦住。
-- **后端不在本仓**：Authority 数据库后端是另一个仓库的事，仓根的 `backend-plugin-spec.md` 是它的接入指导。
+- **后端不在本仓**：Authority 数据库后端是另一个仓库的事，[`docs/dev/authority-backend.md`](./authority-backend.md) 是它的接入指导。
 
 ## 失败与降级时的表现
 
