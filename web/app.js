@@ -101,12 +101,14 @@ function rerender() {
     syncGraphReadButton();        // 图节点选中 → 「阅读定位」按钮（web 壳层增强）
 }
 
-/** 统计条：家族统计概览（失败只降级成空条，不连坐页面） */
+/** 统计条：家族统计概览（失败只降级成空条，不连坐页面）；无家族时给一句引导 */
 function renderStats() {
     const host = $('cfsysw-stats');
     if (!host) return;
     try {
-        host.innerHTML = statsHtml(computeStats(wb));
+        const stats = computeStats(wb);
+        host.innerHTML = stats ? statsHtml(stats)
+            : '<span class="cfsysw-chip">从顶栏选择 / 载入示例 / 导入 .jsonl 开始，这里会显示统计概览</span>';
     } catch { host.innerHTML = ''; }
 }
 
@@ -346,6 +348,13 @@ async function boot() {
     // 页面级异常兜底：任何漏网异常至少在页面上说一声（不静默）
     window.addEventListener('error', (e) => notify.error(`页面异常：${e?.message || e}`));
     window.addEventListener('unhandledrejection', (e) => notify.error(`未处理的异步异常：${e?.reason?.message || e?.reason || e}`));
+    // Ctrl/Cmd+K 把焦点挪到搜索框（浏览器默认地址栏搜索让位）
+    document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+            e.preventDefault();
+            document.querySelector('[data-role="search-input"]')?.focus();
+        }
+    });
     $('cfsysw-sample').addEventListener('click', async () => {
         const lines = [JSON.stringify(SAMPLE_HEADER), ...SAMPLE_ROWS.map((r) => JSON.stringify(r))];
         try {
