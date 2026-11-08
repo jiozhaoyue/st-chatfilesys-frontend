@@ -586,13 +586,15 @@ export function createWorkbench(ports = {}) {
                 notify.warn('AI 总结需要酒馆生成链路，web 模式不可用。');
                 return;
             case 'merge-branches':
+                // web 端的合并入口 = 导入旅程（同 chatKey 再导入：零差异幂等 / 有差异自动并成子分支）。
+                // 两分支手动合并（C1 计划层 + 对齐 Worker）的编排仍只在插件侧，接线留给带真机窗口的增量
                 pushError(WEB_LOCAL_CODE, {
-                    what: '合并流程尚未在 web 接线',
-                    why: '合并走 C1 计划层 + 家族对齐，属于下一增量（implement.md 阶段3）',
-                    fix: [{ label: '在酒馆插件里完成合并' }, { label: '等待下一增量' }],
+                    what: '两条分支的手动合并在 web 尚未接线',
+                    why: '手动合并走 C1 计划层 + 家族对齐编排，暂只在酒馆插件里提供；web 的等价路径 = 把另一份 jsonl 再导入一次',
+                    fix: [{ label: '把要合并的内容存成 jsonl 后用顶栏「导入 .jsonl」' }, { label: '在酒馆插件里完成合并' }],
                     detail: null,
                 });
-                notify.warn('合并流程尚未在 web 接线（见错误面）。');
+                notify.warn('手动合并暂只在酒馆插件里提供；web 可用「再导入一次」达到同样效果（见错误面）。');
                 onRendered();
                 return;
             case 'chat-import': case 'chat-export': case 'chat-tree':

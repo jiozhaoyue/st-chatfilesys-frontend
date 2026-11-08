@@ -736,6 +736,14 @@ export function createSearchPanel(opts) {
     const input = el.querySelector('[data-role="search-input"]');
     const results = el.querySelector('[data-role="search-results"]');
 
+    // 即输即搜（300ms 防抖——全家族行在内存里，够快；防抖只省无谓的中间渲染）。
+    // 防抖路径不记历史：历史只收「有意」的搜索（回车 / 按钮 / 点历史 chip）
+    let typeTimer = 0;
+    input.addEventListener('input', () => {
+        clearTimeout(typeTimer);
+        typeTimer = setTimeout(() => run({ record: false }), 300);
+    });
+
     /** 空输入时的面板内容：有历史给历史 chips，没有给一句引导 */
     function historyHtml() {
         if (!history.length) return '<div class="cfsysw-note">输入关键词开始搜索（历史会记在这里）。</div>';
@@ -770,7 +778,7 @@ export function createSearchPanel(opts) {
         return pre + out + post;
     }
 
-    function run() {
+    function run({ record = true } = {}) {
         const query = input.value.trim();
         if (!wb.view().model) { opts.info?.('先打开一个家族再搜索。'); return; }
         if (!query) { showHistory(); return; } // 空回车 = 看历史
@@ -779,7 +787,7 @@ export function createSearchPanel(opts) {
             results.innerHTML = '<div class="cfsysw-note">至少输入 2 个字符。</div>';
             return;
         }
-        rememberQuery(query);
+        if (record) rememberQuery(query);
         const branchLabel = new Map((wb.view().model.branches || []).map((b, i) => [b.id, `#${i + 1} ${b.name}`]));
         const hits = [];
         for (const r of wb.allRows()) {
