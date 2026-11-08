@@ -145,7 +145,20 @@ export function createReaderPanel(opts) {
     const rememberFont = () => { try { localStorage.setItem(FONT_KEY, String(fontPx)); } catch { /* 配额/隐私模式：不记忆，内存态仍可用 */ } };
     let lastFloors = [];           // 当前渲染过的楼层号（上下层导航用）
     let readBranchId = null;       // 正在读的分支；null = 当前视图分支（活跃投影）
+    let lastRestoredFamily = null; // 已做过「继续阅读」恢复的家族（每家族每次会话只恢复一次）
     const swipePreview = new Map(); // floorNo → 内联 swipe 预览下标（**只读预览**，不落库）
+
+    // 阅读位置记忆（浏览器本地；按家族记最后读到的楼层，重开页面「继续阅读」）
+    const PROGRESS_KEY = 'chatfilesys-web-reader-progress';
+    const loadProgress = () => { try { return JSON.parse(localStorage.getItem(PROGRESS_KEY)) || {}; } catch { return {}; } };
+    const saveProgress = (familyId, floor) => {
+        if (!familyId || !Number.isFinite(floor)) return;
+        try {
+            const all = loadProgress();
+            all[familyId] = { floor, at: Date.now() };
+            localStorage.setItem(PROGRESS_KEY, JSON.stringify(all));
+        } catch { /* 配额/隐私模式：不记忆 */ }
+    };
 
     const el = document.createElement('section');
     el.className = 'cfsysw-reader';
@@ -239,8 +252,10 @@ export function createReaderPanel(opts) {
         lastFloors = rows.map((r) => r.floorNo);
         const isCurrent = !readBranchId || readBranchId === v.branchId;
         const branchLabel = v.model.branches.find((b) => b.id === (readBranchId || v.branchId))?.name || '—';
+        const branchCounts = new Map(); // 分支层数（选项文本里带个数，选起来有概念）
+        for (const r of wb.allRows()) for (const id of r.branchIds) branchCounts.set(id, (branchCounts.get(id) || 0) + 1);
         const branchOpts = v.model.branches
-            .map((b, i) => `<option value="${esc(b.id)}" ${(readBranchId || v.branchId) === b.id ? 'selected' : ''}>#${i + 1} ${esc(b.name)}${b.is_default ? '（主分支）' : ''}</option>`)
+            .map((b, i) => `<option value="${esc(b.id)}" ${(readBranchId || v.branchId) === b.id ? 'selected' : ''}>#${i + 1} ${esc(b.name)}${b.is_default ? '（主分支）' : ''} · ${branchCounts.get(b.id) || 0} 层</option>`)
             .join('');
         el.innerHTML = `
             <div class="cfsysw-reader-progress" data-role="reader-progress"></div>
@@ -285,8 +300,13 @@ export function createReaderPanel(opts) {
     }
 
     // 兜底：用户滚轮/拖动滚动条时（scroll 不冒泡，捕获阶段在面板根上收）
+    let progressTimer = 0;
     el.addEventListener('scroll', (e) => {
-        if (e.target?.classList?.contains('cfsysw-reader-scroll')) updateProgress();
+        if (!e.target?.classList?.contains('cfsysw-reader-scroll')) return;
+        updateProgress();
+        // 阅读位置记忆（防抖 400ms；按家族记最后读到的楼层）
+        clearTimeout(progressTimer);
+        progressTimer = setTimeout(() => saveProgress(wb.familyId, currentFloor()), 400);
     }, true);
 
     /** 滚到指定楼层（搜索「阅读定位」/ 键盘翻层用）：没开着就先开 */
@@ -448,7 +468,20 @@ export function createReaderPanel(opts) {
         open = typeof force === 'boolean' ? force : !open;
         el.hidden = !open;
         el.dispatchEvent(new CustomEvent('cfsysw-reader-toggle', { bubbles: true }));
-        if (open) { swipePreview.clear(); render(); } // 预览下标跟着打开动作重置（各分支内容不同）
+        if (open) {
+            swipePreview.clear();
+            render();
+            // 继续阅读：每个家族每次会话只恢复一次（显式定位/翻层不受影响）
+            const famId = wb.familyId;
+            if (famId && lastRestoredFamily !== famId) {
+                lastRestoredFamily = famId;
+                const saved = loadProgress()[famId];
+                if (saved && Number.isFinite(saved.floor) && lastFloors.includes(saved.floor) && saved.floor !== lastFloors[0]) {
+                    scrollToFloor(saved.floor);
+                    opts.info?.(`已回到上次阅读位置：第 ${saved.floor} 层`);
+                }
+            }
+        }
     }
 
     /** 让阅读视图改读某条分支（对比面板「阅读定位」用）：等于活跃分支时回到可编辑投影 */
