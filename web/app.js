@@ -131,16 +131,21 @@ function syncGraphReadButton() {
     const panel = document.querySelector('.cfsysw-popup-host [data-role="graph-selection"]');
     if (!panel) return;
     panel.querySelector('[data-web-act="graph-read"]')?.remove();
+    panel.querySelector('[data-web-act="graph-versions"]')?.remove();
     // 图选中是缓存态（家族关掉后仍残留）——没有打开家族就不给按钮（点了也只能看到空阅读）
     if (!wb?.view().model) return;
     const sel = wb.view().graphSelection;
     if (!sel || !Number.isFinite(sel.floor)) return;
-    const btn = document.createElement('button');
-    btn.className = 'cfsysw-btn';
-    btn.dataset.webAct = 'graph-read';
-    btn.title = `在阅读视图里定位到第 ${sel.floor} 层`;
-    btn.textContent = `📖 阅读定位 #${sel.floor}`;
-    panel.appendChild(btn);
+    const mk = (act, label, title) => {
+        const btn = document.createElement('button');
+        btn.className = 'cfsysw-btn';
+        btn.dataset.webAct = act;
+        btn.title = title;
+        btn.textContent = label;
+        return btn;
+    };
+    panel.appendChild(mk('graph-read', `📖 阅读定位 #${sel.floor}`, `在阅读视图里定位到第 ${sel.floor} 层`));
+    panel.appendChild(mk('graph-versions', `版本管理 #${sel.floor}`, `打开第 ${sel.floor} 层的版本管理`));
 }
 
 /** 版本管理的统一入口（顶部按钮 / 阅读视图 / 搜索结果三处共用） */
@@ -327,13 +332,15 @@ async function boot() {
     $('cfsysw-versions').addEventListener('click', () => openVersionsAt(Number($('cfsysw-floor').value || 1)));
     $('cfsysw-delete').addEventListener('click', () => deleteCurrentFamily());
     $('cfsysw-rename').addEventListener('click', () => renameCurrentFamily());
-    // 图节点「阅读定位」（syncGraphReadButton 注入的 web 壳层按钮；capture 阶段先于弹窗委托也无妨）
+    // 图节点「阅读定位 / 版本管理」（syncGraphReadButton 注入的 web 壳层按钮）
     document.addEventListener('click', (e) => {
-        const btn = e.target.closest('[data-web-act="graph-read"]');
+        const btn = e.target.closest('[data-web-act="graph-read"], [data-web-act="graph-versions"]');
         if (!btn) return;
         if (!wb?.view().model) { notify.warn('先打开一个家族。'); return; }
         const floor = wb.view().graphSelection?.floor;
-        if (Number.isFinite(floor)) { reader.scrollToFloor(floor); notify.info(`阅读视图已定位到第 ${floor} 层。`); }
+        if (!Number.isFinite(floor)) return;
+        if (btn.dataset.webAct === 'graph-read') { reader.scrollToFloor(floor); notify.info(`阅读视图已定位到第 ${floor} 层。`); }
+        else openVersionsAt(floor);
     });
     // 点搜索面板外面收起结果（Esc 已有；这里补鼠标路径）
     document.addEventListener('click', (e) => {
