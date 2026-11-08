@@ -233,6 +233,7 @@ export function createReaderPanel(opts) {
                 <span class="cfsysw-note">${esc(branchLabel)} · ${rows.length} 层 · ${isCurrent ? '点任意一条管理该层版本' : '只读投影——「切到此分支」后可编辑'}</span>
                 <span class="cfsysw-reader-tools">
                     ${isCurrent ? '' : `<button class="cfsysw-btn" data-reader-act="switch-branch" title="把正在读的分支设为活跃分支（落库；打开这个聊天看到它）"><i class="fa-solid fa-arrow-right-arrow-left"></i> 切到此分支</button>`}
+                    <button class="cfsysw-btn" data-reader-act="diff" title="拿正在读的分支当基准，和另一条分支逐层比正文"><i class="fa-solid fa-code-compare"></i> 分支对比</button>
                     <button class="cfsysw-btn" data-reader-act="export-md" title="把当前阅读的分支导出为 Markdown 文稿（只读快照）"><i class="fa-solid fa-file-arrow-down"></i> 导出 Markdown</button>
                     <button class="cfsysw-btn" data-reader-act="prev" title="滚到上一条（快捷键 ←）">↑ 上一层</button>
                     <button class="cfsysw-btn" data-reader-act="next" title="滚到下一条（快捷键 →）">↓ 下一层</button>
@@ -335,6 +336,16 @@ export function createReaderPanel(opts) {
             render();
             return;
         }
+        if (act === 'diff') {
+            openBranchDiff({
+                workbench: wb,
+                baseBranchId: readBranchId, // 缺省基准 = 正在读的分支
+                openVersions: opts.openVersions,
+                reader: { scrollToFloor, readBranch: setReadBranch },
+                info: opts.info,
+            });
+            return;
+        }
         if (act === 'export-md') {
             const v = wb.view();
             const rows = branchProjection(wb, readBranchId);
@@ -414,13 +425,175 @@ export function createReaderPanel(opts) {
         if (open) { swipePreview.clear(); render(); } // 预览下标跟着打开动作重置（各分支内容不同）
     }
 
+    /** 让阅读视图改读某条分支（对比面板「阅读定位」用）：等于活跃分支时回到可编辑投影 */
+    function setReadBranch(id) {
+        const active = wb.view().branchId;
+        readBranchId = id && id !== active ? id : null;
+        swipePreview.clear();
+        if (open) render();
+    }
+
     return {
         el,
         refresh: () => { if (open) render(); },
         scrollToFloor,
+        readBranch: setReadBranch,
         toggle,
         isOpen: () => open,
     };
+}
+
+/* ==========================================================================
+ * 分支对比（两条分支逐层 diff；差异层 → 阅读定位 / 版本管理）
+ * ========================================================================== */
+
+/**
+ * 两条分支的逐层对比（纯函数）。
+ * 口径：每层取该分支**投影**的正文（mes 字符串相等 = 相同层）；
+ * 共享楼层（同 variantId）自然落「相同」；某层只在一侧存在 = 仅 A / 仅 B。
+ * @param {object} wb createWorkbench 产物
+ * @param {string} aId 分支 A（对比基准）
+ * @param {string} bId 分支 B
+ */
+export function diffBranches(wb, aId, bId) {
+    const rowsA = branchProjection(wb, aId);
+    const rowsB = branchProjection(wb, bId);
+    const mapA = new Map(rowsA.map((r) => [r.floorNo, r]));
+    const mapB = new Map(rowsB.map((r) => [r.floorNo, r]));
+    const floors = [...new Set([...rowsA.map((r) => r.floorNo), ...rowsB.map((r) => r.floorNo)])].sort((x, y) => x - y);
+    let same = 0;
+    let diff = 0;
+    let onlyA = 0;
+    let onlyB = 0;
+    const items = floors.map((floor) => {
+        const a = mapA.get(floor);
+        const b = mapB.get(floor);
+        const ma = a ? String(a.line?.mes ?? '') : null;
+        const mb = b ? String(b.line?.mes ?? '') : null;
+        let kind;
+        if (ma !== null && mb !== null) kind = ma === mb ? 'same' : 'diff';
+        else if (ma !== null) kind = 'only-a';
+        else kind = 'only-b';
+        if (kind === 'same') same += 1;
+        else if (kind === 'diff') diff += 1;
+        else if (kind === 'only-a') onlyA += 1;
+        else onlyB += 1;
+        return { floor, kind, aName: a?.line?.name ?? null, bName: b?.line?.name ?? null };
+    });
+    return { items, same, diff, onlyA, onlyB, total: floors.length, firstDiff: items.find((i) => i.kind !== 'same')?.floor ?? null };
+}
+
+const DIFF_KIND_LABEL = {
+    same: ['相同', 'cfsysw-diff-badge-same'],
+    diff: ['内容不同', 'cfsysw-diff-badge-diff'],
+    'only-a': ['仅 A', 'cfsysw-diff-badge-only'],
+    'only-b': ['仅 B', 'cfsysw-diff-badge-only'],
+};
+
+/**
+ * 打开「分支对比」对话框（web 载体 = `<dialog>`；只读，无写路径）。
+ * @param {object} opts
+ * @param {object} opts.workbench createWorkbench 产物
+ * @param {string|null} [opts.baseBranchId] 对比基准（缺省 = 当前阅读分支）
+ * @param {(floor: number) => Promise<void>} opts.openVersions 打开该层版本管理
+ * @param {{ scrollToFloor: (n: number) => void }} opts.reader 阅读视图（定位用）
+ * @param {(msg: string) => void} [opts.info] 提示
+ */
+export function openBranchDiff(opts) {
+    const wb = opts.workbench;
+    const v = wb.view();
+    if (!v.model) { opts.info?.('先打开一个家族。'); return; }
+    if (v.model.branches.length < 2) { opts.info?.('只有一条分支，无从对比。'); return; }
+    const baseId = opts.baseBranchId || v.branchId;
+
+    const dlg = document.createElement('dialog');
+    dlg.className = 'cfsysw-modal';
+    const labelOf = (id) => {
+        const i = v.model.branches.findIndex((b) => b.id === id);
+        return i >= 0 ? `#${i + 1} ${v.model.branches[i].name}` : id;
+    };
+
+    function run(aId, bId) {
+        const d = diffBranches(wb, aId, bId);
+        const chips = [
+            `相同 ${d.same}`,
+            `内容不同 ${d.diff}`,
+            `仅 A ${d.onlyA}`,
+            `仅 B ${d.onlyB}`,
+        ].join(' · ');
+        const rows = d.items
+            .filter((i) => i.kind !== 'same')
+            .map((i) => {
+                const [label, cls] = DIFF_KIND_LABEL[i.kind];
+                // 「阅读定位」要滚到**拥有这一层的那条分支**的投影（仅 A / 仅 B 时另一侧根本没有该层）
+                const locateBranch = i.kind === 'only-a' ? aId : i.kind === 'only-b' ? bId : aId;
+                return `
+                    <div class="cfsysw-diff-row">
+                        <span class="cfsysw-msg-floor">#${esc(String(i.floor))}</span>
+                        <span class="cfsysw-diff-badge ${cls}">${label}</span>
+                        <span class="cfsysw-diff-who">${esc([i.aName, i.bName].filter(Boolean).join(' / ') || '—')}</span>
+                        <span class="cfsysw-diff-ops">
+                            <button class="cfsysw-btn" data-diff-act="locate" data-floor="${esc(String(i.floor))}"
+                                data-branch="${esc(locateBranch)}"
+                                title="在阅读视图里定位这一层（仅 A / 仅 B 时会切到那条分支的只读投影）">阅读定位</button>
+                            <button class="cfsysw-btn" data-diff-act="versions" data-floor="${esc(String(i.floor))}">版本管理</button>
+                        </span>
+                    </div>`;
+            })
+            .join('');
+        dlg.innerHTML = `
+            <div class="cfsysw-diff-head">
+                <strong>分支对比</strong>
+                <span class="cfsysw-note">${esc(labelOf(aId))}（A） vs ${esc(labelOf(bId))}（B） · 共 ${d.total} 层</span>
+            </div>
+            <div class="cfsysw-diff-summary">${chips}${d.firstDiff != null ? ` · 首个差异在第 ${d.firstDiff} 层` : ' · 两条分支内容完全一致'}</div>
+            <div class="cfsysw-diff-list">${rows || '<div class="cfsysw-note">没有差异层。</div>'}</div>
+            <div class="chatfilesys-btnrow">
+                <button class="cfsysw-btn" data-diff-act="close">关闭</button>
+            </div>`;
+    }
+
+    // 初始：A = 基准（当前阅读分支），B = 选择器里另一条（第一条非基准分支）
+    const other = v.model.branches.find((b) => b.id !== baseId);
+    dlg.innerHTML = `
+        <div class="cfsysw-diff-head"><strong>分支对比</strong>
+            <span class="cfsysw-note">选两条分支，逐层比正文（每层 = 该分支投影的当前内容）</span></div>
+        <div class="cfsysw-diff-pick">
+            <label>A <select class="text_pole" data-role="diff-a">${v.model.branches.map((b) => `<option value="${esc(b.id)}" ${b.id === baseId ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></label>
+            <label>B <select class="text_pole" data-role="diff-b">${v.model.branches.map((b) => `<option value="${esc(b.id)}" ${b.id === other?.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></label>
+        </div>
+        <div class="cfsysw-diff-list"><div class="cfsysw-note">选好后自动对比。</div></div>
+        <div class="chatfilesys-btnrow"><button class="cfsysw-btn" data-diff-act="close">关闭</button></div>`;
+
+    const rerun = () => {
+        const a = dlg.querySelector('[data-role="diff-a"]').value;
+        const b = dlg.querySelector('[data-role="diff-b"]').value;
+        if (a === b) {
+            dlg.querySelector('.cfsysw-diff-list').innerHTML = '<div class="cfsysw-note">A 和 B 是同一条分支——选两条不同的。</div>';
+            return;
+        }
+        run(a, b);
+    };
+    dlg.addEventListener('change', (e) => {
+        if (e.target.closest('[data-role="diff-a"], [data-role="diff-b"]')) rerun();
+    });
+    dlg.addEventListener('click', async (e) => {
+        const btn = e.target.closest('[data-diff-act]');
+        if (!btn) return;
+        if (btn.dataset.diffAct === 'close') { dlg.close(); return; }
+        const floor = Number(btn.dataset.floor);
+        if (!Number.isFinite(floor)) return;
+        dlg.close();
+        if (btn.dataset.diffAct === 'locate') {
+            if (btn.dataset.branch) opts.reader.readBranch?.(btn.dataset.branch);
+            opts.reader.scrollToFloor(floor);
+        } else await opts.openVersions(floor);
+    });
+    dlg.addEventListener('close', () => dlg.remove());
+
+    document.body.appendChild(dlg);
+    dlg.showModal();
+    rerun();
 }
 
 /* ==========================================================================

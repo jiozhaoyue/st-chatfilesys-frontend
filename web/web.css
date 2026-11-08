@@ -175,6 +175,20 @@
 .cfsysw-swipe-flip { margin-top: 8px; display: flex; align-items: center; gap: 8px; color: #8f8fa0; font-size: 12px; }
 .cfsysw-swipe-flip .cfsysw-btn { padding: 1px 9px; }
 
+/* 分支对比对话框（web 载体；只读无写路径） */
+.cfsysw-diff-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.cfsysw-diff-pick { display: flex; gap: 14px; margin: 10px 0; flex-wrap: wrap; }
+.cfsysw-diff-pick label { display: inline-flex; align-items: center; gap: 6px; color: #8f8fa0; font-size: 13px; }
+.cfsysw-diff-summary { margin: 8px 0; color: #b9bac8; font-size: 13px; }
+.cfsysw-diff-list { max-height: 46vh; overflow: auto; margin: 8px 0; }
+.cfsysw-diff-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; margin: 4px 0; border: 1px solid #2c2c34; border-radius: 6px; background: #202028; }
+.cfsysw-diff-badge { padding: 1px 8px; border-radius: 999px; font-size: 11px; }
+.cfsysw-diff-badge-same { background: #1b2620; color: #79d8a0; }
+.cfsysw-diff-badge-diff { background: #2a2416; color: #d8c89a; }
+.cfsysw-diff-badge-only { background: #1b2230; color: #9fc1ff; }
+.cfsysw-diff-who { color: #8f8fa0; font-size: 12px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cfsysw-diff-ops { display: inline-flex; gap: 6px; }
+
 /* 危险动作（删除家族） */
 .cfsysw-btn-danger:not(:disabled) { border-color: #5a3232; color: #ff9d9d; }
 .cfsysw-btn-danger:hover:not(:disabled) { background: #2a1a1c; border-color: #7a3b3b; }
