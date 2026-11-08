@@ -219,7 +219,17 @@ async function boot() {
     wb.bind(document); // 文档级委托：弹窗内容 + PO-3 小窗全覆盖
 
     // web 壳层面板（阅读 / 搜索 / 统计）：编辑一律转交同一份版本管理，不新造编辑面
-    reader = createReaderPanel({ workbench: wb, warn: notify.warn, openVersions: openVersionsAt });
+    reader = createReaderPanel({
+        workbench: wb,
+        warn: notify.warn,
+        info: notify.info,
+        openVersions: openVersionsAt,
+        switchBranch: async (branchId) => {
+            await wb.handleAction('switch', { dataset: { branch: branchId } });
+            syncFloorSelect(); // 活跃分支变了 → 楼层选择器跟随
+        },
+        exportText: download,
+    });
     reader.el.addEventListener('cfsysw-reader-toggle', syncReaderVisibility);
     $('cfsysw-reader-host').appendChild(reader.el);
     search = createSearchPanel({ workbench: wb, info: notify.info, openVersions: openVersionsAt, reader });

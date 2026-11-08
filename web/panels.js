@@ -11,7 +11,7 @@
  * 本模块零写路径——所有修改都经 wb.openVersions(floor) 的四能力（与插件同一份 UI）。
  */
 
-import { esc, getActiveBranch } from '../public/scripts/extensions/third-party/chatfilesys/ui/common.js';
+import { esc } from '../public/scripts/extensions/third-party/chatfilesys/ui/common.js';
 
 /**
  * 每个楼层的版本总数：库行数（分支级变体）与正文内联 swipes 数（库行把 swipe
@@ -106,17 +106,18 @@ export function statsHtml(stats) {
 }
 
 /**
- * 活跃分支投影（带 floorNo 的行）：workbench.activeRows() 只给行内容本身（无楼层号），
- * 阅读视图需要楼层号 ⇒ 从 allRows()（带 floorNo/variantId）按活跃 path 值集过滤推导。
- * 口径与 workbench.activeRows() 一致（variantId ∈ 活跃 path，按楼层序）。
+ * 某条分支的投影（带 floorNo 的行）：branchId 缺省 = 当前视图分支（与 workbench.activeRows()
+ * 口径一致——variantId ∈ 该分支 path 值集，按楼层序）；给别的分支 = 只读投影（阅读视图的「读其他分支」模式）。
  * @param {object} wb createWorkbench 产物
+ * @param {string|null} [branchId] 目标分支；null = 当前视图分支
  */
-function activeProjection(wb) {
+function branchProjection(wb, branchId = null) {
     const v = wb.view();
     if (!v.model) return [];
-    const active = getActiveBranch(v.model, v.branchId);
-    if (!active) return [];
-    const pathSet = new Set(Object.values(active.path || {}));
+    const target = branchId || v.branchId;
+    const branch = v.model.branches.find((b) => b.id === target);
+    if (!branch) return [];
+    const pathSet = new Set(Object.values(branch.path || {}));
     return wb.allRows().filter((r) => pathSet.has(r.variantId) && r.line);
 }
 
@@ -128,8 +129,11 @@ function activeProjection(wb) {
  * 创建阅读视图面板。
  * @param {object} opts
  * @param {object} opts.workbench createWorkbench 产物
+ * @param {(msg: string) => void} [opts.info] 轻提示（只读投影点正文等）
  * @param {(msg: string) => void} [opts.warn] 提示（家族未打开等）
  * @param {(floor: number) => Promise<void>} opts.openVersions 打开该层版本管理（= wb.openVersions）
+ * @param {(branchId: string) => Promise<void>} [opts.switchBranch] 切换活跃分支（= wb.handleAction('switch')）
+ * @param {(name: string, text: string) => Promise<void>} [opts.exportText] 文本导出（下载端口）
  * @returns {{el, refresh, scrollToFloor, toggle, isOpen}}
  */
 export function createReaderPanel(opts) {
@@ -137,19 +141,23 @@ export function createReaderPanel(opts) {
     let open = false;
     let fontPx = 14;               // 正文字号（12–20）
     let lastFloors = [];           // 当前渲染过的楼层号（上下层导航用）
+    let readBranchId = null;       // 正在读的分支；null = 当前视图分支（活跃投影）
 
     const el = document.createElement('section');
     el.className = 'cfsysw-reader';
     el.hidden = true;
 
-    function msgHtml(r, variantCount) {
+    function msgHtml(r, variantCount, clickable) {
         const line = r.line || {};
         const name = String(line.name ?? (line.is_user ? 'User' : 'Char'));
         const time = line.send_date ? esc(String(line.send_date).replace('T', ' ').slice(0, 16)) : '';
         const mes = String(line.mes ?? '');
         return `
-            <article class="cfsysw-msg${line.is_user ? ' cfsysw-msg-user' : ''}" data-floor="${esc(String(r.floorNo))}"
-                title="点这条打开第 ${esc(String(r.floorNo))} 层的版本管理（切换 / 删除 / 重排 / 编辑）">
+            <article class="cfsysw-msg${line.is_user ? ' cfsysw-msg-user' : ''}${clickable ? '' : ' cfsysw-msg-readonly'}"
+                data-floor="${esc(String(r.floorNo))}"
+                title="${clickable
+                ? `点这条打开第 ${esc(String(r.floorNo))} 层的版本管理（切换 / 删除 / 重排 / 编辑）`
+                : '只读投影：这是别的分支的内容，先「切到此分支」才能编辑'}">
                 <header class="cfsysw-msg-head">
                     <span class="cfsysw-msg-floor">#${esc(String(r.floorNo))}</span>
                     <span class="cfsysw-msg-name">${esc(name)}</span>
@@ -160,9 +168,29 @@ export function createReaderPanel(opts) {
             </article>`;
     }
 
+    /** 日期分隔线：相邻两条消息的日期不同时插一条（解析不了日期的行不打断） */
+    function daySeparator(prev, cur) {
+        const d = (r) => { try { return String(r?.line?.send_date ?? '').slice(0, 10); } catch { return ''; } };
+        const day = d(cur);
+        if (!day || day === d(prev)) return '';
+        return `<div class="cfsysw-day-sep"><span>${esc(day)}</span></div>`;
+    }
+
+    /** 导出当前阅读投影为 Markdown（只读快照；正文原样，不带插件命名空间） */
+    function buildMarkdown(familyName, branchName, rows) {
+        const out = [`# ${familyName} — ${branchName}`, ''];
+        for (const r of rows) {
+            const line = r.line || {};
+            const who = `${line.is_user ? '👤' : '🎭'} ${String(line.name ?? (line.is_user ? 'User' : 'Char'))}`;
+            const when = line.send_date ? ` · ${String(line.send_date).replace('T', ' ').slice(0, 16)}` : '';
+            out.push(`## #${r.floorNo} ${who}${when}`, '', String(line.mes ?? ''), '');
+        }
+        return out.join('\n');
+    }
+
     function render() {
         const v = wb.view();
-        const rows = activeProjection(wb);
+        const rows = branchProjection(wb, readBranchId);
         if (!v.model || !rows.length) {
             el.innerHTML = `
                 <div class="cfsysw-reader-toolbar">
@@ -176,22 +204,38 @@ export function createReaderPanel(opts) {
         // 每层的版本总数（库行 ∪ 内联 swipe——见 floorVariantCount 的口径注释）
         const variantCount = floorVariantCount(wb);
         lastFloors = rows.map((r) => r.floorNo);
-        const branchLabel = v.model.branches.find((b) => b.id === v.branchId)?.name || '主分支';
+        const isCurrent = !readBranchId || readBranchId === v.branchId;
+        const branchLabel = v.model.branches.find((b) => b.id === (readBranchId || v.branchId))?.name || '—';
+        const branchOpts = v.model.branches
+            .map((b, i) => `<option value="${esc(b.id)}" ${(readBranchId || v.branchId) === b.id ? 'selected' : ''}>#${i + 1} ${esc(b.name)}${b.is_default ? '（主分支）' : ''}</option>`)
+            .join('');
         el.innerHTML = `
             <div class="cfsysw-reader-toolbar">
                 <span class="cfsysw-reader-title"><i class="fa-solid fa-book-open"></i> 阅读 · ${esc(v.familyName)}</span>
-                <span class="cfsysw-note">${esc(branchLabel)} · ${rows.length} 层 · 点任意一条管理该层版本</span>
+                <select class="text_pole" data-role="reader-branch" title="选一条分支来读（别的分支是只读投影）">${branchOpts}</select>
+                <span class="cfsysw-note">${esc(branchLabel)} · ${rows.length} 层 · ${isCurrent ? '点任意一条管理该层版本' : '只读投影——「切到此分支」后可编辑'}</span>
                 <span class="cfsysw-reader-tools">
-                    <button class="cfsysw-btn" data-reader-act="prev" title="滚到上一条">↑ 上一层</button>
-                    <button class="cfsysw-btn" data-reader-act="next" title="滚到下一条">↓ 下一层</button>
+                    ${isCurrent ? '' : `<button class="cfsysw-btn" data-reader-act="switch-branch" title="把正在读的分支设为活跃分支（落库；打开这个聊天看到它）"><i class="fa-solid fa-arrow-right-arrow-left"></i> 切到此分支</button>`}
+                    <button class="cfsysw-btn" data-reader-act="export-md" title="把当前阅读的分支导出为 Markdown 文稿（只读快照）"><i class="fa-solid fa-file-arrow-down"></i> 导出 Markdown</button>
+                    <button class="cfsysw-btn" data-reader-act="prev" title="滚到上一条（快捷键 ←）">↑ 上一层</button>
+                    <button class="cfsysw-btn" data-reader-act="next" title="滚到下一条（快捷键 →）">↓ 下一层</button>
                     <button class="cfsysw-btn" data-reader-act="font-down" title="字号减小">A－</button>
                     <button class="cfsysw-btn" data-reader-act="font-up" title="字号增大">A＋</button>
-                    <button class="cfsysw-btn" data-reader-act="close" title="回到管理界面">关闭</button>
+                    <button class="cfsysw-btn" data-reader-act="close" title="回到管理界面（快捷键 Esc）">关闭</button>
                 </span>
             </div>
             <div class="cfsysw-reader-scroll" style="--cfsysw-reader-font:${fontPx}px">
-                ${rows.map((r) => msgHtml(r, variantCount.get(r.floorNo) || 1)).join('')}
+                ${rows.map((r, i) => daySeparator(rows[i - 1], r) + msgHtml(r, variantCount.get(r.floorNo) || 1, isCurrent)).join('')}
             </div>`;
+    }
+
+    /** 把某层滚到视口中央（手动 scrollTop 算术——scrollIntoView 在后台标签页会被浏览器搁置） */
+    function scrollMsgIntoCenter(target) {
+        const sc = el.querySelector('.cfsysw-reader-scroll');
+        if (!sc || !target) return;
+        const scRect = sc.getBoundingClientRect();
+        const tRect = target.getBoundingClientRect();
+        sc.scrollTop += (tRect.top + tRect.height / 2) - (scRect.top + scRect.height / 2);
     }
 
     /** 滚到指定楼层（搜索「阅读定位」用）：没开着就先开 */
@@ -200,21 +244,25 @@ export function createReaderPanel(opts) {
         render();
         const target = el.querySelector(`.cfsysw-msg[data-floor="${Number(floor)}"]`);
         if (!target) return;
-        target.scrollIntoView({ block: 'center' });
+        scrollMsgIntoCenter(target);
         target.classList.remove('cfsysw-msg-flash');
         // 强制重启动画
         void target.offsetWidth;
         target.classList.add('cfsysw-msg-flash');
     }
 
-    /** 当前滚动位置附近（视口内最靠上）的楼层号 */
+    /** 当前读到的楼层 = 覆盖滚动容器**中线**的那一层（按顶部判定会在滚动余量不足时卡住） */
     function currentFloor() {
-        const nodes = [...el.querySelectorAll('.cfsysw-msg[data-floor]')];
-        const top = el.querySelector('.cfsysw-reader-scroll')?.getBoundingClientRect().top ?? 0;
+        const sc = el.querySelector('.cfsysw-reader-scroll');
+        if (!sc) return lastFloors[0] ?? null;
+        const mid = sc.getBoundingClientRect().top + sc.clientHeight / 2;
+        const nodes = [...sc.querySelectorAll('.cfsysw-msg[data-floor]')];
+        let cur = null;
         for (const n of nodes) {
-            if (n.getBoundingClientRect().top >= top - 8) return Number(n.dataset.floor);
+            if (n.getBoundingClientRect().top <= mid) cur = Number(n.dataset.floor);
+            else break;
         }
-        return lastFloors[0] ?? null;
+        return cur ?? lastFloors[0] ?? null;
     }
 
     function step(delta) {
@@ -231,17 +279,61 @@ export function createReaderPanel(opts) {
         if (act === 'next') { step(1); return; }
         if (act === 'font-up') { fontPx = Math.min(20, fontPx + 1); render(); keepScroll(); return; }
         if (act === 'font-down') { fontPx = Math.max(12, fontPx - 1); render(); keepScroll(); return; }
+        if (act === 'switch-branch') {
+            if (readBranchId && opts.switchBranch) await opts.switchBranch(readBranchId);
+            readBranchId = null; // 已成为活跃分支 → 回到可编辑投影
+            render();
+            return;
+        }
+        if (act === 'export-md') {
+            const v = wb.view();
+            const rows = branchProjection(wb, readBranchId);
+            if (!rows.length) { opts.info?.('没有可导出的内容。'); return; }
+            const branchName = v.model.branches.find((b) => b.id === (readBranchId || v.branchId))?.name || '分支';
+            const md = buildMarkdown(v.familyName, branchName, rows);
+            await opts.exportText(`${v.familyName || 'chat'} - ${branchName}.md`, md);
+            opts.info?.('已导出 Markdown（只读快照）。');
+            return;
+        }
         const msg = e.target.closest('.cfsysw-msg[data-floor]');
-        if (msg) await opts.openVersions(Number(msg.dataset.floor));
+        if (!msg) return;
+        if (!readBranchId || readBranchId === wb.view().branchId) {
+            await opts.openVersions(Number(msg.dataset.floor));
+        } else {
+            opts.info?.('这是别的分支的只读投影——先点「切到此分支」再编辑。');
+        }
     });
 
-    /** 字号重渲染后保持视口大致位置（按当前楼层重新定位） */
+    // 分支选择器：换一条来读（只读投影；不动库内活跃分支）
+    el.addEventListener('change', (e) => {
+        const sel = e.target.closest('[data-role="reader-branch"]');
+        if (!sel) return;
+        const active = wb.view().branchId;
+        readBranchId = sel.value && sel.value !== active ? sel.value : null;
+        render();
+    });
+
+    // 键盘导航（← / → 翻层，Esc 关阅读）：输入框聚焦或任何模态开着时不抢按键
+    el.dataset.keybound = ''; // 标记位：本面板只绑一次（app.js 每页建一个 reader）
+    document.addEventListener('keydown', (e) => {
+        if (!open) return;
+        if (e.target?.closest?.('input, textarea, select, [contenteditable]')) return;
+        if (document.querySelector('dialog[open]')) return;
+        if (e.key === 'ArrowLeft') { step(-1); }
+        else if (e.key === 'ArrowRight') { step(1); }
+        else if (e.key === 'Escape') { toggle(false); }
+    });
+
+    /** 字号重渲染后保持视口大致位置（按当前楼层重新定位到视口顶部） */
     function keepScroll() {
         const cur = currentFloor();
-        if (cur != null) {
-            const t = el.querySelector(`.cfsysw-msg[data-floor="${Number(cur)}"]`);
-            t?.scrollIntoView({ block: 'start' });
-        }
+        if (cur == null) return;
+        const sc = el.querySelector('.cfsysw-reader-scroll');
+        const t = el.querySelector(`.cfsysw-msg[data-floor="${Number(cur)}"]`);
+        if (!sc || !t) return;
+        const scRect = sc.getBoundingClientRect();
+        const tRect = t.getBoundingClientRect();
+        sc.scrollTop += tRect.top - scRect.top - 12;
     }
 
     function toggle(force) {
@@ -331,6 +423,7 @@ export function createSearchPanel(opts) {
                 isUser: Boolean(r.line?.is_user),
                 snippetHtml: snippet(mes, query),
                 branches: r.branchIds.map((id) => branchLabel.get(id) || id).join('、'),
+                time: r.sendDate ? esc(String(r.sendDate).replace('T', ' ').slice(0, 16)) : '',
             });
             if (hits.length >= MAX_RESULTS) break;
         }
@@ -346,6 +439,7 @@ export function createSearchPanel(opts) {
                     <div class="cfsysw-search-hit-main">
                         <span class="cfsysw-msg-floor">#${esc(String(h.floorNo))}</span>
                         <span class="cfsysw-search-hit-name">${esc(h.name)}</span>
+                        ${h.time ? `<span class="cfsysw-search-hit-time">${h.time}</span>` : ''}
                         <span class="cfsysw-search-hit-branches" title="这一行出现的分支">${esc(h.branches)}</span>
                     </div>
                     <div class="cfsysw-search-hit-text">${h.snippetHtml}</div>

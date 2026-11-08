@@ -190,5 +190,19 @@
 .cfsysw-msg-variants { margin-left: auto; padding: 0 7px; border-radius: 999px; background: #2b3a55; color: #9fc1ff; font-size: 11px; }
 .cfsysw-msg-body { margin-top: 6px; color: #d6d6dd; font-size: var(--cfsysw-reader-font, 14px); line-height: 1.75; white-space: pre-wrap; word-break: break-word; }
 
+/* 只读投影（读别的分支）：不可点的外观，点击给提示不动作 */
+.cfsysw-msg-readonly { cursor: default; opacity: .92; }
+.cfsysw-msg-readonly:hover { border-color: #55555f; }
+
+/* 日期分隔线 */
+.cfsysw-day-sep { display: flex; align-items: center; gap: 12px; margin: 16px 0 8px; color: #6e6e80; font-size: 12px; }
+.cfsysw-day-sep::before, .cfsysw-day-sep::after { content: ''; flex: 1; height: 1px; background: #2c2c34; }
+
+/* 搜索命中行的时间 */
+.cfsysw-search-hit-time { color: #6e6e80; font-size: 11px; }
+
+/* 阅读工具栏的分支选择器 */
+.cfsysw-reader-toolbar select[data-role="reader-branch"] { max-width: 220px; }
+
 /* 阅读视图开关按钮的激活态 */
 .cfsysw-btn-active { border-color: #4f79d6 !important; background: #1d2536 !important; color: #9fc1ff !important; }
