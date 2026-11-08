@@ -12,9 +12,9 @@ ChatFilesys 是一个 [SillyTavern](https://github.com/SillyTavern/SillyTavern)�
 
 ## 截图
 
-| 管理工作台（弹窗五页签） | 阅读视图（web 工作台） |
+| 管理工作台（弹窗五页签） | 阅读视图（分支切换 / 内联版本预览 / 分支对比） |
 | --- | --- |
-| ![管理工作台](docs/assets/workbench-chat.png) | ![阅读视图](docs/assets/workbench-reader.png) |
+| ![管理工作台](docs/assets/workbench-chat.png) | ![阅读视图](docs/assets/workbench-reader-v2.png) |
 
 | 全局搜索（命中高亮 + 双跳转） | 楼层版本管理（四能力） |
 | --- | --- |
