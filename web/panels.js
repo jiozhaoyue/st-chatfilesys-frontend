@@ -143,6 +143,10 @@ export function createReaderPanel(opts) {
     const FONT_KEY = 'chatfilesys-web-reader-font';
     let fontPx = (() => { try { return Math.min(20, Math.max(12, Number(localStorage.getItem(FONT_KEY)) || 14)); } catch { return 14; } })();
     const rememberFont = () => { try { localStorage.setItem(FONT_KEY, String(fontPx)); } catch { /* 配额/隐私模式：不记忆，内存态仍可用 */ } };
+    // 阅读主题：暗色（默认）/ 纸张（护眼底色）——纯视觉，不改任何数据
+    const THEME_KEY = 'chatfilesys-web-reader-theme';
+    let paperTheme = (() => { try { return localStorage.getItem(THEME_KEY) === 'paper'; } catch { return false; } })();
+    const rememberTheme = () => { try { localStorage.setItem(THEME_KEY, paperTheme ? 'paper' : 'dark'); } catch { /* 不记忆 */ } };
     let lastFloors = [];           // 当前渲染过的楼层号（上下层导航用）
     let readBranchId = null;       // 正在读的分支；null = 当前视图分支（活跃投影）
     let lastRestoredFamily = null; // 已做过「继续阅读」恢复的家族（每家族每次会话只恢复一次）
@@ -163,6 +167,7 @@ export function createReaderPanel(opts) {
     const el = document.createElement('section');
     el.className = 'cfsysw-reader';
     el.hidden = true;
+    el.classList.toggle('cfsysw-reader-paper', paperTheme);
 
     function msgHtml(r, variantCount, clickable) {
         const line = r.line || {};
@@ -272,6 +277,7 @@ export function createReaderPanel(opts) {
                     <button class="cfsysw-btn" data-reader-act="next" title="滚到下一条（快捷键 →）">↓ 下一层</button>
                     <button class="cfsysw-btn" data-reader-act="font-down" title="字号减小">A－</button>
                     <button class="cfsysw-btn" data-reader-act="font-up" title="字号增大">A＋</button>
+                    <button class="cfsysw-btn" data-reader-act="theme" title="切换阅读底色（暗色 / 纸张）">${paperTheme ? '<i class="fa-solid fa-moon"></i>' : '<i class="fa-solid fa-file-lines"></i>'}</button>
                     <button class="cfsysw-btn" data-reader-act="close" title="回到管理界面（快捷键 Esc）">关闭</button>
                 </span>
             </div>
@@ -368,6 +374,13 @@ export function createReaderPanel(opts) {
         if (act === 'next') { step(1); return; }
         if (act === 'font-up') { fontPx = Math.min(20, fontPx + 1); rememberFont(); render(); keepScroll(); return; }
         if (act === 'font-down') { fontPx = Math.max(12, fontPx - 1); rememberFont(); render(); keepScroll(); return; }
+        if (act === 'theme') {
+            paperTheme = !paperTheme;
+            rememberTheme();
+            el.classList.toggle('cfsysw-reader-paper', paperTheme);
+            keepScroll();
+            return;
+        }
         if (act === 'switch-branch') {
             if (readBranchId && opts.switchBranch) await opts.switchBranch(readBranchId);
             readBranchId = null; // 已成为活跃分支 → 回到可编辑投影

@@ -204,5 +204,26 @@
 .cfsysw-btn-danger:not(:disabled) { border-color: #5a3232; color: #ff9d9d; }
 .cfsysw-btn-danger:hover:not(:disabled) { background: #2a1a1c; border-color: #7a3b3b; }
 
+/* 纸张主题（阅读底色切换；纯视觉，只覆盖阅读面板内部） */
+.cfsysw-reader.cfsysw-reader-paper { background: #efe9dc; border-color: #d8cfba; }
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-reader-toolbar { background: #e6decb; border-bottom-color: #d8cfba; }
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-reader-title,
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-reader-toolbar .cfsysw-note { color: #6b5d43; }
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-msg { background: #faf6ec; border-color: #ddd3bd; }
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-msg:hover { border-color: #b09a5f; }
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-msg-user { background: #f2ecdc; border-color: #d3c6a4; }
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-msg-body { color: #3f382a; }
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-msg-name { color: #7d5f2e; }
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-msg-user .cfsysw-msg-name { color: #4f6b3c; }
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-msg-head,
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-msg-floor,
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-msg-time { color: #96876a; }
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-day-sep { color: #96876a; }
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-day-sep::before,
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-day-sep::after { background: #d8cfba; }
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-swipe-flip { color: #96876a; }
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-msg-variants { background: #e0d2ae; color: #6b5d43; }
+.cfsysw-reader.cfsysw-reader-paper .cfsysw-note { color: #96876a; }
+
 /* 阅读视图开关按钮的激活态 */
 .cfsysw-btn-active { border-color: #4f79d6 !important; background: #1d2536 !important; color: #9fc1ff !important; }
