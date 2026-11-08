@@ -1,5 +1,7 @@
 # ChatFilesys — 聊天文件系统（SillyTavern / Luker 前端扩展）
 
+![License](https://img.shields.io/badge/license-AGPL--3.0-blue) ![Hosts](https://img.shields.io/badge/%E5%AE%BF%E4%B8%BB-SillyTavern%20%C2%B7%20Luker%20%C2%B7%20PureTavern%20%C2%B7%20TauriTavern-8a63d2) ![Docs](https://img.shields.io/badge/%E6%96%87%E6%A1%A3%E7%AB%99-GitHub%20Pages-2ea44f) ![形态](https://img.shields.io/badge/%E5%AE%89%E8%A3%85-%E9%9B%B6%E6%9E%84%E5%BB%BA-ff9f43)
+
 > 接管酒馆的聊天文件系统：真正的楼层分支、纯数据库存储（jsonl 仅导出时存在）、fetch 拦截伪装无感、智能合并去重——全部作为**一个前端扩展**实现，零核心修改、零构建安装。
 
 ChatFilesys 是一个 [SillyTavern](https://github.com/SillyTavern/SillyTavern)（及 Luker 分支）的第三方前端扩展，把「分支」从整文件复制变成聊天数据内的结构化组织，把「超大 jsonl 会话文件」变成数据库分片存储：

@@ -109,6 +109,8 @@ function renderStats() {
         const stats = computeStats(wb);
         host.innerHTML = stats ? statsHtml(stats)
             : '<span class="cfsysw-chip">从顶栏选择 / 载入示例 / 导入 .jsonl 开始，这里会显示统计概览</span>';
+        // 页面标题跟随家族（多开几个工作台标签页时一眼分清）
+        document.title = stats ? `${wb.view().familyName || '工作台'} · ChatFilesys` : 'ChatFilesys · 工作台（web 模式）';
     } catch { host.innerHTML = ''; }
 }
 
