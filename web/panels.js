@@ -204,6 +204,23 @@ export function createReaderPanel(opts) {
         return out.join('\n');
     }
 
+    /** 导出整个家族为 Markdown（全部分支各一节；共享楼层照实重复——每个分支都是完整投影） */
+    function buildMarkdownAll(wb) {
+        const v = wb.view();
+        const out = [`# ${v.familyName}（全部分支）`, ''];
+        for (const b of v.model.branches) {
+            const rows = branchProjection(wb, b.id);
+            out.push('---', '', `## 分支：${b.name}${b.is_default ? '（主分支）' : ''} · ${rows.length} 层`, '');
+            for (const r of rows) {
+                const line = r.line || {};
+                const who = `${line.is_user ? '👤' : '🎭'} ${String(line.name ?? (line.is_user ? 'User' : 'Char'))}`;
+                const when = line.send_date ? ` · ${String(line.send_date).replace('T', ' ').slice(0, 16)}` : '';
+                out.push(`### #${r.floorNo} ${who}${when}`, '', String(line.mes ?? ''), '');
+            }
+        }
+        return out.join('\n');
+    }
+
     function render() {
         const v = wb.view();
         const rows = branchProjection(wb, readBranchId);
@@ -235,6 +252,7 @@ export function createReaderPanel(opts) {
                     ${isCurrent ? '' : `<button class="cfsysw-btn" data-reader-act="switch-branch" title="把正在读的分支设为活跃分支（落库；打开这个聊天看到它）"><i class="fa-solid fa-arrow-right-arrow-left"></i> 切到此分支</button>`}
                     <button class="cfsysw-btn" data-reader-act="diff" title="拿正在读的分支当基准，和另一条分支逐层比正文"><i class="fa-solid fa-code-compare"></i> 分支对比</button>
                     <button class="cfsysw-btn" data-reader-act="export-md" title="把当前阅读的分支导出为 Markdown 文稿（只读快照）"><i class="fa-solid fa-file-arrow-down"></i> 导出 Markdown</button>
+                    <button class="cfsysw-btn" data-reader-act="export-md-all" title="整个家族导出为一份 Markdown（全部分支各一节）"><i class="fa-solid fa-files-pinwheel"></i> 导出家族</button>
                     <button class="cfsysw-btn" data-reader-act="prev" title="滚到上一条（快捷键 ←）">↑ 上一层</button>
                     <button class="cfsysw-btn" data-reader-act="next" title="滚到下一条（快捷键 →）">↓ 下一层</button>
                     <button class="cfsysw-btn" data-reader-act="font-down" title="字号减小">A－</button>
@@ -354,6 +372,14 @@ export function createReaderPanel(opts) {
             const md = buildMarkdown(v.familyName, branchName, rows);
             await opts.exportText(`${v.familyName || 'chat'} - ${branchName}.md`, md);
             opts.info?.('已导出 Markdown（只读快照）。');
+            return;
+        }
+        if (act === 'export-md-all') {
+            const v = wb.view();
+            if (!v.model) { opts.info?.('先打开一个家族。'); return; }
+            const md = buildMarkdownAll(wb);
+            await opts.exportText(`${v.familyName || 'chat'} - 全部分支.md`, md);
+            opts.info?.('已导出家族 Markdown（全部分支分节）。');
             return;
         }
         const msg = e.target.closest('.cfsysw-msg[data-floor]');
