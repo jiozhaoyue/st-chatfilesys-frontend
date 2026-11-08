@@ -40,6 +40,8 @@
         <label class="cfsysw-btn cfsysw-filebtn">导入 .jsonl
           <input type="file" id="cfsysw-file" accept=".jsonl,application/json" multiple hidden>
         </label>
+        <button class="cfsysw-btn cfsysw-btn-danger" id="cfsysw-delete" disabled
+          title="从当前存储档删除打开的家族（确认对话框；idb 档可重新导入源文件重建）"><i class="fa-solid fa-trash"></i> 删除家族</button>
       </div>
     </header>
 
@@ -60,6 +62,6 @@
     一个字节都不动（否则就成了第二份工作台 UI，违反单一模板源铁律）。
   -->
   <script src="./file-protocol-notice.js"></script>
-  <script type="module" src="./app.js?v=14"></script>
+  <script type="module" src="./app.js?v=15"></script>
 </body>
 </html>

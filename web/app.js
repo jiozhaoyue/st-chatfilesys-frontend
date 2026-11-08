@@ -90,6 +90,7 @@ function rerender() {
     content.refresh(wb.view());
     ensureFloatWindowsAttached(); // PO-3 自愈兜底：小窗被清场后按记忆几何挂回
     syncFloorSelect();            // 楼层选择器跟随当前家族（版本管理入口）
+    syncActionButtons();          // 删除家族等按钮跟随「有无家族」
     renderStats();
     reader?.refresh();
 }
@@ -101,6 +102,13 @@ function renderStats() {
     try {
         host.innerHTML = statsHtml(computeStats(wb));
     } catch { host.innerHTML = ''; }
+}
+
+/** 依「有无打开家族」启停顶部按钮（删除家族只在有家族时可点） */
+function syncActionButtons() {
+    const has = Boolean(wb?.familyId);
+    const del = $('cfsysw-delete');
+    if (del) del.disabled = !has;
 }
 
 /** 版本管理的统一入口（顶部按钮 / 阅读视图 / 搜索结果三处共用） */
@@ -149,6 +157,29 @@ async function openById(familyId) {
         rememberFamily(familyId);
         $('cfsysw-family').value = familyId;
     } catch (e) { notify.error(`打开失败：${e?.message || e}`); }
+    rerender();
+}
+
+/** 删除当前家族（web 壳层的库管理闭环；适配器契约自带 deleteFamily） */
+async function deleteCurrentFamily() {
+    const v = wb.view();
+    const famId = wb.familyId;
+    if (!v.model || !famId) { notify.warn('先打开一个家族。'); return; }
+    const name = v.familyName || famId;
+    const ok = globalThis.confirm(
+        `删除家族「${name}」？\n该家族的全部楼层与分支将从当前存储档移除，不可还原。`
+        + `\n（当前档位是浏览器本机缓存——重新导入源 .jsonl 即可重建）`);
+    if (!ok) return;
+    try {
+        const r = await wb.adapter.deleteFamily({ familyId: famId });
+        if (!r?.ok) throw new Error(r?.reason || '存储拒绝');
+        rememberFamily(null);
+        wb.closeFamily();
+        notify.ok(`已删除家族「${name}」。`);
+        await refreshFamilySelect(null);
+    } catch (e) {
+        notify.error(`删除失败：${e?.message || e}`);
+    }
     rerender();
 }
 
@@ -238,6 +269,11 @@ async function boot() {
 
     $('cfsysw-family').addEventListener('change', (e) => openById(e.target.value));
     $('cfsysw-versions').addEventListener('click', () => openVersionsAt(Number($('cfsysw-floor').value || 1)));
+    $('cfsysw-delete').addEventListener('click', () => deleteCurrentFamily());
+
+    // 页面级异常兜底：任何漏网异常至少在页面上说一声（不静默）
+    window.addEventListener('error', (e) => notify.error(`页面异常：${e?.message || e}`));
+    window.addEventListener('unhandledrejection', (e) => notify.error(`未处理的异步异常：${e?.reason?.message || e?.reason || e}`));
     $('cfsysw-sample').addEventListener('click', async () => {
         const lines = [JSON.stringify(SAMPLE_HEADER), ...SAMPLE_ROWS.map((r) => JSON.stringify(r))];
         try {

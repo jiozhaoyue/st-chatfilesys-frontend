@@ -168,9 +168,20 @@ export async function createIdbAdapter(ctx = {}) {
         },
 
         async deleteFamily({ familyId }) {
-            const store = tx(db, 'floors', 'readwrite');
-            for (const r of await floorsOf(familyId)) store.delete([r.familyId, r.floorNo, r.variantId]);
-            await reqAsPromise(tx(db, 'families', 'readwrite').delete(familyId));
+            // 事务纪律：IndexedDB 事务在「没有挂起请求」的微任务边界自动提交——
+            // 建事务后先 await（哪怕只是读）再发写请求，会拿到 "transaction has finished"。
+            // 所以先在事务外取齐要删的行，再开**一个**两表读写事务同步发全部请求（顺带保证原子性）。
+            const rows = await floorsOf(familyId);
+            const txn = db.transaction(['floors', 'families'], 'readwrite');
+            const floors = txn.objectStore('floors');
+            const fams = txn.objectStore('families');
+            for (const r of rows) floors.delete([r.familyId, r.floorNo, r.variantId]);
+            fams.delete(familyId);
+            await new Promise((resolve, reject) => {
+                txn.oncomplete = () => resolve();
+                txn.onerror = () => reject(txn.error);
+                txn.onabort = () => reject(txn.error || new Error('indexeddb 事务中止'));
+            });
             return { ok: true };
         },
 

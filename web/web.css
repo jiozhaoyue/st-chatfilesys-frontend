@@ -204,5 +204,9 @@
 /* 阅读工具栏的分支选择器 */
 .cfsysw-reader-toolbar select[data-role="reader-branch"] { max-width: 220px; }
 
+/* 危险动作（删除家族） */
+.cfsysw-btn-danger:not(:disabled) { border-color: #5a3232; color: #ff9d9d; }
+.cfsysw-btn-danger:hover:not(:disabled) { background: #2a1a1c; border-color: #7a3b3b; }
+
 /* 阅读视图开关按钮的激活态 */
 .cfsysw-btn-active { border-color: #4f79d6 !important; background: #1d2536 !important; color: #9fc1ff !important; }

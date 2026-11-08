@@ -705,11 +705,20 @@ export function createWorkbench(ports = {}) {
         });
     }
 
+    /** 关闭当前家族（删除家族后由壳层调用）：内存态清空，存储不动 */
+    function closeFamily() {
+        family = null;
+        currentBranchId = null;
+        invalidateGraph();
+        onRendered();
+    }
+
     return {
         view,
         handleAction,
         bind,
         openFamily,
+        closeFamily,
         importText,
         openVersions,
         listFamilies: () => (adapter ? adapter.listFamilies({}) : Promise.resolve([])),
@@ -719,5 +728,7 @@ export function createWorkbench(ports = {}) {
         invalidateGraph,
         get tier() { return tier; },
         set tier(v) { tier = v; },
+        get familyId() { return family?.familyId ?? null; },
+        get adapter() { return adapter; },
     };
 }
