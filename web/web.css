@@ -192,6 +192,13 @@
 .cfsysw-diff-badge-only { background: #1b2230; color: #9fc1ff; }
 .cfsysw-diff-who { color: #8f8fa0; font-size: 12px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cfsysw-diff-ops { display: inline-flex; gap: 6px; }
+/* 差异行展开的正文对照 */
+.cfsysw-diff-more { flex-basis: 100%; }
+.cfsysw-diff-more summary { cursor: pointer; color: #8f8fa0; font-size: 12px; user-select: none; }
+.cfsysw-diff-row { flex-wrap: wrap; }
+.cfsysw-diff-side { display: flex; gap: 8px; margin: 6px 0 0 28px; align-items: flex-start; }
+.cfsysw-diff-side .cfsysw-diff-badge { flex: none; margin-top: 2px; }
+.cfsysw-diff-text { color: #c9cbd6; font-size: 12.5px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; min-width: 0; }
 
 /* 危险动作（删除家族） */
 .cfsysw-btn-danger:not(:disabled) { border-color: #5a3232; color: #ff9d9d; }

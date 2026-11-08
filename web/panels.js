@@ -504,7 +504,11 @@ export function diffBranches(wb, aId, bId) {
         else if (kind === 'diff') diff += 1;
         else if (kind === 'only-a') onlyA += 1;
         else onlyB += 1;
-        return { floor, kind, aName: a?.line?.name ?? null, bName: b?.line?.name ?? null };
+        return {
+            floor, kind,
+            aName: a?.line?.name ?? null, bName: b?.line?.name ?? null,
+            aMes: kind === 'only-b' ? null : ma, bMes: kind === 'only-a' ? null : mb,
+        };
     });
     return { items, same, diff, onlyA, onlyB, total: floors.length, firstDiff: items.find((i) => i.kind !== 'same')?.floor ?? null };
 }
@@ -553,6 +557,14 @@ export function openBranchDiff(opts) {
                 const [label, cls] = DIFF_KIND_LABEL[i.kind];
                 // 「阅读定位」要滚到**拥有这一层的那条分支**的投影（仅 A / 仅 B 时另一侧根本没有该层）
                 const locateBranch = i.kind === 'only-a' ? aId : i.kind === 'only-b' ? bId : aId;
+                // 正文对照（展开可读）：单侧缺失的那侧不给空框，如实只给存在的一侧
+                const PREVIEW_MAX = 600;
+                const clip = (s) => (s != null && s.length > PREVIEW_MAX ? `${s.slice(0, PREVIEW_MAX)}…` : s);
+                const side = (who, mes, cls) => (mes == null ? '' : `
+                    <div class="cfsysw-diff-side">
+                        <span class="cfsysw-diff-badge ${cls}">${esc(who)}</span>
+                        <div class="cfsysw-diff-text">${esc(clip(mes)) || '<span class="cfsysw-note">（空正文）</span>'}</div>
+                    </div>`);
                 return `
                     <div class="cfsysw-diff-row">
                         <span class="cfsysw-msg-floor">#${esc(String(i.floor))}</span>
@@ -564,6 +576,11 @@ export function openBranchDiff(opts) {
                                 title="在阅读视图里定位这一层（仅 A / 仅 B 时会切到那条分支的只读投影）">阅读定位</button>
                             <button class="cfsysw-btn" data-diff-act="versions" data-floor="${esc(String(i.floor))}">版本管理</button>
                         </span>
+                        <details class="cfsysw-diff-more">
+                            <summary>正文对照</summary>
+                            ${side('A', clip(i.aMes), 'cfsysw-diff-badge-only')}
+                            ${side('B', clip(i.bMes), 'cfsysw-diff-badge-only')}
+                        </details>
                     </div>`;
             })
             .join('');
