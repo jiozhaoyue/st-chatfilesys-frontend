@@ -110,11 +110,13 @@ function renderStats() {
     } catch { host.innerHTML = ''; }
 }
 
-/** 依「有无打开家族」启停顶部按钮（删除家族只在有家族时可点） */
+/** 依「有无打开家族」启停顶部按钮（删除/改名家族只在有家族时可点） */
 function syncActionButtons() {
     const has = Boolean(wb?.familyId);
     const del = $('cfsysw-delete');
     if (del) del.disabled = !has;
+    const ren = $('cfsysw-rename');
+    if (ren) ren.disabled = !has;
 }
 
 /**
@@ -209,6 +211,26 @@ async function deleteCurrentFamily() {
     rerender();
 }
 
+/** 家族改名（web 壳层库管理；适配器契约 renameFamily，idb/authority/official 三档齐备） */
+async function renameCurrentFamily() {
+    const v = wb.view();
+    const famId = wb.familyId;
+    if (!v.model || !famId) { notify.warn('先打开一个家族。'); return; }
+    const cur = v.familyName || famId;
+    const name = globalThis.prompt('新的家族名：', cur);
+    if (!name || name === cur) return;
+    try {
+        const r = await wb.adapter.renameFamily({ familyId: famId, newName: name });
+        if (!r?.ok) throw new Error(r?.reason || '存储拒绝');
+        notify.ok(`已改名为「${name}」。`);
+        await refreshFamilySelect(famId);
+        await wb.openFamily(famId); // 重开让视图/统计读到新名（meta.name 变了）
+    } catch (e) {
+        notify.error(`改名失败：${e?.message || e}`);
+    }
+    rerender();
+}
+
 async function importFiles(files) {
     let lastId = null;
     for (const f of files) {
@@ -296,6 +318,7 @@ async function boot() {
     $('cfsysw-family').addEventListener('change', (e) => openById(e.target.value));
     $('cfsysw-versions').addEventListener('click', () => openVersionsAt(Number($('cfsysw-floor').value || 1)));
     $('cfsysw-delete').addEventListener('click', () => deleteCurrentFamily());
+    $('cfsysw-rename').addEventListener('click', () => renameCurrentFamily());
     // 图节点「阅读定位」（syncGraphReadButton 注入的 web 壳层按钮；capture 阶段先于弹窗委托也无妨）
     document.addEventListener('click', (e) => {
         const btn = e.target.closest('[data-web-act="graph-read"]');

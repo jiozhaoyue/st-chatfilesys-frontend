@@ -142,6 +142,7 @@ export function createReaderPanel(opts) {
     let fontPx = 14;               // 正文字号（12–20）
     let lastFloors = [];           // 当前渲染过的楼层号（上下层导航用）
     let readBranchId = null;       // 正在读的分支；null = 当前视图分支（活跃投影）
+    const swipePreview = new Map(); // floorNo → 内联 swipe 预览下标（**只读预览**，不落库）
 
     const el = document.createElement('section');
     el.className = 'cfsysw-reader';
@@ -151,7 +152,12 @@ export function createReaderPanel(opts) {
         const line = r.line || {};
         const name = String(line.name ?? (line.is_user ? 'User' : 'Char'));
         const time = line.send_date ? esc(String(line.send_date).replace('T', ' ').slice(0, 16)) : '';
-        const mes = String(line.mes ?? '');
+        // 内联 swipe 只读预览：正文取「预览下标」覆盖（没翻过 = 当前选中版）；
+        // 这是给阅读时对照用的纯客户端视图，正式切换/编辑走版本管理
+        const swipes = Array.isArray(line.swipes) ? line.swipes : null;
+        const hasFlip = clickable && swipes && swipes.length > 1;
+        const idx = Math.min(hasFlip ? (swipePreview.get(r.floorNo) ?? (Number.isInteger(line.swipe_id) ? line.swipe_id : 0)) : 0, (swipes?.length || 1) - 1);
+        const mes = String(hasFlip ? (swipes[idx] ?? line.mes ?? '') : (line.mes ?? ''));
         return `
             <article class="cfsysw-msg${line.is_user ? ' cfsysw-msg-user' : ''}${clickable ? '' : ' cfsysw-msg-readonly'}"
                 data-floor="${esc(String(r.floorNo))}"
@@ -165,6 +171,12 @@ export function createReaderPanel(opts) {
                     ${variantCount > 1 ? `<span class="cfsysw-msg-variants" title="该层共 ${esc(String(variantCount))} 个版本（含其他分支）">${esc(String(variantCount))} 版</span>` : ''}
                 </header>
                 <div class="cfsysw-msg-body">${esc(mes) || '<span class="cfsysw-note">（空正文）</span>'}</div>
+                ${hasFlip ? `
+                <div class="cfsysw-swipe-flip" title="只读预览这一层的各个版本（正式切换 / 编辑请点正文打开版本管理）">
+                    <button class="cfsysw-btn" data-swipe-act="prev" data-floor="${esc(String(r.floorNo))}" ${idx <= 0 ? 'disabled' : ''}>◀</button>
+                    <span>版本 ${idx + 1}/${swipes.length}（预览）</span>
+                    <button class="cfsysw-btn" data-swipe-act="next" data-floor="${esc(String(r.floorNo))}" ${idx >= swipes.length - 1 ? 'disabled' : ''}>▶</button>
+                </div>` : ''}
             </article>`;
     }
 
@@ -273,6 +285,24 @@ export function createReaderPanel(opts) {
     }
 
     el.addEventListener('click', async (e) => {
+        // 内联 swipe 只读预览（不与「点层开版本管理」冲突：flipper 优先消费）
+        const flip = e.target.closest('[data-swipe-act]');
+        if (flip) {
+            e.stopPropagation();
+            const floor = Number(flip.dataset.floor);
+            const line = branchProjection(wb, readBranchId).find((r) => r.floorNo === floor)?.line;
+            const n = Array.isArray(line?.swipes) ? line.swipes.length : 0;
+            if (!n) return;
+            const cur = swipePreview.get(floor) ?? (Number.isInteger(line.swipe_id) ? line.swipe_id : 0);
+            swipePreview.set(floor, Math.min(n - 1, Math.max(0, cur + (flip.dataset.swipeAct === 'next' ? 1 : -1))));
+            const keep = currentFloor();
+            render();
+            if (keep != null) {
+                const t = el.querySelector(`.cfsysw-msg[data-floor="${Number(keep)}"]`);
+                if (t) scrollMsgIntoCenter(t);
+            }
+            return;
+        }
         const act = e.target.closest('[data-reader-act]')?.dataset.readerAct;
         if (act === 'close') { toggle(false); return; }
         if (act === 'prev') { step(-1); return; }
@@ -310,6 +340,7 @@ export function createReaderPanel(opts) {
         if (!sel) return;
         const active = wb.view().branchId;
         readBranchId = sel.value && sel.value !== active ? sel.value : null;
+        swipePreview.clear();
         render();
     });
 
@@ -340,7 +371,7 @@ export function createReaderPanel(opts) {
         open = typeof force === 'boolean' ? force : !open;
         el.hidden = !open;
         el.dispatchEvent(new CustomEvent('cfsysw-reader-toggle', { bubbles: true }));
-        if (open) render();
+        if (open) { swipePreview.clear(); render(); } // 预览下标跟着打开动作重置（各分支内容不同）
     }
 
     return {
