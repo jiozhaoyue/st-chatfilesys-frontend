@@ -19,11 +19,16 @@ import { computeStats, statsHtml, createReaderPanel, createSearchPanel } from '.
 
 const $ = (id) => document.getElementById(id);
 
+/** toast 容器：固定一个栈式容器（多提示纵向堆叠，不互相盖） */
+const toastBox = document.createElement('div');
+toastBox.className = 'cfsysw-toasts';
+document.body.appendChild(toastBox);
+
 function toast(kind, msg) {
     const box = document.createElement('div');
     box.className = `cfsysw-toast cfsysw-toast-${kind}`;
     box.textContent = msg;
-    document.body.appendChild(box);
+    toastBox.appendChild(box);
     setTimeout(() => box.remove(), 4500);
 }
 const notify = {
@@ -93,6 +98,7 @@ function rerender() {
     syncActionButtons();          // 删除家族等按钮跟随「有无家族」
     renderStats();
     reader?.refresh();
+    syncGraphReadButton();        // 图节点选中 → 「阅读定位」按钮（web 壳层增强）
 }
 
 /** 统计条：家族统计概览（失败只降级成空条，不连坐页面） */
@@ -109,6 +115,26 @@ function syncActionButtons() {
     const has = Boolean(wb?.familyId);
     const del = $('cfsysw-delete');
     if (del) del.disabled = !has;
+}
+
+/**
+ * 图节点 → 阅读定位：选中图节点后，在弹窗的「节点」面板尾部补一个「阅读定位」按钮
+ * （web 壳层增强：不进共享模板——插件侧没有阅读视图；refresh 重填会清掉，每次重加）
+ */
+function syncGraphReadButton() {
+    const panel = document.querySelector('.cfsysw-popup-host [data-role="graph-selection"]');
+    if (!panel) return;
+    panel.querySelector('[data-web-act="graph-read"]')?.remove();
+    // 图选中是缓存态（家族关掉后仍残留）——没有打开家族就不给按钮（点了也只能看到空阅读）
+    if (!wb?.view().model) return;
+    const sel = wb.view().graphSelection;
+    if (!sel || !Number.isFinite(sel.floor)) return;
+    const btn = document.createElement('button');
+    btn.className = 'cfsysw-btn';
+    btn.dataset.webAct = 'graph-read';
+    btn.title = `在阅读视图里定位到第 ${sel.floor} 层`;
+    btn.textContent = `📖 阅读定位 #${sel.floor}`;
+    panel.appendChild(btn);
 }
 
 /** 版本管理的统一入口（顶部按钮 / 阅读视图 / 搜索结果三处共用） */
@@ -270,6 +296,20 @@ async function boot() {
     $('cfsysw-family').addEventListener('change', (e) => openById(e.target.value));
     $('cfsysw-versions').addEventListener('click', () => openVersionsAt(Number($('cfsysw-floor').value || 1)));
     $('cfsysw-delete').addEventListener('click', () => deleteCurrentFamily());
+    // 图节点「阅读定位」（syncGraphReadButton 注入的 web 壳层按钮；capture 阶段先于弹窗委托也无妨）
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-web-act="graph-read"]');
+        if (!btn) return;
+        if (!wb?.view().model) { notify.warn('先打开一个家族。'); return; }
+        const floor = wb.view().graphSelection?.floor;
+        if (Number.isFinite(floor)) { reader.scrollToFloor(floor); notify.info(`阅读视图已定位到第 ${floor} 层。`); }
+    });
+    // 点搜索面板外面收起结果（Esc 已有；这里补鼠标路径）
+    document.addEventListener('click', (e) => {
+        if (e.target.closest('.cfsysw-search')) return;
+        const res = document.querySelector('[data-role="search-results"]');
+        if (res && !res.hidden) res.hidden = true;
+    });
 
     // 页面级异常兜底：任何漏网异常至少在页面上说一声（不静默）
     window.addEventListener('error', (e) => notify.error(`页面异常：${e?.message || e}`));

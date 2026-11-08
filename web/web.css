@@ -62,45 +62,9 @@
 .cfsysw-btn:hover { background: #2e2e39; border-color: #55555f; }
 .cfsysw-filebtn { user-select: none; }
 
-.cfsysw-layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; margin-top: 16px; align-items: start; }
-
-.cfsysw-side { padding: 12px; border: 1px solid #2c2c34; border-radius: 8px; background: #1b1b21; }
-.cfsysw-side-title { font-size: 12px; color: #8f8fa0; letter-spacing: 1px; }
-.cfsysw-side-title.cfsysw-mt { margin-top: 16px; }
-.cfsysw-families { list-style: none; margin: 8px 0 0; padding: 0; }
-.cfsysw-families li { padding: 8px 10px; margin: 4px 0; border: 1px solid #2c2c34; border-radius: 6px; cursor: pointer; background: #202028; }
-.cfsysw-families li:hover { border-color: #55555f; }
-.cfsysw-families li.cfsysw-active { border-color: #4f79d6; background: #1d2536; }
-.cfsysw-families .cfsysw-famname { color: #e2e4ec; }
-.cfsysw-families .cfsysw-fammeta { margin-top: 2px; color: #8f8fa0; font-size: 11px; }
-.cfsysw-empty { margin-top: 8px; color: #6e6e80; font-size: 12px; }
-.cfsysw-importlog { margin-top: 8px; color: #9a9aac; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
-
-.cfsysw-main { min-width: 0; }
-.cfsysw-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.cfsysw-familyname { color: #e2e4ec; font-weight: 600; }
-.cfsysw-spacer { flex: 1; }
-.cfsysw-check { color: #9a9aac; font-size: 12px; cursor: pointer; }
-
-.cfsysw-treehost { padding: 12px; border: 1px solid #2c2c34; border-radius: 8px; background: #1b1b21; overflow: auto; min-height: 260px; }
-.cfsysw-placeholder { color: #6e6e80; padding: 40px 0; text-align: center; }
-
-.cfsysw-detail { margin-top: 12px; border: 1px solid #2c2c34; border-radius: 8px; background: #1b1b21; }
-.cfsysw-detail summary { padding: 8px 12px; cursor: pointer; color: #b9bac8; }
-.cfsysw-floors { max-height: 320px; overflow: auto; padding: 0 12px 12px; }
-.cfsysw-floor { margin: 8px 0; padding: 8px 10px; border: 1px solid #2c2c34; border-radius: 6px; background: #202028; }
-.cfsysw-floor-head { display: flex; gap: 8px; align-items: baseline; color: #9fc1ff; font-size: 12px; }
-.cfsysw-floor-text { margin-top: 6px; color: #c9cbd6; white-space: pre-wrap; word-break: break-word; }
-.cfsysw-variant { margin-top: 6px; padding-top: 6px; border-top: 1px dashed #33333d; }
-.cfsysw-variant-tag { color: #8f8fa0; font-size: 11px; }
-.cfsysw-variant.cfsysw-current .cfsysw-variant-tag { color: #79d8a0; }
-
-.cfsysw-json { margin: 0; padding: 12px; max-height: 320px; overflow: auto; color: #9a9aac; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
-
-.cfsysw-error { position: fixed; right: 16px; bottom: 16px; max-width: 480px; padding: 10px 14px; border: 1px solid #7a3b3b; border-radius: 8px; background: #2a1a1c; color: #ff9d9d; font-size: 12px; white-space: pre-wrap; word-break: break-all; z-index: 99; }
-
 /* 页内 toast（web 的 notify port；插件侧对应 toastr，形态不同语义一致） */
-.cfsysw-toast { position: fixed; right: 16px; bottom: 16px; z-index: 100; max-width: 420px; padding: 8px 14px; border-radius: 8px; font-size: 13px; background: #23232b; border: 1px solid #3d3d49; color: #d6d6dd; box-shadow: 0 4px 16px rgba(0,0,0,.4); }
+.cfsysw-toasts { position: fixed; right: 16px; bottom: 16px; z-index: 100; display: flex; flex-direction: column; gap: 8px; max-width: 420px; }
+.cfsysw-toast { max-width: 420px; padding: 8px 14px; border-radius: 8px; font-size: 13px; background: #23232b; border: 1px solid #3d3d49; color: #d6d6dd; box-shadow: 0 4px 16px rgba(0,0,0,.4); }
 .cfsysw-toast-ok { border-color: #2d5a3a; background: #1b2620; color: #9ad8a8; }
 .cfsysw-toast-info { border-color: #2b3a55; background: #1b2230; color: #9fc1ff; }
 .cfsysw-toast-warn { border-color: #6b5a2b; background: #2a2416; color: #d8c89a; }
